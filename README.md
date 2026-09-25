@@ -51,19 +51,66 @@ donc les stratégies ne voient jamais le futur (vérifié par les tests sur plus
 
 Les heures (sessions, killzones, Silver Bullet, ORB) sont celles du **serveur MT5** de votre courtier.
 
-## Installation
+## Brancher la plateforme sur votre MT5 (Windows)
+
+La connexion Python ↔ MetaTrader 5 fonctionne **uniquement sous Windows**, sur le PC (ou le VPS Windows)
+où le terminal MT5 est installé.
+
+1. **Téléchargez le projet** : sur GitHub, bouton *Code → Download ZIP* (branche
+   `claude/mt5-trading-agents-platform-4grro9`), puis dézippez-le, par exemple dans `C:\LaboMT5`.
+2. **Installez Python 3.10+ 64 bits** depuis python.org en cochant *Add python.exe to PATH*.
+3. **Double-cliquez sur `install.bat`**. Il crée l'environnement et installe `MetaTrader5`, `numpy` et `pandas`.
+4. **Ouvrez MetaTrader 5 et connectez-vous** à votre compte, idéalement un compte **démo**.
+   - Pour avoir beaucoup d'historique : *Outils → Options → Graphiques → Barres max. dans le graphique = Unlimited*.
+   - Pour que la plateforme puisse passer des ordres : bouton **Algo Trading** activé (vert).
+5. *(Optionnel)* Remplissez le fichier `.env` (login, mot de passe, serveur) si vous voulez que la plateforme
+   se connecte toute seule. Si MT5 est déjà connecté, laissez-le vide. Ce fichier reste sur votre PC.
+6. **Double-cliquez sur `lancer.bat`** pour ouvrir le menu :
+
+```
+  1. Tester la connexion a MT5          <- commencez par ici
+  2. Changer symboles / timeframe
+  3. Lancer la recherche (10 agents)
+  4. Lancer une recherche longue (plus de tests)
+  5. Ouvrir les rapports
+  6. Meilleure strategie en SIMULATION (aucun ordre)
+  7. Meilleure strategie sur compte DEMO (vrais ordres)
+```
+
+Le test de connexion (`python run.py check --symbols EURUSD XAUUSD`) affiche ceci :
+
+```
+Diagnostic MT5
+  [OK] Terminal connecté au serveur (Votre courtier)
+  [OK] Compte 12345678 sur Courtier-Demo | DÉMO | 10000.0 USD | levier 1:100
+  [OK] Trading algorithmique autorisé dans le terminal (bouton « Algo Trading » vert)
+  [OK] Trading autorisé sur ce compte
+  [OK] EURUSD.m : 5000 bougies H1 du ... au ... | spread 12 pts | lot min 0.01 | heure serveur ...
+Tout est prêt.
+```
+
+La plateforme gère automatiquement :
+- les **suffixes de symboles** des courtiers (`EURUSD` → `EURUSD.m`, `EURUSDm`, `EURUSD.raw`…) ;
+- le **mode de remplissage** des ordres accepté par le courtier (évite l'erreur 10030) ;
+- la **limite d'historique** du terminal (elle récupère ce qui est disponible) ;
+- le **spread réel** du symbole comme coût dans les backtests.
+
+### Sans Windows (Mac, Linux)
+
+Le package Python `MetaTrader5` n'existe pas hors Windows. Vous pouvez quand même lancer la **recherche** :
+copiez `mql5/ExportHistory.mq5` dans le dossier *MQL5/Scripts* de MT5 (*Fichier → Ouvrir le dossier des données*),
+compilez-le, glissez-le sur un graphique, puis :
+
+```bash
+python run.py lab --csv EURUSD_H1.csv --cost 0.00012
+```
+
+Pour exécuter les stratégies en direct, il faut un PC ou un VPS Windows.
+
+### Installation manuelle
 
 ```bash
 pip install -r requirements.txt
-```
-
-Le package `MetaTrader5` ne fonctionne que sous **Windows**, avec le terminal MT5 installé,
-ouvert et connecté à votre courtier. Identifiants (optionnels si le terminal est déjà connecté) :
-
-```bat
-set MT5_LOGIN=12345678
-set MT5_PASSWORD=motdepasse
-set MT5_SERVER=NomDuServeur-Demo
 ```
 
 ## Utilisation

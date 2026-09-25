@@ -40,7 +40,7 @@ class LiveTrader:
                  risk_pct: float = 0.5, execute: bool = False, allow_real: bool = False, bars: int = 1500):
         self.c = conn
         self.mt5 = conn.mt5
-        self.symbol, self.tf, self.cand = symbol, timeframe, candidate
+        self.symbol, self.tf, self.cand = conn.resolve(symbol), timeframe, candidate
         self.cfg = RiskConfig(**candidate["risk"])
         self.risk_pct, self.execute, self.bars = risk_pct, execute, bars
         acc = self.mt5.account_info()
@@ -49,6 +49,9 @@ class LiveTrader:
         if acc.trade_mode != self.mt5.ACCOUNT_TRADE_MODE_DEMO and not allow_real:
             raise RuntimeError("Compte RÉEL détecté : ajoutez --allow-real si vous êtes VRAIMENT sûr(e).")
         self.last_bar = None
+        term = self.mt5.terminal_info()
+        if execute and term is not None and not term.trade_allowed:
+            raise RuntimeError("« Algo Trading » est désactivé dans le terminal MT5 : cliquez sur le bouton pour l'activer.")
 
     def log(self, msg):
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{self.symbol} {self.tf}] {msg}", flush=True)
@@ -106,7 +109,7 @@ class LiveTrader:
                "type": self.mt5.ORDER_TYPE_BUY if side > 0 else self.mt5.ORDER_TYPE_SELL,
                "price": price, "sl": sl, "tp": tp, "deviation": 20, "magic": MAGIC,
                "comment": "mt5lab", "type_time": self.mt5.ORDER_TIME_GTC,
-               "type_filling": self.mt5.ORDER_FILLING_IOC}
+               "type_filling": self.c.filling_mode(self.symbol)}
         res = self.mt5.order_send(req)
         self.log(f"{what} -> retcode {getattr(res, 'retcode', None)} {getattr(res, 'comment', '')}")
 
@@ -119,7 +122,7 @@ class LiveTrader:
         req = {"action": self.mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": pos.volume,
                "type": self.mt5.ORDER_TYPE_SELL if buy else self.mt5.ORDER_TYPE_BUY, "position": pos.ticket,
                "price": tick.bid if buy else tick.ask, "deviation": 20, "magic": MAGIC, "comment": why,
-               "type_filling": self.mt5.ORDER_FILLING_IOC}
+               "type_filling": self.c.filling_mode(self.symbol)}
         res = self.mt5.order_send(req)
         self.log(f"fermeture {pos.ticket} ({why}) -> retcode {getattr(res, 'retcode', None)}")
 

@@ -10,13 +10,26 @@ import pandas as pd
 TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]
 
 
+def load_env(path: str | Path = ".env") -> None:
+    """Charge un fichier .env (CLE=valeur) dans les variables d'environnement, sans écraser l'existant."""
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
 def _mt5():
     try:
         import MetaTrader5 as mt5  # type: ignore
     except ImportError as exc:  # pragma: no cover - dépend de Windows
         raise RuntimeError(
-            "Le package MetaTrader5 n'est pas installé. Il fonctionne uniquement sous Windows avec "
-            "le terminal MT5 installé : pip install MetaTrader5"
+            "Le package MetaTrader5 n'est pas installé. Il fonctionne uniquement sous Windows (Python 64 bits) "
+            "avec le terminal MT5 installé. Lancez install.bat ou : pip install MetaTrader5"
         ) from exc
     return mt5
 
@@ -24,16 +37,19 @@ def _mt5():
 class MT5Connector:
     """Connexion au terminal MetaTrader 5 local.
 
-    Identifiants lus depuis les arguments ou les variables d'environnement
+    Identifiants lus depuis les arguments, les variables d'environnement ou le fichier .env :
     MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, MT5_PATH (chemin de terminal64.exe, optionnel).
+    Sans identifiants, on se branche sur le compte déjà connecté dans le terminal.
     """
 
     def __init__(self, login=None, password=None, server=None, path=None):
+        load_env()
         self.mt5 = _mt5()
-        self.login = int(login or os.environ.get("MT5_LOGIN", 0)) or None
+        self.login = int(login or os.environ.get("MT5_LOGIN") or 0) or None
         self.password = password or os.environ.get("MT5_PASSWORD")
         self.server = server or os.environ.get("MT5_SERVER")
         self.path = path or os.environ.get("MT5_PATH")
+        self._resolved: dict[str, str] = {}
 
     def __enter__(self):
         self.connect()
@@ -42,24 +58,54 @@ class MT5Connector:
     def __exit__(self, *exc):
         self.mt5.shutdown()
 
-    def connect(self):
-        kwargs = {}
+    def connect(self, verbose: bool = True):
+        kwargs = {"timeout": 60_000}
         if self.path:
             kwargs["path"] = self.path
         if self.login:
-            kwargs.update(login=self.login, password=self.password, server=self.server)
+            kwargs.update(login=self.login, password=self.password or "", server=self.server or "")
         if not self.mt5.initialize(**kwargs):
-            raise RuntimeError(f"Échec de connexion à MT5 : {self.mt5.last_error()}")
+            err = self.mt5.last_error()
+            raise RuntimeError(
+                f"Échec de connexion à MT5 : {err}\n"
+                "  - Le terminal MT5 est-il installé et ouvert ?\n"
+                "  - Plusieurs MT5 installés ? Indiquez MT5_PATH=C:\\...\\terminal64.exe dans .env\n"
+                "  - Identifiants : vérifiez MT5_LOGIN / MT5_PASSWORD / MT5_SERVER (nom exact du serveur)"
+            )
         info = self.mt5.account_info()
-        if info is not None:
+        if info is None:
+            raise RuntimeError("Terminal ouvert mais aucun compte connecté : connectez-vous dans MT5 ou remplissez .env")
+        if verbose:
             print(f"[MT5] Connecté : compte {info.login} ({info.server}) | balance {info.balance} {info.currency}"
-                  f" | {'DÉMO' if info.trade_mode == 0 else 'RÉEL'}")
+                  f" | {self.account_kind()}")
         return self
+
+    def account_kind(self) -> str:
+        mode = self.mt5.account_info().trade_mode
+        return {0: "DÉMO", 1: "CONCOURS", 2: "RÉEL"}.get(mode, str(mode))
+
+    def is_demo(self) -> bool:
+        return self.mt5.account_info().trade_mode == self.mt5.ACCOUNT_TRADE_MODE_DEMO
 
     def symbols(self, pattern: str = "*") -> list[str]:
         return [s.name for s in (self.mt5.symbols_get(pattern) or [])]
 
+    def resolve(self, symbol: str) -> str:
+        """Trouve le nom exact chez le courtier (EURUSD -> EURUSD.m, EURUSDm, EURUSD.raw...)."""
+        if symbol in self._resolved:
+            return self._resolved[symbol]
+        name = symbol
+        if self.mt5.symbol_info(symbol) is None:
+            cands = [s for s in self.symbols(f"*{symbol}*") if s.upper().startswith(symbol.upper())]
+            if not cands:
+                raise RuntimeError(f"Symbole introuvable chez ce courtier : {symbol}")
+            name = min(cands, key=len)
+            print(f"[MT5] {symbol} -> {name}")
+        self._resolved[symbol] = name
+        return name
+
     def symbol_info(self, symbol: str):
+        symbol = self.resolve(symbol)
         info = self.mt5.symbol_info(symbol)
         if info is None:
             raise RuntimeError(f"Symbole inconnu : {symbol}")
@@ -67,12 +113,31 @@ class MT5Connector:
             self.mt5.symbol_select(symbol, True)
         return info
 
+    def filling_mode(self, symbol: str) -> int:
+        """Mode de remplissage accepté par le courtier (cause fréquente du retcode 10030)."""
+        flags = self.symbol_info(symbol).filling_mode
+        if flags & 1:
+            return self.mt5.ORDER_FILLING_FOK
+        if flags & 2:
+            return self.mt5.ORDER_FILLING_IOC
+        return self.mt5.ORDER_FILLING_RETURN
+
     def rates(self, symbol: str, timeframe: str = "H1", bars: int = 10000) -> pd.DataFrame:
+        symbol = self.resolve(symbol)
         self.symbol_info(symbol)
         tf = getattr(self.mt5, f"TIMEFRAME_{timeframe}")
-        raw = self.mt5.copy_rates_from_pos(symbol, tf, 0, bars)
+        raw = None
+        n = bars
+        while n >= 500:  # MT5 refuse si on demande plus que « Max bougies dans le graphique »
+            raw = self.mt5.copy_rates_from_pos(symbol, tf, 0, n)
+            if raw is not None and len(raw):
+                break
+            n //= 2
         if raw is None or len(raw) == 0:
             raise RuntimeError(f"Aucune donnée pour {symbol} {timeframe} : {self.mt5.last_error()}")
+        if len(raw) < bars:
+            print(f"[MT5] {symbol} {timeframe} : {len(raw)} bougies disponibles (demandé {bars}). Pour plus "
+                  "d'historique : Outils > Options > Graphiques > « Barres max. dans le graphique » = Unlimited")
         df = pd.DataFrame(raw)
         df["time"] = pd.to_datetime(df["time"], unit="s")
         df = df.set_index("time").rename(columns={"tick_volume": "volume"})
@@ -82,6 +147,38 @@ class MT5Connector:
         """Coût aller-retour approximatif (spread courant + commission) en unités de prix."""
         info = self.symbol_info(symbol)
         return (info.spread + commission_points) * info.point
+
+    def diagnose(self, symbols=("EURUSD",), timeframe: str = "H1") -> bool:
+        """Vérifie tout ce qu'il faut pour la recherche et le trading. Renvoie True si tout est OK."""
+        ok = True
+
+        def line(good, msg):
+            nonlocal ok
+            ok &= bool(good)
+            print(f"  [{'OK' if good else '!!'}] {msg}")
+
+        term = self.mt5.terminal_info()
+        acc = self.mt5.account_info()
+        print("Diagnostic MT5")
+        line(True, f"Package MetaTrader5 {getattr(self.mt5, '__version__', '?')}")
+        line(term is not None and term.connected, f"Terminal connecté au serveur ({getattr(term, 'company', '?')})")
+        line(True, f"Compte {acc.login} sur {acc.server} | {self.account_kind()} | "
+                   f"{acc.balance} {acc.currency} | levier 1:{acc.leverage}")
+        line(term is not None and term.trade_allowed,
+             "Trading algorithmique autorisé dans le terminal (bouton « Algo Trading » vert)")
+        line(acc.trade_allowed, "Trading autorisé sur ce compte")
+        for sym in symbols:
+            try:
+                name = self.resolve(sym)
+                info = self.symbol_info(name)
+                df = self.rates(name, timeframe, 5000)
+                line(True, f"{name} : {len(df)} bougies {timeframe} du {df.index[0]} au {df.index[-1]} | spread "
+                           f"{info.spread} pts | lot min {info.volume_min} | heure serveur dernière bougie "
+                           f"{df.index[-1]:%H:%M}")
+            except Exception as exc:
+                line(False, f"{sym} : {exc}")
+        print("Tout est prêt." if ok else "Corrigez les points [!!] ci-dessus.")
+        return ok
 
 
 def load_csv(path: str | Path) -> pd.DataFrame:

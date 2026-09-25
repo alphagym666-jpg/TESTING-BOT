@@ -1,6 +1,9 @@
 """Point d'entrée de la plateforme.
 
 Exemples :
+    # Vérifier la connexion à votre MT5 (Windows)
+    python run.py check --symbols EURUSD XAUUSD
+
     # Démo hors-ligne (données synthétiques, marche partout)
     python run.py lab --demo
 
@@ -66,6 +69,13 @@ def cmd_live(a):
                    allow_real=a.allow_real).run(a.poll)
 
 
+def cmd_check(a):
+    from mt5lab.data import MT5Connector
+    with MT5Connector() as conn:
+        ok = conn.diagnose(a.symbols, a.timeframe)
+    raise SystemExit(0 if ok else 1)
+
+
 def cmd_list(_a):
     for s in sorted(REGISTRY.values(), key=lambda s: (s.family, s.name)):
         print(f"{s.family:<15} {s.name:<20} {s.description}")
@@ -103,6 +113,11 @@ def main():
     live.add_argument("--execute", action="store_true", help="envoyer de VRAIS ordres (sinon simulation)")
     live.add_argument("--allow-real", action="store_true", help="autoriser un compte réel")
     live.set_defaults(func=cmd_live)
+
+    check = sub.add_parser("check", help="tester la connexion à MT5")
+    check.add_argument("--symbols", nargs="+", default=["EURUSD"])
+    check.add_argument("--timeframe", default="H1")
+    check.set_defaults(func=cmd_check)
 
     sub.add_parser("strategies", help="lister le catalogue").set_defaults(func=cmd_list)
     a = p.parse_args()
