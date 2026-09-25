@@ -324,6 +324,9 @@ FILTERS: dict[str, dict] = {
     "vol_high": {"n": 14, "pct": 0.5},
     "vol_low": {"n": 14, "pct": 0.5},
     "session_london_ny": {"start": 7, "end": 17},
+    "kill_zones": {"windows": [(7, 10), (12, 15)]},   # killzones ICT Londres / New York (heure serveur)
+    "chop_trending": {"n": 14, "max": 45},             # Choppiness bas = marché directionnel
+    "chop_ranging": {"n": 14, "min": 55},              # Choppiness haut = marché en range
 }
 
 
@@ -349,6 +352,14 @@ def apply_filter(df: pd.DataFrame, sig: pd.Series, name: str) -> pd.Series:
             return sig
         hrs = pd.Series(df.index.hour, index=df.index)
         ok_long = ok_short = (hrs >= p["start"]) & (hrs < p["end"])
+    elif name == "kill_zones":
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return sig
+        hrs = pd.Series(df.index.hour, index=df.index)
+        ok_long = ok_short = pd.concat([(hrs >= a) & (hrs < b) for a, b in p["windows"]], axis=1).any(axis=1)
+    elif name.startswith("chop_"):
+        ch = ind.choppiness(df, p["n"])
+        ok_long = ok_short = (ch < p["max"]) if name == "chop_trending" else (ch > p["min"])
     else:
         raise KeyError(name)
     ok_long, ok_short = ok_long.fillna(False), ok_short.fillna(False)
@@ -389,3 +400,7 @@ def families() -> dict[str, list[str]]:
     for s in REGISTRY.values():
         out.setdefault(s.family, []).append(s.name)
     return out
+
+
+# enregistre les stratégies des autres modules dans REGISTRY
+from . import strategies_plus, strategies_smc  # noqa: E402,F401

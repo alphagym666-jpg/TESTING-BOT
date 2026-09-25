@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -16,12 +18,18 @@ def df():
 @pytest.mark.parametrize("name", sorted(REGISTRY))
 def test_no_lookahead(df, name):
     """Le signal d'une bougie ne doit pas changer quand on ajoute des bougies futures."""
-    params = expand_grid(REGISTRY[name].grid)[0]
-    full = REGISTRY[name].func(df, **params)
-    cut = 1000
-    partial = REGISTRY[name].func(df.iloc[:cut], **params)
-    assert (full.iloc[:cut].to_numpy() == partial.to_numpy()).all(), name
-    assert set(np.unique(full)) <= {-1, 0, 1}
+    grid = expand_grid(REGISTRY[name].grid)
+    # premier, dernier et quelques réglages intermédiaires (couvre les différents modes)
+    for params in {json.dumps(g, sort_keys=True): g for g in grid[:: max(1, len(grid) // 4)] + grid[-1:]}.values():
+        full = REGISTRY[name].func(df, **params)
+        for cut in (777, 1111):
+            partial = REGISTRY[name].func(df.iloc[:cut], **params)
+            assert (full.iloc[:cut].to_numpy() == partial.to_numpy()).all(), (name, params, cut)
+        assert set(np.unique(full)) <= {-1, 0, 1}
+
+
+def test_catalogue_size():
+    assert len(REGISTRY) >= 90
 
 
 def _bars(rows):

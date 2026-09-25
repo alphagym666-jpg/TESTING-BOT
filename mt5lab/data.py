@@ -102,7 +102,8 @@ def load_csv(path: str | Path) -> pd.DataFrame:
     return df.set_index("time")[["open", "high", "low", "close", "volume"]].sort_index()
 
 
-def synthetic(bars: int = 8000, seed: int = 7, start_price: float = 1.10, freq: str = "h") -> pd.DataFrame:
+def synthetic(bars: int = 8000, seed: int = 7, start_price: float = 1.10, freq: str = "h",
+              momentum: float = 0.15) -> pd.DataFrame:
     """Marché synthétique à régimes (tendance / range / volatilité) pour tester la plateforme hors MT5.
 
     ATTENTION : les résultats sur données synthétiques ne disent RIEN sur un vrai marché.
@@ -117,8 +118,12 @@ def synthetic(bars: int = 8000, seed: int = 7, start_price: float = 1.10, freq: 
         drift += [d] * int(L)
         vol += [v] * int(L)
     drift, vol = np.array(drift[:bars]), np.array(vol[:bars])
-    # composante de retour à la moyenne en range
-    rets = drift + vol * rng.standard_t(5, size=bars) / np.sqrt(5 / 3)
+    shocks = drift + vol * rng.standard_t(5, size=bars) / np.sqrt(5 / 3)
+    # léger momentum (autocorrélation) : un edge réel que la plateforme doit être capable de retrouver
+    rets = np.empty(bars)
+    rets[0] = shocks[0]
+    for i in range(1, bars):
+        rets[i] = momentum * rets[i - 1] + shocks[i]
     close = start_price * np.exp(np.cumsum(rets))
     open_ = np.concatenate([[start_price], close[:-1]])
     wick = np.abs(rng.normal(0, vol * 0.6, size=bars)) * close

@@ -85,7 +85,7 @@ def main():
     lab.add_argument("--cost", type=float, default=None, help="coût aller-retour en prix (sinon spread MT5)")
     lab.add_argument("--commission-points", type=float, default=0.0)
     lab.add_argument("--rounds", type=int, default=3)
-    lab.add_argument("--budget", type=int, default=600, help="tests max par agent et par round")
+    lab.add_argument("--budget", type=int, default=1000, help="tests max par agent et par round")
     lab.add_argument("--oos", type=float, default=0.35, help="part des données réservée à la validation")
     lab.add_argument("--risk", type=float, default=1.0, help="risque par trade en %% pour le calcul du rendement")
     lab.add_argument("--workers", type=int, default=None)

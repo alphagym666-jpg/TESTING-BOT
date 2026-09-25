@@ -188,3 +188,183 @@ def crossover(a: pd.Series, b) -> pd.Series:
 def crossunder(a: pd.Series, b) -> pd.Series:
     b = b if isinstance(b, pd.Series) else pd.Series(b, index=a.index)
     return (a < b) & (a.shift(1) >= b.shift(1))
+
+
+# ------------------------------------------------------------------ indicateurs supplémentaires
+def dema(s: pd.Series, n: int) -> pd.Series:
+    e = ema(s, n)
+    return 2 * e - ema(e, n)
+
+
+def tema(s: pd.Series, n: int) -> pd.Series:
+    e1 = ema(s, n)
+    e2 = ema(e1, n)
+    return 3 * e1 - 3 * e2 + ema(e2, n)
+
+
+def kama(s: pd.Series, n: int = 10, fast: int = 2, slow: int = 30) -> pd.Series:
+    """Kaufman Adaptive Moving Average."""
+    x = s.to_numpy(dtype=float)
+    out = np.full(len(x), np.nan)
+    fc, sc = 2 / (fast + 1), 2 / (slow + 1)
+    for i in range(n, len(x)):
+        change = abs(x[i] - x[i - n])
+        vol = np.sum(np.abs(np.diff(x[i - n: i + 1])))
+        er = change / vol if vol > 0 else 0.0
+        a = (er * (fc - sc) + sc) ** 2
+        out[i] = x[i] if np.isnan(out[i - 1]) else out[i - 1] + a * (x[i] - out[i - 1])
+    return pd.Series(out, index=s.index)
+
+
+def stoch_rsi(s: pd.Series, n: int = 14, k: int = 3, d: int = 3):
+    r = rsi(s, n)
+    lo, hi = r.rolling(n, min_periods=n).min(), r.rolling(n, min_periods=n).max()
+    st = 100 * (r - lo) / (hi - lo).replace(0, np.nan)
+    kk = st.rolling(k, min_periods=k).mean()
+    return kk, kk.rolling(d, min_periods=d).mean()
+
+
+def aroon(df: pd.DataFrame, n: int = 25):
+    up = df["high"].rolling(n + 1, min_periods=n + 1).apply(lambda x: np.argmax(x) / n * 100, raw=True)
+    dn = df["low"].rolling(n + 1, min_periods=n + 1).apply(lambda x: np.argmin(x) / n * 100, raw=True)
+    return up, dn
+
+
+def vortex(df: pd.DataFrame, n: int = 14):
+    vmp = (df["high"] - df["low"].shift(1)).abs().rolling(n, min_periods=n).sum()
+    vmm = (df["low"] - df["high"].shift(1)).abs().rolling(n, min_periods=n).sum()
+    tr = true_range(df).rolling(n, min_periods=n).sum()
+    return vmp / tr, vmm / tr
+
+
+def trix(s: pd.Series, n: int = 15) -> pd.Series:
+    e = ema(ema(ema(s, n), n), n)
+    return 100 * e.pct_change()
+
+
+def awesome(df: pd.DataFrame) -> pd.Series:
+    mid = (df["high"] + df["low"]) / 2
+    return sma(mid, 5) - sma(mid, 34)
+
+
+def alligator(df: pd.DataFrame):
+    mid = (df["high"] + df["low"]) / 2
+    smma = lambda n: mid.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    # les décalages vers l'avant de Bill Williams sont de simples shift() : pas de look-ahead
+    return smma(13).shift(8), smma(8).shift(5), smma(5).shift(3)  # mâchoire, dents, lèvres
+
+
+def fisher(df: pd.DataFrame, n: int = 10) -> pd.Series:
+    mid = ((df["high"] + df["low"]) / 2).to_numpy()
+    out = np.full(len(mid), np.nan)
+    v_prev, f_prev = 0.0, 0.0
+    for i in range(n - 1, len(mid)):
+        w = mid[i - n + 1: i + 1]
+        lo, hi = w.min(), w.max()
+        v = 0.33 * 2 * ((mid[i] - lo) / (hi - lo) - 0.5) + 0.67 * v_prev if hi > lo else v_prev
+        v = min(max(v, -0.999), 0.999)
+        f = 0.5 * np.log((1 + v) / (1 - v)) + 0.5 * f_prev
+        out[i], v_prev, f_prev = f, v, f
+    return pd.Series(out, index=df.index)
+
+
+def cmo(s: pd.Series, n: int = 14) -> pd.Series:
+    d = s.diff()
+    up = d.clip(lower=0).rolling(n, min_periods=n).sum()
+    dn = (-d.clip(upper=0)).rolling(n, min_periods=n).sum()
+    return 100 * (up - dn) / (up + dn).replace(0, np.nan)
+
+
+def ultimate(df: pd.DataFrame, a: int = 7, b: int = 14, c: int = 28) -> pd.Series:
+    pc = df["close"].shift(1)
+    bp = df["close"] - pd.concat([df["low"], pc], axis=1).min(axis=1)
+    tr = pd.concat([df["high"], pc], axis=1).max(axis=1) - pd.concat([df["low"], pc], axis=1).min(axis=1)
+    avg = lambda n: bp.rolling(n, min_periods=n).sum() / tr.rolling(n, min_periods=n).sum()
+    return 100 * (4 * avg(a) + 2 * avg(b) + avg(c)) / 7
+
+
+def mfi(df: pd.DataFrame, n: int = 14) -> pd.Series:
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    mf = tp * df["volume"]
+    pos = mf.where(tp > tp.shift(1), 0.0).rolling(n, min_periods=n).sum()
+    neg = mf.where(tp < tp.shift(1), 0.0).rolling(n, min_periods=n).sum()
+    return 100 - 100 / (1 + pos / neg.replace(0, np.nan))
+
+
+def obv(df: pd.DataFrame) -> pd.Series:
+    return (np.sign(df["close"].diff()).fillna(0) * df["volume"]).cumsum()
+
+
+def chandelier_dir(df: pd.DataFrame, n: int = 22, mult: float = 3.0) -> pd.Series:
+    a = atr(df, n)
+    long_stop = df["high"].rolling(n, min_periods=n).max() - mult * a
+    short_stop = df["low"].rolling(n, min_periods=n).min() + mult * a
+    c = df["close"].to_numpy()
+    ls, ss = long_stop.to_numpy(), short_stop.to_numpy()
+    d = np.zeros(len(c))
+    for i in range(1, len(c)):
+        if np.isnan(ls[i - 1]) or np.isnan(ss[i - 1]):
+            continue
+        if c[i] > ss[i - 1]:
+            d[i] = 1
+        elif c[i] < ls[i - 1]:
+            d[i] = -1
+        else:
+            d[i] = d[i - 1]
+    return pd.Series(d, index=df.index)
+
+
+def choppiness(df: pd.DataFrame, n: int = 14) -> pd.Series:
+    tr = true_range(df).rolling(n, min_periods=n).sum()
+    rng = df["high"].rolling(n, min_periods=n).max() - df["low"].rolling(n, min_periods=n).min()
+    return 100 * np.log10(tr / rng.replace(0, np.nan)) / np.log10(n)
+
+
+def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
+    ha_c = ((df["open"] + df["high"] + df["low"] + df["close"]) / 4).to_numpy()
+    o = df["open"].to_numpy()
+    ha_o = np.empty(len(df))
+    ha_o[0] = (o[0] + df["close"].iloc[0]) / 2
+    for i in range(1, len(df)):
+        ha_o[i] = (ha_o[i - 1] + ha_c[i - 1]) / 2
+    ha_h = np.maximum.reduce([df["high"].to_numpy(), ha_o, ha_c])
+    ha_l = np.minimum.reduce([df["low"].to_numpy(), ha_o, ha_c])
+    return pd.DataFrame({"open": ha_o, "high": ha_h, "low": ha_l, "close": ha_c}, index=df.index)
+
+
+def linreg_slope(s: pd.Series, n: int = 20) -> pd.Series:
+    x = np.arange(n) - (n - 1) / 2
+    den = (x ** 2).sum()
+    return s.rolling(n, min_periods=n).apply(lambda y: np.dot(x, y) / den, raw=True)
+
+
+def coppock(s: pd.Series, r1: int = 14, r2: int = 11, n: int = 10) -> pd.Series:
+    return wma(roc(s, r1) + roc(s, r2), n)
+
+
+def elder_ray(df: pd.DataFrame, n: int = 13):
+    e = ema(df["close"], n)
+    return df["high"] - e, df["low"] - e
+
+
+def pivots(df: pd.DataFrame, n: int = 3):
+    """Points pivots (swing high / swing low) CONFIRMÉS n bougies après, sans look-ahead.
+
+    Renvoie des tableaux numpy :
+      ph_conf[i] = valeur du swing high confirmé à la bougie i (nan sinon), idem pl_conf
+      ph_at[i]   = index de la bougie du pivot confirmé à i (-1 sinon)
+    """
+    h, l = df["high"].to_numpy(), df["low"].to_numpy()
+    N = len(df)
+    ph_conf = np.full(N, np.nan)
+    pl_conf = np.full(N, np.nan)
+    ph_at = np.full(N, -1)
+    pl_at = np.full(N, -1)
+    for i in range(2 * n, N):
+        p = i - n
+        wh, wl = h[p - n: i + 1], l[p - n: i + 1]
+        if h[p] == wh.max() and np.argmax(wh) == n:
+            ph_conf[i], ph_at[i] = h[p], p
+        if l[p] == wl.min() and np.argmin(wl) == n:
+            pl_conf[i], pl_at[i] = l[p], p
+    return ph_conf, pl_conf, ph_at, pl_at

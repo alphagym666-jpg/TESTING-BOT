@@ -103,17 +103,19 @@ class FamilyAgent(Agent):
 
     def propose(self, context):
         fam = families()
+        names = [name for f in self.families for name in fam.get(f, [])]
+        share = max(1, self.budget // max(1, len(names)))  # budget réparti équitablement entre stratégies
         out = []
-        for f in self.families:
-            for name in fam.get(f, []):
-                for p in expand_grid(REGISTRY[name].grid):
-                    if context["round"] == 1:
-                        risks = DEFAULT_RISK
-                    else:  # rounds suivants : on explore d'autres gestions de risque au hasard
-                        risks = [random_risk(self.rng) for _ in range(3)]
-                    for r in risks:
-                        out.append(cand(single(name, p), "none", r))
-        return self._cap(out)
+        for name in names:
+            mine = []
+            for p in expand_grid(REGISTRY[name].grid):
+                if context["round"] == 1:
+                    risks = DEFAULT_RISK
+                else:  # rounds suivants : on explore d'autres gestions de risque au hasard
+                    risks = [random_risk(self.rng) for _ in range(3)]
+                mine += [cand(single(name, p), "none", r) for r in risks]
+            out += self.rng.sample(mine, share) if len(mine) > share else mine
+        return out
 
 
 class TrendAgent(FamilyAgent):
@@ -121,11 +123,13 @@ class TrendAgent(FamilyAgent):
 
 
 class MeanReversionAgent(FamilyAgent):
-    number, name, role, families = 2, "Contrarien", "Retour à la moyenne", ("mean_reversion",)
+    number, name, role = 2, "Contrarien", "Retour à la moyenne, Stochastique, divergences"
+    families = ("mean_reversion", "stochastic", "divergence")
 
 
 class BreakoutAgent(FamilyAgent):
-    number, name, role, families = 3, "Spécialiste cassures", "Breakouts & sessions", ("breakout", "session")
+    number, name, role = 3, "Spécialiste cassures", "Breakouts, sessions, ICT, pivots"
+    families = ("breakout", "session")
 
 
 class MomentumAgent(FamilyAgent):
@@ -133,7 +137,8 @@ class MomentumAgent(FamilyAgent):
 
 
 class PriceActionAgent(FamilyAgent):
-    number, name, role, families = 5, "Price action", "Chandeliers & structure", ("price_action",)
+    number, name, role = 5, "Price action & SMC", "Order blocks, FVG, zones, retours, chandeliers"
+    families = ("price_action", "candlestick", "smc", "zones")
 
 
 class FilterAgent(Agent):
@@ -281,7 +286,15 @@ class GeneticAgent(Agent):
 class ValidationRules:
     min_trades_is: int = 30
     min_trades_oos: int = 20
-    min_oos_tstat: float = 1.64     # l'edge OOS doit être statistiquement significatif (~95 % unilatéral)
+    min_oos_tstat: float = 1.64     # plancher de significativité de l'edge OOS
+    shortlist: int = 20             # nb de candidats que chaque chef soumet à la validation OOS
+    family_alpha: float = 0.20      # risque global accepté de valider une stratégie « chanceuse »
+
+    def t_threshold(self, n_tested: int) -> float:
+        """Correction de Šidák : plus on valide de candidats, plus le seuil de t-stat monte."""
+        from statistics import NormalDist
+        p = 1 - (1 - self.family_alpha) ** (1 / max(1, n_tested))
+        return max(self.min_oos_tstat, NormalDist().inv_cdf(1 - p))
     min_oos_avg_r: float = 0.05     # espérance minimale hors-échantillon (en R)
     min_oos_pf: float = 1.10
     max_degradation: float = 0.75   # l'espérance OOS doit garder >= 25 % de l'espérance IS
@@ -351,9 +364,14 @@ class TeamLead:
         self.findings = {f.key: f for f in kept}
         self.log(f"Round {round_no} terminé : {len(self.findings)} candidats retenus pour la suite")
 
-    def validate(self) -> list[Finding]:
+    def shortlist(self) -> list[Finding]:
+        ranked = sorted(self.findings.values(), key=lambda f: f.score, reverse=True)
+        for f in ranked[self.rules.shortlist:]:
+            f.verdict = "non présenté à la validation"
+        return ranked[: self.rules.shortlist]
+
+    def validate(self, cands: list[Finding], t_min: float) -> list[Finding]:
         """Test hors-échantillon : c'est ici que le chef élimine les stratégies sur-optimisées."""
-        cands = list(self.findings.values())
         oos = {candidate_key(c): r for c, r in self.ev.evaluate([f.candidate for f in cands], "oos")}
         approved = []
         rej = {"trop peu de trades OOS": 0, "espérance OOS négative/faible": 0, "PF OOS < seuil": 0,
@@ -371,7 +389,7 @@ class TeamLead:
             elif o["profit_factor"] < R.min_oos_pf:
                 f.verdict = "rejeté : PF OOS < seuil"
                 rej["PF OOS < seuil"] += 1
-            elif o["sharpe"] < R.min_oos_tstat:
+            elif o["sharpe"] < t_min:
                 f.verdict = "rejeté : edge OOS non significatif"
                 rej["edge OOS non significatif"] += 1
             elif f.is_res["avg_r"] > 0 and o["avg_r"] < (1 - R.max_degradation) * f.is_res["avg_r"]:
@@ -381,7 +399,7 @@ class TeamLead:
                 f.verdict = "APPROUVÉ"
                 approved.append(f)
         details = ", ".join(f"{k}: {v}" for k, v in rej.items() if v)
-        self.log(f"Validation hors-échantillon : {len(approved)}/{len(cands)} approuvés"
+        self.log(f"Validation hors-échantillon (t-stat min {t_min:.2f}) : {len(approved)}/{len(cands)} approuvés"
                  + (f" (rejets -> {details})" if details else ""))
         return approved
 

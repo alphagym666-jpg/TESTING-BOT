@@ -18,7 +18,7 @@ from .strategies import REGISTRY, apply_filter
 @dataclass
 class LabConfig:
     rounds: int = 3
-    budget: int = 600          # tests max par agent et par round
+    budget: int = 1000         # tests max par agent et par round
     oos_fraction: float = 0.35  # dernière partie des données réservée à la validation
     risk_pct: float = 1.0
     workers: int | None = None
@@ -64,7 +64,15 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                 lead_a.log(f"Je transmets {len(top)} champions au Chef B. N°1 : {describe(top[0].candidate)}")
             lead_b.supervise_round({"round": rnd, "champions": top}, rnd)
 
-        approved = [(f, lead_b) for f in lead_a.validate()] + [(f, lead_a) for f in lead_b.validate()]
+        # candidats uniques présentés par les deux chefs (un doublon n'est validé qu'une fois)
+        short_a = lead_a.shortlist()
+        seen = {f.key for f in short_a}
+        short_b = [f for f in lead_b.shortlist() if f.key not in seen]
+        t_min = rules.t_threshold(len(short_a) + len(short_b))
+        journal.log("Plateforme", f"{len(short_a) + len(short_b)} candidats en validation -> seuil de significativité "
+                                  f"corrigé pour tests multiples : t >= {t_min:.2f}")
+        approved = [(f, lead_b) for f in lead_a.validate(short_a, t_min)] + \
+                   [(f, lead_a) for f in lead_b.validate(short_b, t_min)]
         everything = list({f.key: f for f in list(lead_a.findings.values()) + list(lead_b.findings.values())}.values())
         n_evals = ev.n_evals
 
