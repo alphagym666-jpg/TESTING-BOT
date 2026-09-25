@@ -143,10 +143,18 @@ class MT5Connector:
         df = df.set_index("time").rename(columns={"tick_volume": "volume"})
         return df[["open", "high", "low", "close", "volume", "spread"]]
 
-    def cost_in_price(self, symbol: str, commission_points: float = 0.0) -> float:
-        """Coût aller-retour approximatif (spread courant + commission) en unités de prix."""
+    def cost_in_price(self, symbol: str, commission_points: float = 0.0, commission_per_lot: float = 0.0) -> float:
+        """Coût aller-retour approximatif en unités de prix : spread courant + commission.
+
+        commission_per_lot : commission aller-retour en devise du compte pour 1 lot (ex. 5 $ chez FTMO sur le forex),
+        convertie en prix grâce à la valeur du tick du symbole.
+        """
         info = self.symbol_info(symbol)
-        return (info.spread + commission_points) * info.point
+        cost = (info.spread + commission_points) * info.point
+        tick_value, tick_size = info.trade_tick_value or 0.0, info.trade_tick_size or info.point
+        if commission_per_lot and tick_value > 0:
+            cost += commission_per_lot / tick_value * tick_size
+        return cost
 
     def diagnose(self, symbols=("EURUSD",), timeframe: str = "H1") -> bool:
         """Vérifie tout ce qu'il faut pour la recherche et le trading. Renvoie True si tout est OK."""

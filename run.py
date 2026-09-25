@@ -50,7 +50,7 @@ def cmd_lab(a):
         with MT5Connector() as conn:
             for sym in a.symbols:
                 df = conn.rates(sym, a.timeframe, a.bars or 20000)
-                cost = a.cost if a.cost is not None else conn.cost_in_price(sym, a.commission_points)
+                cost = a.cost if a.cost is not None else conn.cost_in_price(sym, a.commission_points, a.commission)
                 jobs.append((f"{sym}_{a.timeframe}", df, cost))
     for label, df, cost in jobs:
         board = run_lab(df, cost, cfg, label, out_root / label)
@@ -112,6 +112,8 @@ def main():
     lab.add_argument("--bars", type=int, default=None)
     lab.add_argument("--cost", type=float, default=None, help="coût aller-retour en prix (sinon spread MT5)")
     lab.add_argument("--commission-points", type=float, default=0.0)
+    lab.add_argument("--commission", type=float, default=0.0,
+                     help="commission aller-retour par lot en devise du compte (ex. 5 chez FTMO sur le forex)")
     lab.add_argument("--rounds", type=int, default=3)
     lab.add_argument("--budget", type=int, default=1000, help="tests max par agent et par round")
     lab.add_argument("--oos", type=float, default=0.35, help="part des données réservée à la validation")

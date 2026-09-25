@@ -10,6 +10,8 @@ set TF=H1
 rem Capital fictif de chaque strategie et perte max par trade (en %% du capital)
 set CAPITAL=100000
 set RISK=0.5
+rem Commission aller-retour par lot, en devise du compte (FTMO forex : environ 5)
+set COMMISSION=5
 
 :menu
 cls
@@ -17,7 +19,7 @@ echo ==============================================
 echo    Labo de strategies MT5 - 10 agents, 2 chefs
 echo ==============================================
 echo   Symboles : %SYMS%    Timeframe : %TF%
-echo   Capital fictif : %CAPITAL%    Perte max par trade : %RISK%%%
+echo   Capital fictif : %CAPITAL%    Perte max par trade : %RISK%%%    Commission/lot : %COMMISSION%
 echo.
 echo   1. Tester la connexion a MT5
 echo   2. Changer symboles / timeframe
@@ -54,11 +56,11 @@ set /p TF=Timeframe (M5, M15, M30, H1, H4, D1) :
 goto menu
 
 :lab
-python run.py lab --symbols %SYMS% --timeframe %TF% --bars 30000 --risk %RISK%
+python run.py lab --symbols %SYMS% --timeframe %TF% --bars 30000 --risk %RISK% --commission %COMMISSION%
 pause & goto menu
 
 :labxl
-python run.py lab --symbols %SYMS% --timeframe %TF% --bars 60000 --rounds 5 --budget 3000 --risk %RISK%
+python run.py lab --symbols %SYMS% --timeframe %TF% --bars 60000 --rounds 5 --budget 3000 --risk %RISK% --commission %COMMISSION%
 pause & goto menu
 
 :rapports
@@ -68,11 +70,11 @@ pause & goto menu
 
 :paper
 echo Paper trading en cours. Ouvrez le tableau de bord (option 8) dans une autre fenetre. Ctrl+C pour arreter.
-python run.py paper --symbols %SYMS% --timeframes %TF% --source tous --top 20 --capital %CAPITAL% --risk %RISK%
+python run.py paper --symbols %SYMS% --timeframes %TF% --source tous --top 20 --capital %CAPITAL% --risk %RISK% --commission %COMMISSION%
 pause & goto menu
 
 :paperok
-python run.py paper --symbols %SYMS% --timeframes %TF% --source approuvees --capital %CAPITAL% --risk %RISK%
+python run.py paper --symbols %SYMS% --timeframes %TF% --source approuvees --capital %CAPITAL% --risk %RISK% --commission %COMMISSION%
 pause & goto menu
 
 :dash
