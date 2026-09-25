@@ -86,6 +86,10 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                               f"et restent positives sur chaque moitié de l'OOS")
     journal.log("Plateforme", f"{n_evals} backtests uniques exécutés en {time.time() - t0:.0f}s")
 
+    # durée de la période hors-échantillon, pour ramener les gains « par mois » (comparable entre timeframes)
+    oos_days = max((df_oos.index[-1] - df_oos.index[0]).total_seconds() / 86400, 1e-9) \
+        if isinstance(df_oos.index, pd.DatetimeIndex) else float("nan")
+    months = oos_days / 30.44
     rows = []
     for f in everything:
         o = f.oos_res or {}
@@ -102,6 +106,9 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             "avgR_oos": round(o.get("avg_r", 0), 3), "pf_oos": round(o.get("profit_factor", 0), 2),
             "ret_oos_pct": round(o.get("return_pct", 0), 1), "dd_oos_pct": round(o.get("max_dd_pct", 0), 1),
             "sharpe_oos": round(o.get("sharpe", 0), 2),
+            "oos_jours": round(oos_days, 1),
+            "trades_mois": round((o.get("trades") or 0) / months, 1) if months > 0 else None,
+            "gain_mois_pct": round(o.get("return_pct", 0) / months, 2) if months > 0 else None,
             "cout_x2_avgR": round(st.get("double_cost_avg_r", float("nan")), 3) if st else None,
             "periodes_positives": st.get("segments_positive"),
             "candidate": json.dumps(f.candidate),

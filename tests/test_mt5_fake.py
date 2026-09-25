@@ -93,3 +93,35 @@ def test_real_account_refused(monkeypatch):
     with MT5Connector() as c, pytest.raises(RuntimeError, match="RÉEL"):
         LiveTrader(c, "EURUSD", "H1", {"signal": {}, "filter": "none",
                                         "risk": {"sl_mode": "atr", "sl_value": 1.5, "rr": 2.0}}, execute=True)
+
+
+def test_lab_all_timeframes_with_alias_and_comparison(monkeypatch, tmp_path):
+    """NASDAQ -> US100.cash, plusieurs timeframes, puis page de comparaison et paper 'meilleures'."""
+    m = make_fake(max_bars=3000)
+    syms = {n: SimpleNamespace(name=n, visible=True, spread=12, point=1e-5, digits=5, filling_mode=2,
+                               trade_tick_value=1.0, trade_tick_size=1e-5, volume_step=0.01, volume_min=0.01,
+                               volume_max=50) for n in ("EURUSD", "US100.cash")}
+    m.symbol_info = lambda s: syms.get(s)
+    m.symbols_get = lambda pattern="*": [v for k, v in syms.items() if pattern.strip("*").upper() in k.upper()]
+    m.TIMEFRAME_H4 = 16388
+    monkeypatch.setitem(sys.modules, "MetaTrader5", m)
+    monkeypatch.chdir(tmp_path)
+    import run
+    monkeypatch.setattr(sys, "argv", ["run.py", "lab", "--symbols", "NASDAQ", "EURUSD", "--timeframes", "H1", "H4",
+                                      "--rounds", "1", "--budget", "40", "--workers", "1", "--seed", "1",
+                                      "--commission", "EURUSD=5", "NASDAQ=0"])
+    run.main()
+    for label in ("NASDAQ_H1", "NASDAQ_H4", "EURUSD_H1", "EURUSD_H4"):
+        assert (tmp_path / "results" / label / "classement.csv").exists()
+    html_ = (tmp_path / "results" / "comparaison.html").read_text(encoding="utf-8")
+    assert "NASDAQ" in html_ and "H4" in html_
+    comp = __import__("pandas").read_csv(tmp_path / "results" / "comparaison.csv")
+    assert {"gain_mois_pct", "gain_mois_usd", "trades_mois"} <= set(comp.columns)
+
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, load_best_slots
+    slots = load_best_slots(tmp_path / "results", None, top=5)
+    assert slots
+    with MT5Connector() as c:
+        eng = PaperEngine(c, slots, tmp_path / "paper", 0.5, {"EURUSD": 5.0, "NASDAQ": 0.0})
+        assert eng.commission("EURUSD") == 5.0 and eng.commission("US100.cash") == 0.0

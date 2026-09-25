@@ -30,6 +30,27 @@ from mt5lab.lab import LabConfig, run_lab
 from mt5lab.strategies import REGISTRY
 
 
+def parse_commission(values) -> dict:
+    """"5" -> 5 pour tous ; "EURUSD=5 XAUUSD=5 NASDAQ=0" -> par symbole ("*" = défaut)."""
+    out = {"*": 0.0}
+    for v in values or []:
+        if "=" in v:
+            k, x = v.split("=", 1)
+            out[k.strip().upper()] = float(x)
+        else:
+            out["*"] = float(v)
+    return out
+
+
+def commission_for(table: dict, symbol: str) -> float:
+    return table.get(symbol.upper(), table["*"])
+
+
+def cmd_compare(a):
+    from mt5lab.compare import build_comparison
+    build_comparison(Path(a.out), a.capital)
+
+
 def cmd_lab(a):
     cfg = LabConfig(rounds=a.rounds, budget=a.budget, oos_fraction=a.oos, risk_pct=a.risk,
                     workers=a.workers, seed=a.seed)
@@ -47,12 +68,23 @@ def cmd_lab(a):
             jobs.append((Path(p).stem, df, a.cost or 0.0))
     else:
         from mt5lab.data import MT5Connector
+        comm = parse_commission(a.commission)
         with MT5Connector() as conn:
             for sym in a.symbols:
-                df = conn.rates(sym, a.timeframe, a.bars or 20000)
-                cost = a.cost if a.cost is not None else conn.cost_in_price(sym, a.commission_points, a.commission)
-                jobs.append((f"{sym}_{a.timeframe}", df, cost))
-    for label, df, cost in jobs:
+                for tf in a.timeframes:
+                    try:
+                        df = conn.rates(sym, tf, a.bars or 30000)
+                    except Exception as exc:
+                        print(f"[lab] {sym} {tf} ignoré : {exc}")
+                        continue
+                    if len(df) < 1000:
+                        print(f"[lab] {sym} {tf} ignoré : seulement {len(df)} bougies (minimum 1000)")
+                        continue
+                    cost = a.cost if a.cost is not None else \
+                        conn.cost_in_price(sym, a.commission_points, commission_for(comm, sym))
+                    jobs.append((f"{sym}_{tf}", df, cost))
+    for n, (label, df, cost) in enumerate(jobs, 1):
+        print(f"\n########## [{n}/{len(jobs)}] {label} ##########")
         board = run_lab(df, cost, cfg, label, out_root / label)
         ok = board[board["verdict"] == "APPROUVÉ"] if len(board) else board
         print(f"\n===== {label} : {len(ok)} stratégies approuvées =====")
@@ -60,6 +92,9 @@ def cmd_lab(a):
             print(ok[["strategie", "risque", "trades_oos", "wr_oos", "avgR_oos", "pf_oos", "ret_oos_pct",
                       "dd_oos_pct"]].head(15).to_string(index=False))
         print(f"Rapport : {out_root / label / 'rapport.html'}")
+    if len(jobs) > 1 or not (a.demo or a.csv):
+        from mt5lab.compare import build_comparison
+        build_comparison(out_root, a.capital)
 
 
 def cmd_live(a):
@@ -76,13 +111,18 @@ def cmd_paper(a):
     from mt5lab.data import MT5Connector
     from mt5lab.paper import PaperEngine, load_slots, write_dashboard
 
-    slots = []
-    for tf in a.timeframes:
-        slots += load_slots(Path(a.results), a.symbols, tf, a.source, a.top, a.capital)
+    from mt5lab.paper import load_best_slots
+    if a.source == "meilleures":
+        slots = load_best_slots(Path(a.results), a.symbols, a.top, a.capital)
+    else:
+        slots = []
+        for tf in a.timeframes:
+            slots += load_slots(Path(a.results), a.symbols, tf, a.source, a.top, a.capital)
     if not slots:
         raise SystemExit("Aucune stratégie à suivre : lancez d'abord la recherche (python run.py lab ...).")
     with MT5Connector() as conn:
-        eng = PaperEngine(conn, slots, Path(a.out), a.risk, a.commission)
+        comm = parse_commission(a.commission)
+        eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots})
         write_dashboard(eng)
         eng.run(a.poll)
 
@@ -108,12 +148,14 @@ def main():
     lab.add_argument("--demo", action="store_true", help="données synthétiques (sans MT5)")
     lab.add_argument("--csv", nargs="+", help="fichier(s) CSV OHLC")
     lab.add_argument("--symbols", nargs="+", default=["EURUSD"])
-    lab.add_argument("--timeframe", default="H1")
+    lab.add_argument("--timeframes", "--timeframe", nargs="+", default=["H1"],
+                     help="un ou plusieurs : M1 M5 M15 M30 H1 H4 D1 (ou ALL)")
+    lab.add_argument("--capital", type=float, default=100_000, help="capital pour exprimer les gains en $/mois")
     lab.add_argument("--bars", type=int, default=None)
     lab.add_argument("--cost", type=float, default=None, help="coût aller-retour en prix (sinon spread MT5)")
     lab.add_argument("--commission-points", type=float, default=0.0)
-    lab.add_argument("--commission", type=float, default=0.0,
-                     help="commission aller-retour par lot en devise du compte (ex. 5 chez FTMO sur le forex)")
+    lab.add_argument("--commission", nargs="+", default=None,
+                     help="commission aller-retour par lot : '5' pour tous, ou 'EURUSD=5 XAUUSD=5 NASDAQ=0'")
     lab.add_argument("--rounds", type=int, default=3)
     lab.add_argument("--budget", type=int, default=1000, help="tests max par agent et par round")
     lab.add_argument("--oos", type=float, default=0.35, help="part des données réservée à la validation")
@@ -136,18 +178,25 @@ def main():
 
     paper = sub.add_parser("paper", help="trades FICTIFS sur les prix réels de MT5 (aucun ordre envoyé)")
     paper.add_argument("--symbols", nargs="+", default=["EURUSD"])
-    paper.add_argument("--timeframes", nargs="+", default=["H1"])
-    paper.add_argument("--source", choices=["tous", "approuvees"], default="tous",
-                       help="tous = les meilleurs finalistes de la recherche ; approuvees = seulement les validées")
+    paper.add_argument("--timeframes", nargs="+", default=["H1"], help="un ou plusieurs timeframes (ou ALL)")
+    paper.add_argument("--source", choices=["meilleures", "tous", "approuvees"], default="tous",
+                       help="meilleures = top N global de la comparaison (tous marchés et timeframes) ; "
+                            "tous = top N finalistes par marché/timeframe ; approuvees = seulement les validées")
     paper.add_argument("--top", type=int, default=20, help="nb max de stratégies suivies par symbole/timeframe")
     paper.add_argument("--capital", type=float, default=100_000, help="capital virtuel de chaque stratégie")
     paper.add_argument("--risk", type=float, default=0.5,
                        help="perte max par trade en %% du capital (0.5 %% de 100 000 = 500 max au stop)")
-    paper.add_argument("--commission", type=float, default=0.0, help="commission aller-retour par lot (devise du compte)")
+    paper.add_argument("--commission", nargs="+", default=None,
+                       help="commission aller-retour par lot : '5' pour tous, ou 'EURUSD=5 XAUUSD=5 NASDAQ=0'")
     paper.add_argument("--poll", type=int, default=5, help="secondes entre deux vérifications")
     paper.add_argument("--results", default="results")
     paper.add_argument("--out", default="results/paper")
     paper.set_defaults(func=cmd_paper)
+
+    comp = sub.add_parser("compare", help="comparer tous les marchés × timeframes déjà testés")
+    comp.add_argument("--out", default="results")
+    comp.add_argument("--capital", type=float, default=100_000)
+    comp.set_defaults(func=cmd_compare)
 
     check = sub.add_parser("check", help="tester la connexion à MT5")
     check.add_argument("--symbols", nargs="+", default=["EURUSD"])
@@ -156,6 +205,10 @@ def main():
 
     sub.add_parser("strategies", help="lister le catalogue").set_defaults(func=cmd_list)
     a = p.parse_args()
+    from mt5lab.data import TIMEFRAMES
+    for attr in ("timeframes",):
+        if getattr(a, attr, None) and [t.upper() for t in getattr(a, attr)] == ["ALL"]:
+            setattr(a, attr, [t for t in TIMEFRAMES if t != "W1"])
     a.func(a)
 
 

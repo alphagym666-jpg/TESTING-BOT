@@ -138,6 +138,25 @@ Résultats dans `results/<SYMBOLE>_<TF>/` :
 
 Plus de rounds (`--rounds`) et de budget (`--budget`) = recherche plus large (et plus longue).
 
+## Tous les marchés × tous les timeframes
+
+```bash
+# NASDAQ, or et EURUSD sur M1, M5, M15, M30, H1, H4 et D1, avec les commissions par symbole
+python run.py lab --symbols NASDAQ XAUUSD EURUSD --timeframes ALL --commission EURUSD=5 XAUUSD=5 NASDAQ=0
+```
+
+- `NASDAQ` et `GOLD` sont reconnus automatiquement sous le nom de votre courtier (FTMO : `US100.cash`, `XAUUSD`…).
+- Chaque couple marché × timeframe passe par les 10 agents et les 2 chefs. Comptez 2 à 3 minutes par couple
+  sur un PC 4 cœurs, soit environ 1 h pour 3 marchés × 7 timeframes.
+- À la fin, `results/comparaison.html` répond à « quelle stratégie rapporte le plus ? » :
+  - une **carte marché × timeframe** avec la meilleure stratégie validée de chaque case ;
+  - le **classement par gain mensuel** (% et $ sur le capital), calculé sur la période hors-échantillon et ramené
+    par mois, pour comparer équitablement M1 et D1 ;
+  - les stratégies qui marchent sur **plusieurs marchés / timeframes** (les plus robustes) ;
+  - les stratégies prometteuses mais non validées.
+- `python run.py compare` régénère la comparaison à partir des résultats déjà calculés.
+- `python run.py paper --source meilleures --top 30` suit en paper trading les 30 meilleures, tous marchés et timeframes confondus.
+
 ## Paper trading : trades fictifs sur les prix réels
 
 La plateforme **ne passe aucun ordre dans MetaTrader**. Elle prend les trades **fictivement**, en suivant

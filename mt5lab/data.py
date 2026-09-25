@@ -9,6 +9,19 @@ import pandas as pd
 
 TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]
 
+# noms courants -> noms utilisés par les courtiers (FTMO : US100.cash, XAUUSD...)
+SYMBOL_ALIASES = {
+    "NASDAQ": ["US100", "USTEC", "NAS100", "NDX100", "NQ100", "USTECH", "NSDQ"],
+    "NAS100": ["US100", "USTEC", "NDX100"],
+    "US100": ["USTEC", "NAS100", "NDX100"],
+    "GOLD": ["XAUUSD", "GOLD"],
+    "OR": ["XAUUSD", "GOLD"],
+    "XAUUSD": ["GOLD"],
+    "SP500": ["US500", "SPX500", "US500.cash"],
+    "DOW": ["US30", "DJ30", "WS30"],
+    "DAX": ["GER40", "DE40", "GER30"],
+}
+
 
 def load_env(path: str | Path = ".env") -> None:
     """Charge un fichier .env (CLE=valeur) dans les variables d'environnement, sans écraser l'existant."""
@@ -96,10 +109,17 @@ class MT5Connector:
             return self._resolved[symbol]
         name = symbol
         if self.mt5.symbol_info(symbol) is None:
-            cands = [s for s in self.symbols(f"*{symbol}*") if s.upper().startswith(symbol.upper())]
-            if not cands:
+            name = None
+            for base in [symbol] + SYMBOL_ALIASES.get(symbol.upper(), []):
+                if self.mt5.symbol_info(base) is not None:
+                    name = base
+                    break
+                cands = [s for s in self.symbols(f"*{base}*") if s.upper().startswith(base.upper())]
+                if cands:
+                    name = min(cands, key=len)
+                    break
+            if name is None:
                 raise RuntimeError(f"Symbole introuvable chez ce courtier : {symbol}")
-            name = min(cands, key=len)
             print(f"[MT5] {symbol} -> {name}")
         self._resolved[symbol] = name
         return name

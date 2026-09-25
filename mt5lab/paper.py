@@ -80,6 +80,28 @@ def slot_id(symbol, timeframe, candidate) -> str:
     return f"{symbol}_{timeframe}_{h}"
 
 
+def load_best_slots(results_dir: Path, symbols=None, top=30, capital=100_000.0) -> list[Slot]:
+    """Top N global de la comparaison (tous marchés et timeframes) : validées d'abord, puis meilleur gain/mois."""
+    path = Path(results_dir) / "comparaison.csv"
+    if not path.exists():
+        from .compare import build_comparison
+        build_comparison(Path(results_dir), capital)
+    if not path.exists():
+        return []
+    board = pd.read_csv(path)
+    if symbols:
+        board = board[board["symbole"].str.upper().isin([x.upper() for x in symbols])]
+    board = board[board["trades_oos"].notna()].head(top)
+    slots = []
+    for _, row in board.iterrows():
+        cand = json.loads(row["candidate"])
+        slots.append(Slot(slot_id(row["symbole"], row["timeframe"], cand), row["symbole"], row["timeframe"], cand,
+                          str(row["verdict"]), _num(row.get("avgR_oos")), _num(row.get("wr_oos")),
+                          capital, capital, capital))
+    print(f"[paper] {len(slots)} meilleures stratégies (tous marchés et timeframes) suivies")
+    return slots
+
+
 def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, capital=100_000.0) -> list[Slot]:
     """Charge les stratégies à suivre depuis les classements produits par la recherche."""
     slots = []
@@ -110,13 +132,18 @@ def _num(v):
 
 class PaperEngine:
     def __init__(self, conn, slots: list[Slot], out_dir: Path, risk_pct: float = 1.0,
-                 commission_per_lot: float = 0.0, bars: int = 1500):
+                 commission_per_lot: float | dict = 0.0, bars: int = 1500):
         self.c = conn
         self.mt5 = conn.mt5
         self.out = Path(out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
         self.risk_pct = risk_pct
-        self.commission = commission_per_lot
+        # commission aller-retour par lot : un nombre pour tous, ou {symbole: montant}
+        if isinstance(commission_per_lot, dict):
+            self._comm = {conn.resolve(k): float(v) for k, v in commission_per_lot.items()}
+            self._comm_default = 0.0
+        else:
+            self._comm, self._comm_default = {}, float(commission_per_lot)
         self.bars = bars
         self.slots = {s.id: s for s in slots}
         for s in self.slots.values():
@@ -166,10 +193,13 @@ class PaperEngine:
         tick_size = info.trade_tick_size or info.point
         return price_move / tick_size * (info.trade_tick_value or 0.0) * lots
 
+    def commission(self, symbol: str) -> float:
+        return self._comm.get(symbol, self._comm_default)
+
     def _lots(self, symbol: str, budget: float, dist: float) -> float:
         """Plus grand lot dont la perte au stop (+ commission) reste <= budget. 0 si même le lot minimum dépasse."""
         info = self.c.symbol_info(symbol)
-        per_lot = self._money(symbol, dist, 1.0) + self.commission
+        per_lot = self._money(symbol, dist, 1.0) + self.commission(symbol)
         if per_lot <= 0:
             return 0.0
         step = info.volume_step or 0.01
@@ -204,7 +234,7 @@ class PaperEngine:
     def _close(self, s: Slot, price: float, when: str, reason: str):
         p = s.position
         gross = self._money(s.symbol, (price - p.entry) * p.side, p.lots)
-        pnl = gross - self.commission * p.lots
+        pnl = gross - self.commission(s.symbol) * p.lots
         r = pnl / p.risk_money if p.risk_money > 0 else 0.0
         s.balance += pnl
         s.pnl += pnl

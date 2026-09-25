@@ -5,29 +5,38 @@ if not exist .venv\Scripts\activate.bat (
   pause & exit /b 1
 )
 call .venv\Scripts\activate.bat
-set SYMS=EURUSD
-set TF=H1
+
+rem ===================== REGLAGES (modifiables avec le Bloc-notes) =====================
+rem Marches : NASDAQ et GOLD sont reconnus automatiquement (US100.cash, XAUUSD...)
+set SYMS=NASDAQ XAUUSD EURUSD
+rem Timeframes : ALL = M1 M5 M15 M30 H1 H4 D1
+set TFS=ALL
 rem Capital fictif de chaque strategie et perte max par trade (en %% du capital)
 set CAPITAL=100000
 set RISK=0.5
-rem Commission aller-retour par lot, en devise du compte (FTMO forex : environ 5)
-set COMMISSION=5
+rem Commission aller-retour par lot, par symbole (verifiez les montants de votre compte FTMO)
+set COMMISSION=EURUSD=5 XAUUSD=5 NASDAQ=0
+rem Nombre de bougies par marche et timeframe
+set BARS=30000
+rem =====================================================================================
 
 :menu
 cls
 echo ==============================================
 echo    Labo de strategies MT5 - 10 agents, 2 chefs
 echo ==============================================
-echo   Symboles : %SYMS%    Timeframe : %TF%
-echo   Capital fictif : %CAPITAL%    Perte max par trade : %RISK%%%    Commission/lot : %COMMISSION%
+echo   Marches : %SYMS%
+echo   Timeframes : %TFS%
+echo   Capital fictif : %CAPITAL%    Perte max par trade : %RISK%%%
+echo   Commission/lot : %COMMISSION%
 echo.
 echo   1. Tester la connexion a MT5
-echo   2. Changer symboles / timeframe
-echo   3. Lancer la recherche (10 agents)
-echo   4. Lancer une recherche longue (plus de tests)
-echo   5. Ouvrir les rapports
-echo   6. PAPER TRADING : trades fictifs sur prix reels (top 20 par symbole)
-echo   7. PAPER TRADING : seulement les strategies approuvees
+echo   2. Changer marches / timeframes
+echo   3. RECHERCHE COMPLETE : tous les marches x tous les timeframes
+echo   4. Recherche longue (encore plus de tests, plusieurs heures)
+echo   5. Ouvrir la COMPARAISON (quelle strategie rapporte le plus)
+echo   6. PAPER TRADING : les 30 meilleures strategies (tous marches et timeframes)
+echo   7. PAPER TRADING : seulement les strategies validees
 echo   8. Ouvrir le tableau de bord du paper trading
 echo   9. Quitter
 echo.
@@ -39,7 +48,7 @@ if "%CHOIX%"=="1" goto check
 if "%CHOIX%"=="2" goto params
 if "%CHOIX%"=="3" goto lab
 if "%CHOIX%"=="4" goto labxl
-if "%CHOIX%"=="5" goto rapports
+if "%CHOIX%"=="5" goto compare
 if "%CHOIX%"=="6" goto paper
 if "%CHOIX%"=="7" goto paperok
 if "%CHOIX%"=="8" goto dash
@@ -47,34 +56,37 @@ if "%CHOIX%"=="9" exit /b 0
 goto menu
 
 :check
-python run.py check --symbols %SYMS% --timeframe %TF%
+python run.py check --symbols %SYMS%
 pause & goto menu
 
 :params
-set /p SYMS=Symboles separes par des espaces (ex: EURUSD XAUUSD US30) : 
-set /p TF=Timeframe (M5, M15, M30, H1, H4, D1) : 
+set /p SYMS=Marches separes par des espaces (ex: NASDAQ XAUUSD EURUSD) : 
+set /p TFS=Timeframes (ex: M15 H1 H4, ou ALL pour tous) : 
 goto menu
 
 :lab
-python run.py lab --symbols %SYMS% --timeframe %TF% --bars 30000 --risk %RISK% --commission %COMMISSION%
+echo Recherche en cours : environ 2 a 3 minutes par marche et par timeframe. Laissez MT5 ouvert.
+python run.py lab --symbols %SYMS% --timeframes %TFS% --bars %BARS% --risk %RISK% --capital %CAPITAL% --commission %COMMISSION%
+if exist "results\comparaison.html" start "" "results\comparaison.html"
 pause & goto menu
 
 :labxl
-python run.py lab --symbols %SYMS% --timeframe %TF% --bars 60000 --rounds 5 --budget 3000 --risk %RISK% --commission %COMMISSION%
+python run.py lab --symbols %SYMS% --timeframes %TFS% --bars 60000 --rounds 5 --budget 3000 --risk %RISK% --capital %CAPITAL% --commission %COMMISSION%
+if exist "results\comparaison.html" start "" "results\comparaison.html"
 pause & goto menu
 
-:rapports
-for %%S in (%SYMS%) do if exist "results\%%S_%TF%\rapport.html" start "" "results\%%S_%TF%\rapport.html"
-if not exist results echo Aucun rapport : lancez d'abord une recherche.
+:compare
+python run.py compare --capital %CAPITAL%
+if exist "results\comparaison.html" (start "" "results\comparaison.html") else (echo Lancez d'abord une recherche.)
 pause & goto menu
 
 :paper
-echo Paper trading en cours. Ouvrez le tableau de bord (option 8) dans une autre fenetre. Ctrl+C pour arreter.
-python run.py paper --symbols %SYMS% --timeframes %TF% --source tous --top 20 --capital %CAPITAL% --risk %RISK% --commission %COMMISSION%
+echo Paper trading en cours. Ouvrez le tableau de bord avec l'option 8 dans une autre fenetre. Ctrl+C pour arreter.
+python run.py paper --symbols %SYMS% --source meilleures --top 30 --capital %CAPITAL% --risk %RISK% --commission %COMMISSION%
 pause & goto menu
 
 :paperok
-python run.py paper --symbols %SYMS% --timeframes %TF% --source approuvees --capital %CAPITAL% --risk %RISK% --commission %COMMISSION%
+python run.py paper --symbols %SYMS% --timeframes %TFS% --source approuvees --capital %CAPITAL% --risk %RISK% --commission %COMMISSION%
 pause & goto menu
 
 :dash
