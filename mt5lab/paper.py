@@ -5,7 +5,8 @@
 - SL et TP sont surveillés TICK PAR TICK (historique des ticks MT5 depuis le dernier passage) :
   le SL est rempli au prix du tick qui le touche (glissement réel inclus), le TP à son niveau.
 - Taille de lot, valeur du pip et contraintes de lot (min / pas) = celles de votre courtier.
-- Chaque stratégie a son propre compte virtuel ; tout est sauvegardé et reprend après un redémarrage.
+- Chaque stratégie a son propre compte virtuel, suivi comme un challenge FTMO ;
+  tout est sauvegardé et reprend après un redémarrage.
 - Aucune fonction d'envoi d'ordre (order_send) n'est appelée dans ce module.
 """
 from __future__ import annotations
@@ -16,7 +17,8 @@ import html
 import json
 import math
 import time
-from dataclasses import asdict, dataclass, field
+from collections import deque
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,13 +26,14 @@ import numpy as np
 import pandas as pd
 
 from . import indicators as ind
-from .backtest import RiskConfig, _stop_distance
-from .evaluator import compute_signal, describe
-from .strategies import apply_filter
+from .backtest import RR_LEVELS, RiskConfig, _stop_distance
+from .evaluator import compute_signal, describe, signal_key
+from .ftmo import FtmoRules
+from .strategies import REGISTRY, apply_filter, expand_grid
 
 TRADE_FIELDS = ["strategie_id", "symbole", "timeframe", "strategie", "risque", "sens", "lots", "ouverture",
-                "prix_entree", "sl_initial", "tp", "fermeture", "prix_sortie", "raison", "r", "pnl", "solde",
-                "spread_entree_pts"]
+                "prix_entree", "sl_initial", "sl_final", "tp", "fermeture", "prix_sortie", "raison", "duree_min",
+                "pips", "r", "pnl", "solde", "spread_entree_pts"]
 
 
 @dataclass
@@ -48,10 +51,14 @@ class Position:
     be_done: bool = False
     opened_msc: int = 0
 
+    @property
+    def sl_initial(self) -> float:
+        return self.entry - self.side * self.risk
+
 
 @dataclass
 class Slot:
-    """Une stratégie suivie en paper trading, avec son compte virtuel."""
+    """Une stratégie suivie en paper trading, avec son compte virtuel (suivi comme un challenge FTMO)."""
     id: str
     symbol: str
     timeframe: str
@@ -69,15 +76,40 @@ class Slot:
     pnl: float = 0.0
     position: Position | None = None
     history_r: list = field(default_factory=list)
+    # suivi du challenge FTMO de ce compte fictif
+    ftmo_status: str = "en cours"
+    ftmo_when: str = ""
+    day: str = ""
+    day_start: float = 100_000.0
+    worst_day_pct: float = 0.0
+    trade_days: list = field(default_factory=list)
 
     @property
     def cfg(self) -> RiskConfig:
         return RiskConfig(**self.candidate["risk"])
 
 
+SAVED = [f.name for f in fields(Slot) if f.name not in ("id", "symbol", "timeframe", "candidate", "verdict",
+                                                          "expected_avg_r", "expected_wr", "capital", "position")]
+
+
 def slot_id(symbol, timeframe, candidate) -> str:
     h = hashlib.sha1(json.dumps(candidate, sort_keys=True).encode()).hexdigest()[:8]
     return f"{symbol}_{timeframe}_{h}"
+
+
+def _num(v):
+    try:
+        v = float(v)
+        return None if math.isnan(v) else v
+    except (TypeError, ValueError):
+        return None
+
+
+def _slot_from_row(sym, tf, row, capital) -> Slot:
+    cand = json.loads(row["candidate"])
+    return Slot(slot_id(sym, tf, cand), sym, tf, cand, str(row["verdict"]), _num(row.get("avgR_oos")),
+                _num(row.get("wr_oos")), capital, capital, capital, day_start=capital)
 
 
 def load_best_slots(results_dir: Path, symbols=None, top=30, capital=100_000.0) -> list[Slot]:
@@ -92,13 +124,19 @@ def load_best_slots(results_dir: Path, symbols=None, top=30, capital=100_000.0) 
     if symbols:
         board = board[board["symbole"].str.upper().isin([x.upper() for x in symbols])]
     board = board[board["trades_oos"].notna()].head(top)
-    slots = []
-    for _, row in board.iterrows():
-        cand = json.loads(row["candidate"])
-        slots.append(Slot(slot_id(row["symbole"], row["timeframe"], cand), row["symbole"], row["timeframe"], cand,
-                          str(row["verdict"]), _num(row.get("avgR_oos")), _num(row.get("wr_oos")),
-                          capital, capital, capital))
+    slots = [_slot_from_row(r["symbole"], r["timeframe"], r, capital) for _, r in board.iterrows()]
     print(f"[paper] {len(slots)} meilleures stratégies (tous marchés et timeframes) suivies")
+    return slots
+
+
+def load_portfolio_slots(results_dir: Path, capital=100_000.0) -> list[Slot]:
+    """Les stratégies choisies ensemble par le Chef FTMO (results/portefeuille_ftmo.csv)."""
+    path = Path(results_dir) / "portefeuille_ftmo.csv"
+    if not path.exists():
+        return []
+    board = pd.read_csv(path)
+    slots = [_slot_from_row(r["symbole"], r["timeframe"], r, capital) for _, r in board.iterrows()]
+    print(f"[paper] portefeuille du Chef FTMO : {len(slots)} stratégies")
     return slots
 
 
@@ -106,7 +144,7 @@ def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, cap
     """Charge les stratégies à suivre depuis les classements produits par la recherche."""
     slots = []
     for sym in symbols:
-        path = results_dir / f"{sym}_{timeframe}" / "classement.csv"
+        path = Path(results_dir) / f"{sym}_{timeframe}" / "classement.csv"
         if not path.exists():
             print(f"[paper] {path} introuvable : lancez d'abord la recherche pour {sym} {timeframe}")
             continue
@@ -114,43 +152,84 @@ def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, cap
         if source == "approuvees":
             board = board[board["verdict"] == "APPROUVÉ"]
         board = board.head(top)
-        for _, row in board.iterrows():
-            cand = json.loads(row["candidate"])
-            slots.append(Slot(slot_id(sym, timeframe, cand), sym, timeframe, cand, str(row["verdict"]),
-                              _num(row.get("avgR_oos")), _num(row.get("wr_oos")), capital, capital, capital))
+        slots += [_slot_from_row(sym, timeframe, r, capital) for _, r in board.iterrows()]
         print(f"[paper] {sym} {timeframe} : {min(len(board), top)} stratégies suivies")
     return slots
 
 
-def _num(v):
-    try:
-        v = float(v)
-        return None if math.isnan(v) else v
-    except (TypeError, ValueError):
-        return None
+def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_000.0,
+                           rr_levels=tuple(RR_LEVELS), sl_atr=1.5) -> list[Slot]:
+    """TOUTES les stratégies du catalogue + les inventions des agents + les stratégies validées, × TOUS les R:R.
+
+    Pour chaque stratégie on prend les meilleurs réglages trouvés par la recherche sur ce marché/timeframe,
+    sinon un réglage médian de sa grille. Stop à sl_atr ATR, sans gestion (pour comparer les R:R à armes égales).
+    """
+    slots: dict[str, Slot] = {}
+    for sym in symbols:
+        for tf in timeframes:
+            path = Path(results_dir) / f"{sym}_{tf}" / "classement.csv"
+            board = pd.read_csv(path) if path.exists() else pd.DataFrame()
+            signals: dict[str, tuple] = {}
+            # 1) chaque stratégie du catalogue : meilleurs réglages trouvés, sinon réglage médian
+            for name, sd in REGISTRY.items():
+                if name.startswith("_"):
+                    continue
+                grid = expand_grid(sd.grid)
+                signals[name] = ({"type": "single", "name": name, "params": grid[len(grid) // 2]}, "none", "")
+            if len(board):
+                for _, r in board.sort_values("score_is", ascending=False).iterrows():
+                    c = json.loads(r["candidate"])
+                    sig = c["signal"]
+                    if sig["type"] == "single" and sig["name"] in signals and not signals[sig["name"]][2]:
+                        signals[sig["name"]] = (sig, "none", "réglages de la recherche")
+                    elif sig["type"] == "rule":  # 2) inventions des agents
+                        signals[sig.get("name", signal_key(sig))] = (sig, "none", "invention")
+                    if r["verdict"] == "APPROUVÉ":  # 3) stratégies validées, telles quelles (filtre compris)
+                        signals["validée " + signal_key(sig) + c["filter"]] = (sig, c["filter"], "validée")
+            for sig, flt, origin in signals.values():
+                for rr in rr_levels:
+                    cand = {"signal": sig, "filter": flt,
+                            "risk": asdict(RiskConfig("atr", sl_atr, rr, "none", 200, "both"))}
+                    s = Slot(slot_id(sym, tf, cand), sym, tf, cand, origin or "catalogue", capital=capital,
+                             balance=capital, peak=capital, day_start=capital)
+                    slots[s.id] = s
+    out = list(slots.values())
+    print(f"[paper] EXPLORATION : {len(out)} comptes fictifs "
+          f"({len(symbols)} marchés × {len(timeframes)} timeframes × stratégies × {len(rr_levels)} R:R)")
+    return out
 
 
 class PaperEngine:
     def __init__(self, conn, slots: list[Slot], out_dir: Path, risk_pct: float = 1.0,
-                 commission_per_lot: float | dict = 0.0, bars: int = 1500):
+                 commission_per_lot: float | dict = 0.0, bars: int = 1000, ftmo: FtmoRules | None = None,
+                 quiet: bool | None = None, save_every: float = 20.0):
         self.c = conn
         self.mt5 = conn.mt5
         self.out = Path(out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
         self.risk_pct = risk_pct
+        self.bars = bars
+        self.ftmo = ftmo or FtmoRules()
+        self.quiet = len(slots) > 60 if quiet is None else quiet
+        self.save_every = save_every
+        self._last_save = 0.0
+        self._dirty = False
+        self.slots = {s.id: s for s in slots}
+        for s in self.slots.values():
+            s.symbol = conn.resolve(s.symbol)
+        self.by_bar: dict[tuple, list[Slot]] = {}
+        for s in self.slots.values():
+            self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
         # commission aller-retour par lot : un nombre pour tous, ou {symbole: montant}
         if isinstance(commission_per_lot, dict):
             self._comm = {conn.resolve(k): float(v) for k, v in commission_per_lot.items()}
             self._comm_default = 0.0
         else:
             self._comm, self._comm_default = {}, float(commission_per_lot)
-        self.bars = bars
-        self.slots = {s.id: s for s in slots}
-        for s in self.slots.values():
-            s.symbol = conn.resolve(s.symbol)
         self.last_bar: dict[str, str] = {}   # "SYM|TF" -> heure de la dernière bougie clôturée traitée
         self.last_msc: dict[str, int] = {}   # symbole -> dernier tick traité (ms)
         self.recent: list[dict] = []
+        self.events: deque = deque(maxlen=400)
         self.started = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._load_state()
 
@@ -166,26 +245,36 @@ class PaperEngine:
         for sid, d in st.get("slots", {}).items():
             if sid in self.slots:
                 s = self.slots[sid]
-                for k in ("balance", "peak", "max_dd_pct", "trades", "wins", "sum_r", "pnl", "history_r"):
-                    setattr(s, k, d[k])
+                for k in SAVED:
+                    if k in d:
+                        setattr(s, k, d[k])
                 s.position = Position(**d["position"]) if d.get("position") else None
         self.last_bar.update(st.get("last_bar", {}))
         self.last_msc.update({k: int(v) for k, v in st.get("last_msc", {}).items()})
         self.recent = st.get("recent", [])
+        self.events.extend(st.get("events", []))
         self.started = st.get("started", self.started)
         n_open = sum(s.position is not None for s in self.slots.values())
         print(f"[paper] reprise de l'état sauvegardé ({n_open} positions fictives ouvertes)")
 
     def save(self):
+        active = {sid: s for sid, s in self.slots.items() if s.trades or s.position or s.ftmo_status != "en cours"}
         st = {"started": self.started, "last_bar": self.last_bar, "last_msc": self.last_msc,
-              "recent": self.recent[-200:],
-              "slots": {sid: {**{k: getattr(s, k) for k in ("balance", "peak", "max_dd_pct", "trades", "wins",
-                                                             "sum_r", "pnl", "history_r")},
+              "recent": self.recent[-1000:], "events": list(self.events),
+              "slots": {sid: {**{k: getattr(s, k) for k in SAVED},
                               "position": asdict(s.position) if s.position else None}
-                        for sid, s in self.slots.items()}}
+                        for sid, s in active.items()}}
         tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(st, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(st), encoding="utf-8")
         tmp.replace(self.state_path)
+        self._last_save = time.time()
+        self._dirty = False
+
+    def event(self, when: str, kind: str, s: Slot, text: str):
+        self.events.append({"t": when, "type": kind, "symbole": s.symbol, "tf": s.timeframe, "texte": text})
+        self._dirty = True
+        if not self.quiet:
+            print(f"[paper] {when} {kind} {s.symbol} {s.timeframe} | {text}")
 
     # ------------------------------------------------------------------ calculs argent
     def _money(self, symbol: str, price_move: float, lots: float) -> float:
@@ -207,29 +296,64 @@ class PaperEngine:
         lots = min(lots, info.volume_max)
         return round(lots, 8) if lots >= info.volume_min else 0.0
 
-    def risk_budget(self, s: "Slot") -> float:
+    def risk_budget(self, s: Slot) -> float:
         """Perte max autorisée par trade : risk_pct du capital de départ (ou du solde s'il a baissé)."""
         return min(s.balance, s.capital) * self.risk_pct / 100
 
+    def pips(self, symbol: str, move: float) -> float:
+        info = self.c.symbol_info(symbol)
+        pip = info.point * (10 if info.digits in (3, 5) else 1)
+        return move / pip
+
+    # ------------------------------------------------------------------ challenge FTMO
+    def update_ftmo(self, s: Slot, equity: float, when: str):
+        day = when[:10]
+        if day != s.day:
+            s.day, s.day_start = day, (equity if s.day else s.capital)
+        if s.ftmo_status != "en cours":
+            return
+        R = self.ftmo
+        daily = (equity - s.day_start) / s.capital * 100
+        s.worst_day_pct = min(s.worst_day_pct, daily)
+        if daily <= -R.max_daily:
+            s.ftmo_status, s.ftmo_when = f"ÉCHOUÉ (perte du jour {daily:.2f} %)", when
+        elif (equity - s.capital) / s.capital * 100 <= -R.max_total:
+            s.ftmo_status, s.ftmo_when = "ÉCHOUÉ (perte max totale)", when
+        elif s.position is None and (s.balance - s.capital) / s.capital * 100 >= R.target1 \
+                and len(s.trade_days) >= R.min_days:
+            s.ftmo_status, s.ftmo_when = "RÉUSSI", when
+        if s.ftmo_status != "en cours":
+            self.event(when, "FTMO", s, f"challenge {s.ftmo_status} : {describe(s.candidate)} [{s.cfg.label()}]")
+
+    def floating(self, s: Slot, tick) -> float:
+        p = s.position
+        if not p or tick is None:
+            return 0.0
+        cur = tick.bid if p.side > 0 else tick.ask
+        return self._money(s.symbol, (cur - p.entry) * p.side, p.lots)
+
     # ------------------------------------------------------------------ positions
-    def _open(self, s: Slot, side: int, closed: pd.DataFrame, tick):
+    def _open(self, s: Slot, side: int, closed: pd.DataFrame, tick, atr_arr=None):
         price = tick.ask if side > 0 else tick.bid
         info = self.c.symbol_info(s.symbol)
-        atr_arr = ind.atr(closed, 14).to_numpy()
+        atr_arr = ind.atr(closed, 14).to_numpy() if atr_arr is None else atr_arr
         dist = _stop_distance(closed, s.cfg, atr_arr, len(closed) - 1, side, price)
         if not np.isfinite(dist) or dist <= 0:
             return
         lots = self._lots(s.symbol, self.risk_budget(s), dist)
         if lots <= 0:
-            print(f"[paper] trade ignoré sur {s.symbol} : même le lot minimum dépasserait le risque max "
-                  f"de {self.risk_budget(s):.2f} ({describe(s.candidate)})")
             return
         tp = price + side * s.cfg.rr * dist if s.cfg.rr else None
+        when = _now(tick)
         s.position = Position(side, price, price - side * dist, tp, dist, lots,
-                              self._money(s.symbol, dist, lots), _now(tick), (tick.ask - tick.bid) / info.point,
+                              self._money(s.symbol, dist, lots), when, (tick.ask - tick.bid) / info.point,
                               opened_msc=int(getattr(tick, "time_msc", 0)))
-        print(f"[paper] OUVERTURE {'ACHAT' if side > 0 else 'VENTE'} {s.symbol} {lots} lots @ {price} "
-              f"| SL {s.position.sl:.{info.digits}f} TP {tp and round(tp, info.digits)} | {describe(s.candidate)}")
+        if when[:10] not in s.trade_days:
+            s.trade_days.append(when[:10])
+        d = info.digits
+        self.event(when, "OUVERTURE", s, f"{'ACHAT' if side > 0 else 'VENTE'} {lots} lots @ {price:.{d}f} | "
+                                         f"SL {s.position.sl:.{d}f} | TP {'signal' if tp is None else f'{tp:.{d}f}'} | "
+                                         f"{describe(s.candidate)} [{s.cfg.label()}]")
 
     def _close(self, s: Slot, price: float, when: str, reason: str):
         p = s.position
@@ -244,10 +368,19 @@ class PaperEngine:
         s.history_r.append(round(r, 3))
         s.peak = max(s.peak, s.balance)
         s.max_dd_pct = max(s.max_dd_pct, (s.peak - s.balance) / s.peak * 100 if s.peak > 0 else 0)
+        try:
+            dur = (datetime.strptime(when, "%Y-%m-%d %H:%M:%S") - datetime.strptime(p.opened, "%Y-%m-%d %H:%M:%S"))
+            dur_min = round(dur.total_seconds() / 60, 1)
+        except ValueError:
+            dur_min = None
+        dg = self.c.symbol_info(s.symbol).digits
+        price = round(price, dg)
         row = {"strategie_id": s.id, "symbole": s.symbol, "timeframe": s.timeframe, "strategie": describe(s.candidate),
                "risque": s.cfg.label(), "sens": "ACHAT" if p.side > 0 else "VENTE", "lots": p.lots,
-               "ouverture": p.opened, "prix_entree": p.entry, "sl_initial": round(p.entry - p.side * p.risk, 6),
-               "tp": p.tp, "fermeture": when, "prix_sortie": price, "raison": reason, "r": round(r, 3),
+               "ouverture": p.opened, "prix_entree": round(p.entry, dg), "sl_initial": round(p.sl_initial, dg),
+               "sl_final": round(p.sl, dg), "tp": None if p.tp is None else round(p.tp, dg), "fermeture": when,
+               "prix_sortie": price, "raison": reason, "duree_min": dur_min,
+               "pips": round(self.pips(s.symbol, (price - p.entry) * p.side), 1), "r": round(r, 3),
                "pnl": round(pnl, 2), "solde": round(s.balance, 2), "spread_entree_pts": round(p.spread_pts, 1)}
         new = not (self.out / "trades.csv").exists()
         with open(self.out / "trades.csv", "a", newline="", encoding="utf-8") as fh:
@@ -256,9 +389,12 @@ class PaperEngine:
                 w.writeheader()
             w.writerow(row)
         self.recent.append(row)
+        if len(self.recent) > 3000:
+            self.recent = self.recent[-2000:]
         s.position = None
-        print(f"[paper] FERMETURE {row['sens']} {s.symbol} ({reason}) @ {price} -> {r:+.2f}R | {pnl:+.2f} "
-              f"| solde {s.balance:.2f}")
+        self.event(when, "FERMETURE", s, f"{row['sens']} {reason} @ {price} -> {r:+.2f}R | {pnl:+.2f} | "
+                                         f"solde {s.balance:,.2f}")
+        self.update_ftmo(s, s.balance, when)
 
     # ------------------------------------------------------------------ ticks
     def process_ticks(self, symbol: str):
@@ -291,22 +427,37 @@ class PaperEngine:
             i_sl = int(np.argmax(hit_sl)) if hit_sl.any() else None
             i_tp = int(np.argmax(hit_tp)) if hit_tp.any() else None
             if i_sl is not None and (i_tp is None or i_sl <= i_tp):
-                be = p.be_done and abs(p.sl - p.entry) < 1e-12
-                self._close(s, float(px[i_sl]), _msc(t["time_msc"][i_sl]), "break-even" if be else "stop loss")
+                if p.be_done and abs(p.sl - p.entry) < 1e-12:
+                    why = "break-even"
+                elif (p.sl - p.entry) * p.side > 0:
+                    why = "stop suiveur"
+                else:
+                    why = "stop loss"
+                self._close(s, float(px[i_sl]), _msc(t["time_msc"][i_sl]), why)
             elif i_tp is not None:
                 self._close(s, float(p.tp), _msc(t["time_msc"][i_tp]), "take profit")
+            else:
+                self.update_ftmo(s, s.balance + self.floating(s, tick), _now(tick))
 
     # ------------------------------------------------------------------ bougies
     def on_bar(self, symbol: str, tf: str, closed: pd.DataFrame):
         tick = self.mt5.symbol_info_tick(symbol)
         close = float(closed["close"].iloc[-1])
-        atr_last = float(ind.atr(closed, 14).iloc[-1])
-        for s in [s for s in self.slots.values() if s.symbol == symbol and s.timeframe == tf]:
+        atr_arr = ind.atr(closed, 14).to_numpy()
+        atr_last = float(atr_arr[-1])
+        cache: dict[str, int | None] = {}  # un signal n'est calculé qu'une fois pour toutes ses variantes de R:R
+        for s in self.by_bar.get((symbol, tf), []):
             cfg = s.cfg
-            try:
-                sig = int(apply_filter(closed, compute_signal(closed, s.candidate["signal"]), s.candidate["filter"]).iloc[-1])
-            except Exception as exc:
-                print(f"[paper] {s.id} : erreur de calcul du signal ({exc})")
+            key = signal_key(s.candidate["signal"]) + "|" + s.candidate["filter"]
+            if key not in cache:
+                try:
+                    cache[key] = int(apply_filter(closed, compute_signal(closed, s.candidate["signal"]),
+                                                  s.candidate["filter"]).iloc[-1])
+                except Exception as exc:
+                    print(f"[paper] {s.id} : erreur de calcul du signal ({exc})")
+                    cache[key] = None
+            sig = cache[key]
+            if sig is None:
                 continue
             if cfg.direction == "long" and sig < 0 or cfg.direction == "short" and sig > 0:
                 sig = 0
@@ -320,17 +471,18 @@ class PaperEngine:
                     self._close(s, exit_px, _now(tick), "durée max")
                 elif cfg.management == "breakeven" and not p.be_done and (close - p.entry) * p.side >= p.risk:
                     p.sl, p.be_done = p.entry, True
+                    self.event(_now(tick), "SL DÉPLACÉ", s, f"break-even à {p.entry}")
                 elif cfg.management == "trailing" and np.isfinite(atr_last):
                     dist = cfg.sl_value * atr_last if cfg.sl_mode == "atr" else p.risk
                     trail = close - p.side * dist
                     p.sl = max(p.sl, trail) if p.side > 0 else min(p.sl, trail)
-            if s.position is None and sig != 0:
-                self._open(s, sig, closed, tick)
+            if s.position is None and sig != 0 and s.ftmo_status == "en cours":
+                self._open(s, sig, closed, tick, atr_arr)
 
     def step(self):
         for sym in sorted({s.symbol for s in self.slots.values()}):
             self.process_ticks(sym)
-        for sym, tf in sorted({(s.symbol, s.timeframe) for s in self.slots.values()}):
+        for (sym, tf) in sorted(self.by_bar):
             last2 = self.mt5.copy_rates_from_pos(sym, getattr(self.mt5, f"TIMEFRAME_{tf}"), 0, 2)
             if last2 is None or len(last2) < 2:
                 continue
@@ -343,33 +495,101 @@ class PaperEngine:
                 continue
             df = self.c.rates(sym, tf, self.bars)
             self.on_bar(sym, tf, df.iloc[:-1])
-        self.save()
+        if self._dirty or time.time() - self._last_save >= self.save_every:
+            self.save()  # sauvegarde dès qu'un trade s'ouvre / se ferme (reprise sans perte après un arrêt)
 
-    def run(self, poll: int = 5, dashboard_every: int = 30):
-        print(f"[paper] {len(self.slots)} stratégies en paper trading sur "
+    # ------------------------------------------------------------------ données pour la plateforme
+    def snapshot(self, max_slots: int = 3000, max_trades: int = 1500) -> dict:
+        ticks = {sym: self.mt5.symbol_info_tick(sym) for sym in {s.symbol for s in self.slots.values()}}
+        open_rows, slot_rows = [], []
+        for s in self.slots.values():
+            t = ticks.get(s.symbol)
+            fl = self.floating(s, t)
+            p = s.position
+            if p and t is not None:
+                info = self.c.symbol_info(s.symbol)
+                cur = t.bid if p.side > 0 else t.ask
+                open_rows.append({
+                    "id": s.id, "symbole": s.symbol, "tf": s.timeframe, "strategie": describe(s.candidate),
+                    "risque": s.cfg.label(), "sens": "ACHAT" if p.side > 0 else "VENTE", "lots": p.lots,
+                    "ouverture": p.opened, "entree": round(p.entry, info.digits),
+                    "sl_initial": round(p.sl_initial, info.digits), "sl": round(p.sl, info.digits),
+                    "tp": None if p.tp is None else round(p.tp, info.digits), "prix": round(cur, info.digits),
+                    "pips_sl": round(self.pips(s.symbol, abs(cur - p.sl)), 1),
+                    "pips_tp": None if p.tp is None else round(self.pips(s.symbol, abs(p.tp - cur)), 1),
+                    "latent": round(fl, 2), "latent_r": round(fl / p.risk_money, 2) if p.risk_money else 0,
+                    "bougies": p.bars_held})
+            if s.trades or p or s.ftmo_status != "en cours":
+                eq = s.balance + fl
+                slot_rows.append({
+                    "id": s.id, "symbole": s.symbol, "tf": s.timeframe, "strategie": describe(s.candidate),
+                    "base": _base_name(s.candidate), "rr": s.cfg.rr, "risque": s.cfg.label(), "origine": s.verdict,
+                    "trades": s.trades, "gagnants": s.wins, "r_total": round(s.sum_r, 2),
+                    "r_moyen": round(s.sum_r / s.trades, 3) if s.trades else 0.0, "pnl": round(s.pnl, 2),
+                    "equite": round(eq, 2), "dd_max": round(s.max_dd_pct, 2),
+                    "profit_pct": round((eq - s.capital) / s.capital * 100, 2),
+                    "pire_jour_pct": round(s.worst_day_pct, 2), "jours_trades": len(s.trade_days),
+                    "ftmo": s.ftmo_status, "ftmo_quand": s.ftmo_when, "en_position": bool(p),
+                    "attendu_r": s.expected_avg_r})
+        slot_rows.sort(key=lambda r: r["r_total"], reverse=True)
+        acc = self.mt5.account_info()
+        prices = {}
+        for sym, t in ticks.items():
+            if t is not None:
+                info = self.c.symbol_info(sym)
+                prices[sym] = {"bid": t.bid, "ask": t.ask, "spread": round((t.ask - t.bid) / info.point, 1),
+                               "digits": info.digits}
+        return {
+            "maj": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "demarre": self.started,
+            "serveur": getattr(acc, "server", ""), "prix": prices,
+            "capital": next(iter(self.slots.values())).capital if self.slots else 0,
+            "risque_pct": self.risk_pct, "ftmo": asdict(self.ftmo), "ftmo_label": self.ftmo.label(),
+            "n_comptes": len(self.slots), "n_actifs": len(slot_rows),
+            "n_marches": len({(s.symbol, s.timeframe) for s in self.slots.values()}),
+            "comptes": slot_rows[:max_slots], "positions": open_rows,
+            "trades": self.recent[-max_trades:][::-1], "evenements": list(self.events)[::-1][:200],
+        }
+
+    def run(self, poll: int = 5, dashboard_every: int = 30, server_port: int | None = 8765, open_browser=True):
+        server = None
+        if server_port:
+            from .plateforme import start_server
+            server = start_server(self, server_port, open_browser)
+        print(f"[paper] {len(self.slots)} comptes fictifs sur "
               f"{', '.join(sorted({s.symbol for s in self.slots.values()}))} — AUCUN ordre n'est envoyé à MT5.")
-        print(f"[paper] Tableau de bord : {self.out / 'tableau_de_bord.html'}  (Ctrl+C pour arrêter)")
+        if server:
+            print(f"[paper] PLATEFORME EN DIRECT : http://localhost:{server_port}   (Ctrl+C pour arrêter)")
         last_dash = 0.0
-        while True:
-            try:
-                self.step()
-                if time.time() - last_dash >= dashboard_every:
-                    write_dashboard(self)
-                    last_dash = time.time()
-            except KeyboardInterrupt:
-                self.save()
-                write_dashboard(self)
-                print("[paper] arrêté, état sauvegardé.")
-                return
-            except Exception as exc:  # une coupure réseau ne doit pas tout arrêter
-                print(f"[paper] erreur : {exc}")
-            try:
+        try:
+            while True:
+                try:
+                    self.step()
+                    if server:
+                        server.publish(self.snapshot())
+                    if time.time() - last_dash >= dashboard_every:
+                        write_dashboard(self)
+                        last_dash = time.time()
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # une coupure réseau ne doit pas tout arrêter
+                    print(f"[paper] erreur : {exc}")
                 time.sleep(poll)
-            except KeyboardInterrupt:
-                self.save()
-                write_dashboard(self)
-                print("[paper] arrêté, état sauvegardé.")
-                return
+        except KeyboardInterrupt:
+            self.save()
+            write_dashboard(self)
+            print("[paper] arrêté, état sauvegardé.")
+        finally:
+            if server:
+                server.shutdown()
+
+
+def _base_name(cand: dict) -> str:
+    s = cand["signal"]
+    if s["type"] == "single":
+        return s["name"]
+    if s["type"] == "rule":
+        return s.get("name", "INVENTION")
+    return f"{s['a']['name']}+{s['b']['name']}"
 
 
 def _msc(v) -> str:
@@ -380,91 +600,36 @@ def _now(tick) -> str:
     return _msc(getattr(tick, "time_msc", int(time.time() * 1000)))
 
 
-# ====================================================================== tableau de bord
-CSS = """
-:root{--bg:#f7f8fa;--card:#fff;--fg:#1c2230;--mut:#667085;--line:#e4e7ec;--ok:#12805c;--bad:#b42318}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--fg:#e6e8ee;--mut:#98a2b3;--line:#2a2f3a;--ok:#3ccb7f;--bad:#f97066}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
-main{max-width:1250px;margin:auto;padding:20px 16px}h1{font-size:22px;margin:0}h2{font-size:17px;margin:28px 0 10px}
-.mut{color:var(--mut)}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:14px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}.card b{display:block;font-size:21px}
-.scroll{overflow:auto;border:1px solid var(--line);border-radius:10px;max-height:560px}
-table{width:100%;border-collapse:collapse;background:var(--card);font-size:12.5px}
-th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}th{position:sticky;top:0;background:var(--card)}
-.pos{color:var(--ok);font-weight:600}.neg{color:var(--bad);font-weight:600}
-"""
-
-
-def _cls(v):
-    return "pos" if v > 0 else ("neg" if v < 0 else "")
-
-
+# ================================================== tableau de bord statique (secours, sans serveur)
 def write_dashboard(engine: PaperEngine):
+    snap = engine.snapshot(max_slots=300, max_trades=300)
     esc = html.escape
-    slots = sorted(engine.slots.values(), key=lambda s: s.sum_r, reverse=True)
-    ticks = {}
-    for sym in {s.symbol for s in slots}:
-        t = engine.mt5.symbol_info_tick(sym)
-        if t is not None:
-            ticks[sym] = t
-    floating = 0.0
-    open_rows = ""
-    for s in slots:
-        p = s.position
-        if not p or s.symbol not in ticks:
-            continue
-        cur = ticks[s.symbol].bid if p.side > 0 else ticks[s.symbol].ask
-        fl = engine._money(s.symbol, (cur - p.entry) * p.side, p.lots)
-        floating += fl
-        open_rows += (f"<tr><td>{esc(s.symbol)}</td><td>{'ACHAT' if p.side > 0 else 'VENTE'}</td><td>{p.lots}</td>"
-                      f"<td>{p.entry}</td><td>{p.sl:.5f}</td><td>{'' if p.tp is None else f'{p.tp:.5f}'}</td>"
-                      f"<td>{cur}</td><td class='{_cls(fl)}'>{fl:+.2f}</td><td>{esc(p.opened)}</td>"
-                      f"<td>{esc(describe(s.candidate))}</td></tr>")
-    closed = sum(s.trades for s in slots)
-    wins = sum(s.wins for s in slots)
-    pnl = sum(s.pnl for s in slots)
-    cards = [("Stratégies suivies", len(slots)), ("Positions fictives ouvertes", sum(bool(s.position) for s in slots)),
-             ("Trades fictifs clôturés", closed), ("Taux de réussite", f"{wins / closed * 100:.0f} %" if closed else "—"),
-             ("P&L réalisé (toutes stratégies)", f"{pnl:+.2f}"), ("P&L latent", f"{floating:+.2f}")]
-    cards_html = "".join(f'<div class="card"><span class="mut">{esc(k)}</span><b>{esc(str(v))}</b></div>' for k, v in cards)
-    rows = ""
-    for i, s in enumerate(slots, 1):
-        avg = s.sum_r / s.trades if s.trades else 0.0
-        wr = s.wins / s.trades * 100 if s.trades else 0.0
-        exp = "" if s.expected_avg_r is None else f"{s.expected_avg_r:+.2f}R / {s.expected_wr or 0:.0f}%"
-        rows += (f"<tr><td>{i}</td><td>{esc(s.symbol)} {esc(s.timeframe)}</td><td>{esc(describe(s.candidate))}</td>"
-                 f"<td>{esc(s.cfg.label())}</td><td>{esc(s.verdict)}</td><td>{s.trades}</td><td>{wr:.0f}%</td>"
-                 f"<td class='{_cls(avg)}'>{avg:+.2f}</td><td class='{_cls(s.sum_r)}'>{s.sum_r:+.1f}</td>"
-                 f"<td class='{_cls(s.pnl)}'>{s.pnl:+.2f}</td><td>{s.balance:.2f}</td><td>{s.max_dd_pct:.1f}%</td>"
-                 f"<td class='mut'>{exp}</td><td>{'en position' if s.position else ''}</td></tr>")
-    last = ""
-    for t in reversed(engine.recent[-60:]):
-        last += (f"<tr><td>{esc(t['fermeture'])}</td><td>{esc(t['symbole'])}</td><td>{esc(t['sens'])}</td>"
-                 f"<td>{t['lots']}</td><td>{t['prix_entree']}</td><td>{t['prix_sortie']}</td><td>{esc(t['raison'])}</td>"
-                 f"<td class='{_cls(t['r'])}'>{t['r']:+.2f}</td><td class='{_cls(t['pnl'])}'>{t['pnl']:+.2f}</td>"
-                 f"<td>{esc(t['strategie'])}</td></tr>")
-    acc = engine.mt5.account_info()
+    rows = "".join(f"<tr><td>{esc(c['symbole'])} {esc(c['tf'])}</td><td>{esc(c['strategie'])}</td>"
+                   f"<td>{esc(c['risque'])}</td><td>{c['trades']}</td><td>{c['r_total']:+.2f}</td>"
+                   f"<td>{c['pnl']:+.2f}</td><td>{esc(c['ftmo'])}</td></tr>" for c in snap["comptes"])
+    pos = "".join(f"<tr><td>{esc(p['symbole'])} {esc(p['tf'])}</td><td>{p['sens']}</td><td>{p['lots']}</td>"
+                  f"<td>{p['entree']}</td><td>{p['sl']}</td><td>{p['tp'] if p['tp'] is not None else 'signal'}</td>"
+                  f"<td>{p['prix']}</td><td>{p['latent']:+.2f}</td><td>{esc(p['strategie'])}</td></tr>"
+                  for p in snap["positions"][:300])
+    trs = "".join(f"<tr><td>{esc(t['fermeture'])}</td><td>{esc(t['symbole'])} {esc(t['timeframe'])}</td>"
+                  f"<td>{t['sens']}</td><td>{t['prix_entree']}</td><td>{t['sl_initial']}</td><td>{t['tp']}</td>"
+                  f"<td>{t['prix_sortie']}</td><td>{esc(t['raison'])}</td><td>{t['r']:+.2f}</td><td>{t['pnl']:+.2f}</td>"
+                  f"<td>{esc(t['strategie'])}</td></tr>" for t in snap["trades"][:300])
     doc = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta http-equiv="refresh" content="30">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Paper trading MT5</title><style>{CSS}</style></head>
-<body><main><h1>Paper trading — trades fictifs sur prix réels</h1>
-<p class="mut">Prix en direct de {esc(str(getattr(acc, 'server', 'MT5')))} · aucun ordre envoyé à MetaTrader ·
-chaque stratégie a son compte virtuel de {next(iter(engine.slots.values())).capital:,.0f}
-(perte max {engine.risk_pct:g} % par trade) · démarré le {esc(engine.started)} ·
-mis à jour le {datetime.now():%Y-%m-%d %H:%M:%S} (rafraîchissement auto 30 s)</p>
-<div class="cards">{cards_html}</div>
-<h2>Classement des stratégies (en direct)</h2>
-<p class="mut">« Attendu » = espérance et taux de réussite mesurés hors-échantillon pendant la recherche : comparez-les au réel.</p>
-<div class="scroll"><table><thead><tr><th>#</th><th>Marché</th><th>Stratégie</th><th>Risque</th><th>Verdict recherche</th>
-<th>Trades</th><th>Réussite</th><th>R moyen</th><th>R total</th><th>P&amp;L</th><th>Solde</th><th>DD max</th><th>Attendu</th><th></th>
-</tr></thead><tbody>{rows}</tbody></table></div>
-<h2>Positions fictives ouvertes</h2>
-<div class="scroll"><table><thead><tr><th>Symbole</th><th>Sens</th><th>Lots</th><th>Entrée</th><th>SL</th><th>TP</th>
-<th>Prix actuel</th><th>Latent</th><th>Ouverture</th><th>Stratégie</th></tr></thead><tbody>{open_rows or '<tr><td colspan=10 class=mut>Aucune</td></tr>'}</tbody></table></div>
-<h2>Derniers trades fictifs</h2>
-<div class="scroll"><table><thead><tr><th>Fermeture</th><th>Symbole</th><th>Sens</th><th>Lots</th><th>Entrée</th><th>Sortie</th>
-<th>Raison</th><th>R</th><th>P&amp;L</th><th>Stratégie</th></tr></thead><tbody>{last or '<tr><td colspan=10 class=mut>Pas encore de trade clôturé</td></tr>'}</tbody></table></div>
-<p class="mut">Historique complet : trades.csv (ouvrable dans Excel).</p>
-</main></body></html>"""
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Paper trading MT5</title>
+<style>body{{font:13px system-ui,sans-serif;margin:16px;background:#f7f8fa;color:#1c2230}}
+@media (prefers-color-scheme:dark){{body{{background:#0f1115;color:#e6e8ee}}}}
+table{{border-collapse:collapse;width:100%}}td,th{{padding:4px 6px;border-bottom:1px solid #8884;text-align:left;white-space:nowrap}}
+div{{overflow:auto;max-height:480px}}</style></head><body>
+<h1>Paper trading — trades fictifs sur prix réels</h1>
+<p>Version de secours (se rafraîchit toutes les 30 s). La plateforme complète est sur http://localhost:8765 pendant que
+le paper trading tourne. Mis à jour {snap['maj']} · {snap['n_comptes']} comptes fictifs · aucun ordre envoyé.</p>
+<h2>Positions ouvertes</h2><div><table><tr><th>Marché</th><th>Sens</th><th>Lots</th><th>Entrée</th><th>SL</th><th>TP</th>
+<th>Prix</th><th>Latent</th><th>Stratégie</th></tr>{pos}</table></div>
+<h2>Derniers trades</h2><div><table><tr><th>Fermeture</th><th>Marché</th><th>Sens</th><th>Entrée</th><th>SL</th><th>TP</th>
+<th>Sortie</th><th>Raison</th><th>R</th><th>P&amp;L</th><th>Stratégie</th></tr>{trs}</table></div>
+<h2>Comptes fictifs</h2><div><table><tr><th>Marché</th><th>Stratégie</th><th>Risque</th><th>Trades</th><th>R total</th>
+<th>P&amp;L</th><th>Challenge FTMO</th></tr>{rows}</table></div></body></html>"""
     tmp = engine.out / "tableau_de_bord.tmp"
     tmp.write_text(doc, encoding="utf-8")
     tmp.replace(engine.out / "tableau_de_bord.html")

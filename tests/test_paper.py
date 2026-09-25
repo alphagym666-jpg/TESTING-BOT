@@ -153,3 +153,36 @@ def test_max_loss_half_percent_of_100k(setup, commission):
     mk.push_ticks([p.sl])                                     # stop touché pile
     eng.step()
     assert -500 - 1e-6 <= eng.slots["s1"].pnl < 0
+
+
+def test_platform_serves_live_state(setup):
+    import json
+    import urllib.request
+
+    from mt5lab.plateforme import start_server
+    mk, tmp = setup
+    eng = _engine(tmp)
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    srv = start_server(eng, 0, open_browser=False)  # port 0 = port libre choisi par le système
+    try:
+        port = srv.server_address[1]
+        srv.publish(eng.snapshot())
+        page = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
+        assert "Plateforme paper trading" in page
+        d = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/etat").read())
+        pos = d["positions"][0]
+        assert pos["sens"] == "ACHAT" and pos["sl"] < pos["entree"] < pos["tp"]
+        assert d["ftmo"]["max_daily"] == 3.0
+    finally:
+        srv.shutdown()
+
+
+def test_exploration_covers_every_strategy_and_rr(tmp_path):
+    from mt5lab.backtest import RR_LEVELS
+    from mt5lab.paper import load_exploration_slots
+    slots = load_exploration_slots(tmp_path, ["EURUSD"], ["H1", "M15"])
+    names = {s.candidate["signal"]["name"] for s in slots}
+    assert len(names) >= len([n for n in REGISTRY if not n.startswith("_")])
+    assert {s.cfg.rr for s in slots} == set(RR_LEVELS)

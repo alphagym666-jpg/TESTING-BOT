@@ -68,13 +68,15 @@ où le terminal MT5 est installé.
 
 ```
   1. Tester la connexion a MT5          <- commencez par ici
-  2. Changer symboles / timeframe
-  3. Lancer la recherche (10 agents)
-  4. Lancer une recherche longue (plus de tests)
-  5. Ouvrir les rapports
-  6. PAPER TRADING : trades fictifs sur prix reels (top 20 par symbole)
-  7. PAPER TRADING : seulement les strategies approuvees
-  8. Ouvrir le tableau de bord du paper trading
+  2. Changer marches / timeframes
+  3. Recherche complete : tous les marches x tous les timeframes
+  4. Recherche FTMO INTENSIVE (beaucoup plus de tests, plusieurs heures)
+  5. Ouvrir la COMPARAISON (quelle strategie rapporte le plus / passe FTMO)
+  6. EXPLORATION : toutes les strategies x tous les R:R
+  7. Les 30 meilleures strategies de la recherche
+  8. Le portefeuille du Chef FTMO / strategies validees
+  9. Ouvrir la PLATEFORME (voir les trades en direct)
+  0. Quitter
 ```
 
 Le test de connexion (`python run.py check --symbols EURUSD XAUUSD`) affiche ceci :
@@ -138,6 +140,34 @@ Résultats dans `results/<SYMBOLE>_<TF>/` :
 
 Plus de rounds (`--rounds`) et de budget (`--budget`) = recherche plus large (et plus longue).
 
+## Les agents inventent leurs propres stratégies
+
+Après les rounds de recherche, chaque recherche se termine par un **round d'invention** :
+- chacun des 10 agents crée des stratégies nouvelles : une **règle** faite d'un déclencheur et de filtres, par exemple
+  « QUAND RSI(2)-50 > 14,6 ET ADX(14) < 24 », avec le miroir exact en vente. Les seuils sont tirés du comportement
+  réel du marché (quantiles des indicateurs), puis la population de règles évolue sur plusieurs générations
+  (mutation et croisement). Chaque agent reste dans sa spécialité : tendance, retour à la moyenne, cassures,
+  momentum, price action/SMC… Le Généticien fait évoluer les inventions confirmées des autres ;
+- l'agent invente sur une 1re partie de l'historique, et **son chef d'équipe confirme** sur une 2e partie que
+  l'agent n'a pas vue. En cas de refus, l'agent recommence (jusqu'à 3 essais) ;
+- chaque invention passe ensuite **la même validation finale** que les 99 stratégies du catalogue, sur la période
+  hors-échantillon que personne n'a vue. Les inventions validées se retrouvent dans le classement, face aux autres.
+
+La confirmation du chef n'est qu'un premier filtre : sur un marché 100 % aléatoire, les chefs confirment parfois
+des inventions « chanceuses », mais la validation finale les rejette toutes.
+
+## Objectif FTMO
+
+Toute la recherche est notée selon votre challenge. Par défaut (phase 1) : **+10 %**, perte max **3 % par jour** et
+**10 % au total**, 4 jours de trading minimum. Tout est réglable : `--ftmo-target`, `--ftmo-daily`, `--ftmo-total`,
+`--ftmo-min-days`, et `--ftmo-phase2 5` pour simuler aussi la phase 2.
+- Pour chaque stratégie, un **simulateur Monte Carlo** rejoue des milliers de challenges à partir de ses journées
+  réelles hors-échantillon. Les positions ouvertes sont comptées à leur stop dans la perte du jour. Il en sort la
+  **probabilité de réussite**, le **nombre de jours** pour atteindre +10 % et le **taux d'échec**.
+- Le **Chef FTMO** combine ensuite les stratégies validées de tous les marchés et timeframes pour trouver le
+  **portefeuille** qui passe le challenge le plus souvent et le plus vite (`results/portefeuille_ftmo.csv`).
+- `comparaison.html` affiche le portefeuille, le classement FTMO et le classement par gain mensuel.
+
 ## Tous les marchés × tous les timeframes
 
 ```bash
@@ -160,14 +190,37 @@ python run.py lab --symbols NASDAQ XAUUSD EURUSD --timeframes ALL --commission E
 ## Paper trading : trades fictifs sur les prix réels
 
 La plateforme **ne passe aucun ordre dans MetaTrader**. Elle prend les trades **fictivement**, en suivant
-les vrais prix de votre MT5 en direct :
+les vrais prix de votre MT5 en direct. Quatre modes :
 
 ```bash
-# les 20 meilleures stratégies de la recherche, par symbole
-python run.py paper --symbols EURUSD XAUUSD --timeframes H1 --top 20
-# seulement les stratégies approuvées, avec la commission de votre courtier (ex. 7 $ par lot)
+# EXPLORATION : toutes les stratégies (+ inventions) × tous les R:R, sur tous les marchés et timeframes
+python run.py paper --symbols NASDAQ XAUUSD EURUSD --timeframes ALL --source exploration
+# les 30 meilleures de la recherche / le portefeuille du Chef FTMO / les validées
+python run.py paper --symbols NASDAQ XAUUSD EURUSD --source meilleures --top 30
+python run.py paper --source portefeuille
 python run.py paper --symbols EURUSD --timeframes H1 M15 --source approuvees --commission 7
 ```
+
+L'exploration fonctionne même sans recherche préalable : les réglages par défaut de chaque stratégie sont alors
+utilisés. Après une recherche, ce sont les meilleurs réglages trouvés, plus les inventions des agents.
+3 marchés × 7 timeframes × 99 stratégies × 9 R:R, cela fait environ 19 000 comptes fictifs suivis en même temps.
+
+### La plateforme en direct
+
+Pendant le paper trading, la page **http://localhost:8765** s'ouvre dans votre navigateur et se met à jour
+toutes les 3 secondes. Elle n'est accessible que depuis votre PC. Onglets :
+- **Positions ouvertes** : marché, sens, lots, heure d'ouverture, prix d'entrée, SL initial, SL actuel, TP,
+  prix actuel, distance en pips jusqu'au SL et au TP, gain ou perte latent en $ et en R ;
+- **Historique des trades** : ouverture, fermeture, durée, entrée, SL, TP, sortie, raison (TP, stop loss,
+  break-even, stop suiveur, signal opposé), pips, R, P&L, solde, spread à l'entrée ;
+- **Classement des stratégies** : un compte fictif par stratégie × marché × timeframe × R:R, avec progression
+  vers l'objectif FTMO ;
+- **Meilleur R:R** : R total par niveau de R:R, et le meilleur R:R de chaque stratégie ;
+- **Challenges FTMO** : chaque compte fictif est suivi comme un vrai challenge (réussi / échoué / en cours) ;
+- **Journal en direct** : chaque ouverture, fermeture et événement FTMO.
+
+Filtres par marché, timeframe et texte, tri en cliquant sur les colonnes, et téléchargement de tous les trades
+pour Excel.
 
 Ce qui rend les chiffres réalistes :
 - **entrée au vrai prix** : ask pour un achat, bid pour une vente, donc avec le spread réel du moment ;
@@ -175,7 +228,7 @@ Ce qui rend les chiffres réalistes :
   la sortie se fait au prix réel du tick, glissement compris. Le TP est pris à son niveau ;
 - **taille de lot, valeur du pip, lot minimum et pas de lot** : ceux de votre courtier ;
 - break-even, trailing stop et sortie sur signal gérés comme dans le backtest ;
-- **chaque stratégie a son compte virtuel** (100 000 par défaut, `--capital`) et son propre suivi ;
+- **chaque stratégie a son compte virtuel** (100 000 par défaut, `--capital`), suivi comme un challenge FTMO ;
 - **perte max par trade** : 0,5 % par défaut (`--risk`), soit **500 sur 100 000**. Le lot est arrondi vers le bas
   pour que la perte au stop, commission comprise, ne dépasse jamais ce montant. Le plafond est calculé sur le
   capital de départ (ou sur le solde s'il a baissé), donc il ne grossit pas avec les gains. Si même le lot minimum
@@ -183,8 +236,7 @@ Ce qui rend les chiffres réalistes :
   exactement comme en réel.
 
 Résultats dans `results/paper/` :
-- `tableau_de_bord.html` : classement des stratégies en direct, positions ouvertes avec P&L latent,
-  derniers trades, et comparaison avec les résultats attendus d'après la recherche (se rafraîchit toutes les 30 s) ;
+- `tableau_de_bord.html` : version de secours de la plateforme, sans serveur (se rafraîchit toutes les 30 s) ;
 - `trades.csv` : tous les trades fictifs, à ouvrir dans Excel ;
 - `etat.json` : sauvegarde. Si vous arrêtez puis relancez, les positions ouvertes et les comptes virtuels reprennent.
 

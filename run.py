@@ -125,22 +125,31 @@ def cmd_live(a):
 
 def cmd_paper(a):
     from mt5lab.data import MT5Connector
-    from mt5lab.paper import PaperEngine, load_slots, write_dashboard
+    from mt5lab.paper import (PaperEngine, load_best_slots, load_exploration_slots, load_portfolio_slots,
+                              load_slots, write_dashboard)
 
-    from mt5lab.paper import load_best_slots
-    if a.source == "meilleures":
-        slots = load_best_slots(Path(a.results), a.symbols, a.top, a.capital)
-    else:
-        slots = []
-        for tf in a.timeframes:
-            slots += load_slots(Path(a.results), a.symbols, tf, a.source, a.top, a.capital)
+    slots = []
+    if a.source == "portefeuille":
+        slots = load_portfolio_slots(Path(a.results), a.capital)
+        if not slots:
+            print("[paper] pas encore de portefeuille FTMO : je prends les stratégies validées")
+            a.source = "approuvees"
+    if not slots:
+        if a.source == "exploration":
+            slots = load_exploration_slots(Path(a.results), a.symbols, a.timeframes, a.capital)
+        elif a.source == "meilleures":
+            slots = load_best_slots(Path(a.results), a.symbols, a.top, a.capital)
+        else:
+            for tf in a.timeframes:
+                slots += load_slots(Path(a.results), a.symbols, tf, a.source, a.top, a.capital)
     if not slots:
         raise SystemExit("Aucune stratégie à suivre : lancez d'abord la recherche (python run.py lab ...).")
     with MT5Connector() as conn:
         comm = parse_commission(a.commission)
-        eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots})
+        eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots},
+                          ftmo=ftmo_rules(a))
         write_dashboard(eng)
-        eng.run(a.poll)
+        eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
 
 
 def cmd_check(a):
@@ -198,9 +207,13 @@ def main():
     paper = sub.add_parser("paper", help="trades FICTIFS sur les prix réels de MT5 (aucun ordre envoyé)")
     paper.add_argument("--symbols", nargs="+", default=["EURUSD"])
     paper.add_argument("--timeframes", nargs="+", default=["H1"], help="un ou plusieurs timeframes (ou ALL)")
-    paper.add_argument("--source", choices=["meilleures", "tous", "approuvees"], default="tous",
-                       help="meilleures = top N global de la comparaison (tous marchés et timeframes) ; "
+    paper.add_argument("--source", choices=["exploration", "meilleures", "portefeuille", "tous", "approuvees"], default="tous",
+                       help="exploration = TOUTES les stratégies + inventions × TOUS les R:R ; "
+                            "portefeuille = les stratégies choisies ensemble par le Chef FTMO ; "
+                            "meilleures = top N global de la comparaison (tous marchés et timeframes) ; "
                             "tous = top N finalistes par marché/timeframe ; approuvees = seulement les validées")
+    paper.add_argument("--port", type=int, default=8765, help="port de la plateforme web locale (0 = désactivée)")
+    paper.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur automatiquement")
     paper.add_argument("--top", type=int, default=20, help="nb max de stratégies suivies par symbole/timeframe")
     paper.add_argument("--capital", type=float, default=100_000, help="capital virtuel de chaque stratégie")
     paper.add_argument("--risk", type=float, default=0.5,
