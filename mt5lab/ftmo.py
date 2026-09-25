@@ -20,6 +20,11 @@ import numpy as np
 import pandas as pd
 
 
+def to_dt(values) -> pd.DatetimeIndex:
+    """Dates de trades : les trades D1 sont écrits '2019-01-28', les intraday '2019-01-28 13:00:00'."""
+    return pd.DatetimeIndex(pd.to_datetime(pd.Series(values).astype(str), format="mixed"))
+
+
 @dataclass(frozen=True)
 class FtmoRules:
     target1: float = 10.0
@@ -40,20 +45,20 @@ def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> 
     if trades is None or not len(trades):
         return pd.DataFrame(columns=["pnl", "worst", "traded"])
     t = trades.sort_values("exit_time").reset_index(drop=True)
-    entry = pd.to_datetime(t["entry_time"]).to_numpy()
-    exit_ = pd.to_datetime(t["exit_time"]).to_numpy()
+    entry = to_dt(t["entry_time"]).to_numpy()
+    exit_ = to_dt(t["exit_time"]).to_numpy()
     pnl = t["r"].to_numpy(dtype=float) * risk_pct
     ent_sorted, ex_sorted = np.sort(entry), np.sort(exit_)
     # positions encore ouvertes au moment de chaque sortie (hors celle qui sort)
     n_open = np.searchsorted(ent_sorted, exit_, "left") - np.searchsorted(ex_sorted, exit_, "right")
     n_open = np.maximum(n_open, 0)
-    day = pd.to_datetime(exit_).normalize()
+    day = pd.DatetimeIndex(exit_).normalize()
     df = pd.DataFrame({"day": day, "pnl": pnl, "n_open": n_open})
     df["cum"] = df.groupby("day")["pnl"].cumsum()
     df["worst"] = df["cum"] - risk_pct * df["n_open"]
     g = df.groupby("day").agg(pnl=("pnl", "sum"), worst=("worst", "min"))
     g["worst"] = np.minimum(g["worst"], 0.0)
-    entry_days = set(pd.to_datetime(entry).normalize())
+    entry_days = set(pd.DatetimeIndex(entry).normalize())
     start = pd.Timestamp(start).normalize() if start is not None else g.index.min()
     end = pd.Timestamp(end).normalize() if end is not None else g.index.max()
     days = pd.bdate_range(start, end).union(g.index)
@@ -138,7 +143,8 @@ def build_portfolio(trades_by_key: dict[str, pd.DataFrame], windows: dict[str, t
             if (hi - lo).days < min_window_days:
                 continue
             merged = pd.concat([trades_by_key[x] for x in keys], ignore_index=True)
-            merged = merged[(pd.to_datetime(merged["entry_time"]) >= lo) & (pd.to_datetime(merged["exit_time"]) <= hi)]
+            ent, ext = to_dt(merged["entry_time"]), to_dt(merged["exit_time"])
+            merged = merged[(ent >= lo) & (ext <= hi)]
             res = simulate(daily_table(merged, risk_pct, lo, hi), rules, n)
             if better(res, best_res) and (gain_res is None or better(res, gain_res)):
                 gain_key, gain_res = k, res
