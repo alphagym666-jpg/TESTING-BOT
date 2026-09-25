@@ -208,3 +208,22 @@ def test_reconnects_when_mt5_comes_back(setup, monkeypatch):
     monkeypatch.setattr(paper_mod.time, "sleep", lambda s: None)
     eng._reconnect()
     assert calls["n"] == 3 and eng.slots["s1"].position is not None
+
+
+def test_exploration_includes_exact_validated_and_portfolio(tmp_path):
+    import json
+
+    import pandas as pd
+
+    from mt5lab.paper import load_exploration_slots
+    cand = {"signal": {"type": "single", "name": "ema_cross", "params": {"fast": 9, "slow": 50}}, "filter": "trend_ema200",
+            "risk": {"sl_mode": "swing", "sl_value": 10, "rr": 2.5, "management": "breakeven", "max_hold": 200,
+                     "direction": "long"}}
+    row = {"verdict": "APPROUVÉ", "score_is": 3.0, "avgR_oos": 0.3, "wr_oos": 45.0, "candidate": json.dumps(cand)}
+    (tmp_path / "EURUSD_H1").mkdir()
+    pd.DataFrame([row]).to_csv(tmp_path / "EURUSD_H1" / "classement.csv", index=False)
+    pd.DataFrame([{"ordre": 4, "symbole": "EURUSD", "timeframe": "H1", "candidate": json.dumps(cand)}]).to_csv(
+        tmp_path / "portefeuille_ftmo.csv", index=False)
+    slots = load_exploration_slots(tmp_path, ["EURUSD"], ["H1"])
+    exact = [s for s in slots if s.candidate == cand]
+    assert len(exact) == 1 and exact[0].verdict == "portefeuille FTMO n°4"

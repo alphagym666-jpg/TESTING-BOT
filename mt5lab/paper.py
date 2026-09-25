@@ -165,6 +165,15 @@ def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_0
     sinon un réglage médian de sa grille. Stop à sl_atr ATR, sans gestion (pour comparer les R:R à armes égales).
     """
     slots: dict[str, Slot] = {}
+    # stratégies du portefeuille du Chef FTMO : repérées par leur numéro dans la plateforme
+    port_path = Path(results_dir) / "portefeuille_ftmo.csv"
+    in_port: dict[tuple, str] = {}
+    if port_path.exists():
+        pf = pd.read_csv(port_path)
+        for i, r in enumerate(pf.itertuples(), 1):
+            num = getattr(r, "ordre", i)
+            in_port[(str(r.symbole), str(r.timeframe), signal_key(json.loads(r.candidate)))] = \
+                f"portefeuille FTMO n°{num}"
     for sym in symbols:
         for tf in timeframes:
             path = Path(results_dir) / f"{sym}_{tf}" / "classement.csv"
@@ -186,6 +195,11 @@ def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_0
                         signals[sig.get("name", signal_key(sig))] = (sig, "none", "invention")
                     if r["verdict"] == "APPROUVÉ":  # 3) stratégies validées, telles quelles (filtre compris)
                         signals["validée " + signal_key(sig) + c["filter"]] = (sig, c["filter"], "validée")
+                        # ... et aussi avec leur réglage EXACT (stop, R:R, gestion, sens) trouvé par la recherche
+                        origin = in_port.get((sym, tf, signal_key(c)), "validée (réglage exact)")
+                        s = Slot(slot_id(sym, tf, c), sym, tf, c, origin, _num(r.get("avgR_oos")),
+                                 _num(r.get("wr_oos")), capital, capital, capital, day_start=capital)
+                        slots[s.id] = s
             for sig, flt, origin in signals.values():
                 for rr in rr_levels:
                     cand = {"signal": sig, "filter": flt,
