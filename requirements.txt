@@ -1,0 +1,5 @@
+numpy>=1.24
+pandas>=2.0
+# Connexion MetaTrader 5 (Windows uniquement, terminal MT5 installé et connecté)
+MetaTrader5>=5.0.45; sys_platform == "win32"
+pytest>=7
