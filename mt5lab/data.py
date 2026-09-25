@@ -164,9 +164,8 @@ class MT5Connector:
         line(term is not None and term.connected, f"Terminal connecté au serveur ({getattr(term, 'company', '?')})")
         line(True, f"Compte {acc.login} sur {acc.server} | {self.account_kind()} | "
                    f"{acc.balance} {acc.currency} | levier 1:{acc.leverage}")
-        line(term is not None and term.trade_allowed,
-             "Trading algorithmique autorisé dans le terminal (bouton « Algo Trading » vert)")
-        line(acc.trade_allowed, "Trading autorisé sur ce compte")
+        print(f"  [--] Algo Trading {'activé' if term is not None and term.trade_allowed else 'désactivé'} "
+              "(inutile pour la recherche et le paper trading : aucun ordre n'est envoyé)")
         for sym in symbols:
             try:
                 name = self.resolve(sym)

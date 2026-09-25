@@ -62,7 +62,6 @@ où le terminal MT5 est installé.
 3. **Double-cliquez sur `install.bat`**. Il crée l'environnement et installe `MetaTrader5`, `numpy` et `pandas`.
 4. **Ouvrez MetaTrader 5 et connectez-vous** à votre compte, idéalement un compte **démo**.
    - Pour avoir beaucoup d'historique : *Outils → Options → Graphiques → Barres max. dans le graphique = Unlimited*.
-   - Pour que la plateforme puisse passer des ordres : bouton **Algo Trading** activé (vert).
 5. *(Optionnel)* Remplissez le fichier `.env` (login, mot de passe, serveur) si vous voulez que la plateforme
    se connecte toute seule. Si MT5 est déjà connecté, laissez-le vide. Ce fichier reste sur votre PC.
 6. **Double-cliquez sur `lancer.bat`** pour ouvrir le menu :
@@ -73,8 +72,9 @@ où le terminal MT5 est installé.
   3. Lancer la recherche (10 agents)
   4. Lancer une recherche longue (plus de tests)
   5. Ouvrir les rapports
-  6. Meilleure strategie en SIMULATION (aucun ordre)
-  7. Meilleure strategie sur compte DEMO (vrais ordres)
+  6. PAPER TRADING : trades fictifs sur prix reels (top 20 par symbole)
+  7. PAPER TRADING : seulement les strategies approuvees
+  8. Ouvrir le tableau de bord du paper trading
 ```
 
 Le test de connexion (`python run.py check --symbols EURUSD XAUUSD`) affiche ceci :
@@ -83,8 +83,7 @@ Le test de connexion (`python run.py check --symbols EURUSD XAUUSD`) affiche cec
 Diagnostic MT5
   [OK] Terminal connecté au serveur (Votre courtier)
   [OK] Compte 12345678 sur Courtier-Demo | DÉMO | 10000.0 USD | levier 1:100
-  [OK] Trading algorithmique autorisé dans le terminal (bouton « Algo Trading » vert)
-  [OK] Trading autorisé sur ce compte
+  [--] Algo Trading désactivé (inutile pour la recherche et le paper trading : aucun ordre n'est envoyé)
   [OK] EURUSD.m : 5000 bougies H1 du ... au ... | spread 12 pts | lot min 0.01 | heure serveur ...
 Tout est prêt.
 ```
@@ -139,19 +138,37 @@ Résultats dans `results/<SYMBOLE>_<TF>/` :
 
 Plus de rounds (`--rounds`) et de budget (`--budget`) = recherche plus large (et plus longue).
 
-## Exécution sur MT5
+## Paper trading : trades fictifs sur les prix réels
+
+La plateforme **ne passe aucun ordre dans MetaTrader**. Elle prend les trades **fictivement**, en suivant
+les vrais prix de votre MT5 en direct :
 
 ```bash
-# Simulation : affiche les ordres qu'il passerait, n'envoie rien
-python run.py live --symbol EURUSD --timeframe H1 --strategies results/EURUSD_H1/meilleures_strategies.json
-
-# Vrais ordres sur compte DÉMO, 0.5 % de risque par trade
-python run.py live --symbol EURUSD --timeframe H1 --strategies results/EURUSD_H1/meilleures_strategies.json --execute --risk 0.5
+# les 20 meilleures stratégies de la recherche, par symbole
+python run.py paper --symbols EURUSD XAUUSD --timeframes H1 --top 20
+# seulement les stratégies approuvées, avec la commission de votre courtier (ex. 7 $ par lot)
+python run.py paper --symbols EURUSD --timeframes H1 M15 --source approuvees --commission 7
 ```
 
-Les comptes réels sont refusés sauf avec `--allow-real`. La taille de lot est calculée pour que le
-stop loss corresponde exactement au % de risque choisi. Le SL et le TP sont placés dans l'ordre ;
-le break-even et le trailing sont gérés à chaque clôture de bougie.
+Ce qui rend les chiffres réalistes :
+- **entrée au vrai prix** : ask pour un achat, bid pour une vente, donc avec le spread réel du moment ;
+- **SL et TP vérifiés tick par tick** avec l'historique des ticks MT5. Si le prix saute par-dessus le stop,
+  la sortie se fait au prix réel du tick, glissement compris. Le TP est pris à son niveau ;
+- **taille de lot, valeur du pip, lot minimum et pas de lot** : ceux de votre courtier ;
+- break-even, trailing stop et sortie sur signal gérés comme dans le backtest ;
+- **chaque stratégie a son compte virtuel** (10 000 par défaut, `--capital`) et son propre suivi.
+
+Résultats dans `results/paper/` :
+- `tableau_de_bord.html` : classement des stratégies en direct, positions ouvertes avec P&L latent,
+  derniers trades, et comparaison avec les résultats attendus d'après la recherche (se rafraîchit toutes les 30 s) ;
+- `trades.csv` : tous les trades fictifs, à ouvrir dans Excel ;
+- `etat.json` : sauvegarde. Si vous arrêtez puis relancez, les positions ouvertes et les comptes virtuels reprennent.
+
+Le terminal MT5 doit rester ouvert et connecté (un compte démo suffit). Au démarrage, la plateforme attend la
+prochaine clôture de bougie avant de prendre un trade.
+
+> Le module `live` (envoi de vrais ordres) existe toujours dans le code pour plus tard. Il n'est **pas** dans le
+> menu et ne fait rien sans l'option `--execute`.
 
 ## Hypothèses du backtest
 

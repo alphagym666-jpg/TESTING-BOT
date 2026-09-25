@@ -13,7 +13,10 @@ Exemples :
     # Recherche sur un CSV exporté de MT5
     python run.py lab --csv data/EURUSD_H1.csv --cost 0.00012
 
-    # Lancer la meilleure stratégie trouvée en simulation, puis en démo réelle
+    # Paper trading : trades FICTIFS sur les prix réels de MT5 (rien n'est envoyé à MT5)
+    python run.py paper --symbols EURUSD XAUUSD --timeframes H1 --top 20
+
+    # (Optionnel) exécution réelle d'une stratégie, simulation par défaut
     python run.py live --symbol EURUSD --timeframe H1 --strategies results/EURUSD_H1/meilleures_strategies.json
     python run.py live ... --execute
 """
@@ -69,6 +72,21 @@ def cmd_live(a):
                    allow_real=a.allow_real).run(a.poll)
 
 
+def cmd_paper(a):
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, load_slots, write_dashboard
+
+    slots = []
+    for tf in a.timeframes:
+        slots += load_slots(Path(a.results), a.symbols, tf, a.source, a.top, a.capital)
+    if not slots:
+        raise SystemExit("Aucune stratégie à suivre : lancez d'abord la recherche (python run.py lab ...).")
+    with MT5Connector() as conn:
+        eng = PaperEngine(conn, slots, Path(a.out), a.risk, a.commission)
+        write_dashboard(eng)
+        eng.run(a.poll)
+
+
 def cmd_check(a):
     from mt5lab.data import MT5Connector
     with MT5Connector() as conn:
@@ -113,6 +131,20 @@ def main():
     live.add_argument("--execute", action="store_true", help="envoyer de VRAIS ordres (sinon simulation)")
     live.add_argument("--allow-real", action="store_true", help="autoriser un compte réel")
     live.set_defaults(func=cmd_live)
+
+    paper = sub.add_parser("paper", help="trades FICTIFS sur les prix réels de MT5 (aucun ordre envoyé)")
+    paper.add_argument("--symbols", nargs="+", default=["EURUSD"])
+    paper.add_argument("--timeframes", nargs="+", default=["H1"])
+    paper.add_argument("--source", choices=["tous", "approuvees"], default="tous",
+                       help="tous = les meilleurs finalistes de la recherche ; approuvees = seulement les validées")
+    paper.add_argument("--top", type=int, default=20, help="nb max de stratégies suivies par symbole/timeframe")
+    paper.add_argument("--capital", type=float, default=10_000, help="capital virtuel de chaque stratégie")
+    paper.add_argument("--risk", type=float, default=1.0, help="risque par trade en %% du capital virtuel")
+    paper.add_argument("--commission", type=float, default=0.0, help="commission aller-retour par lot (devise du compte)")
+    paper.add_argument("--poll", type=int, default=5, help="secondes entre deux vérifications")
+    paper.add_argument("--results", default="results")
+    paper.add_argument("--out", default="results/paper")
+    paper.set_defaults(func=cmd_paper)
 
     check = sub.add_parser("check", help="tester la connexion à MT5")
     check.add_argument("--symbols", nargs="+", default=["EURUSD"])
