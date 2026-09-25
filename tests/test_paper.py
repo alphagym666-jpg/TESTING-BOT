@@ -186,3 +186,25 @@ def test_exploration_covers_every_strategy_and_rr(tmp_path):
     names = {s.candidate["signal"]["name"] for s in slots}
     assert len(names) >= len([n for n in REGISTRY if not n.startswith("_")])
     assert {s.cfg.rr for s in slots} == set(RR_LEVELS)
+
+
+def test_reconnects_when_mt5_comes_back(setup, monkeypatch):
+    """MT5 fermé : le paper trading attend et se reconnecte sans perdre ses positions."""
+    import mt5lab.paper as paper_mod
+    mk, tmp = setup
+    eng = _engine(tmp)
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    calls = {"n": 0}
+
+    def flaky_connect(verbose=True):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("Échec de connexion à MT5 : terminal fermé")
+        return eng.c
+
+    monkeypatch.setattr(eng.c, "connect", flaky_connect)
+    monkeypatch.setattr(paper_mod.time, "sleep", lambda s: None)
+    eng._reconnect()
+    assert calls["n"] == 3 and eng.slots["s1"].position is not None

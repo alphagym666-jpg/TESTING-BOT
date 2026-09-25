@@ -128,6 +128,13 @@ def cmd_paper(a):
     from mt5lab.paper import (PaperEngine, load_best_slots, load_exploration_slots, load_portfolio_slots,
                               load_slots, write_dashboard)
 
+    if a.port:  # déjà en marche ? (deux copies écriraient dans les mêmes fichiers)
+        import socket
+        with socket.socket() as sock:
+            sock.settimeout(1)
+            if sock.connect_ex(("127.0.0.1", a.port)) == 0:
+                print(f"[paper] Ce paper trading tourne déjà : http://localhost:{a.port}")
+                raise SystemExit(3)
     slots = []
     if a.source == "portefeuille":
         slots = load_portfolio_slots(Path(a.results), a.capital)

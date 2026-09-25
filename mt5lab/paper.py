@@ -560,27 +560,69 @@ class PaperEngine:
         if server:
             print(f"[paper] PLATEFORME EN DIRECT : http://localhost:{server_port}   (Ctrl+C pour arrêter)")
         last_dash = 0.0
+        errors = 0
+        last_beat = time.time()
+        _keep_awake(True)
         try:
             while True:
                 try:
                     self.step()
+                    errors = 0
                     if server:
                         server.publish(self.snapshot())
                     if time.time() - last_dash >= dashboard_every:
                         write_dashboard(self)
                         last_dash = time.time()
+                    if time.time() - last_beat >= 600:  # signe de vie toutes les 10 min
+                        n_open = sum(bool(x.position) for x in self.slots.values())
+                        n_tr = sum(x.trades for x in self.slots.values())
+                        print(f"[paper] {datetime.now():%H:%M} toujours en marche : {n_open} positions ouvertes, "
+                              f"{n_tr} trades clôturés")
+                        last_beat = time.time()
                 except KeyboardInterrupt:
                     raise
-                except Exception as exc:  # une coupure réseau ne doit pas tout arrêter
+                except Exception as exc:  # une coupure réseau ou MT5 fermé ne doit pas tout arrêter
+                    errors += 1
                     print(f"[paper] erreur : {exc}")
+                    if errors >= 3:
+                        self._reconnect()
+                        errors = 0
                 time.sleep(poll)
         except KeyboardInterrupt:
             self.save()
             write_dashboard(self)
             print("[paper] arrêté, état sauvegardé.")
         finally:
+            _keep_awake(False)
             if server:
                 server.shutdown()
+
+    def _reconnect(self):
+        """MT5 fermé ou déconnecté : on attend qu'il revienne, sans perdre l'état."""
+        self.save()
+        while True:
+            try:
+                self.mt5.shutdown()
+            except Exception:
+                pass
+            try:
+                self.c.connect(verbose=False)
+                print(f"[paper] {datetime.now():%H:%M} reconnecté à MT5, je reprends")
+                return
+            except Exception as exc:
+                print(f"[paper] {datetime.now():%H:%M} MT5 injoignable ({str(exc).splitlines()[0]}), "
+                      f"nouvel essai dans 30 s. Vérifiez que MetaTrader 5 est ouvert et connecté.")
+                time.sleep(30)
+
+
+def _keep_awake(on: bool):
+    """Empêche Windows de se mettre en veille pendant le paper trading (sans effet ailleurs)."""
+    try:
+        import ctypes
+        es_continuous, es_system_required = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | (es_system_required if on else 0))
+    except Exception:
+        pass
 
 
 def _base_name(cand: dict) -> str:

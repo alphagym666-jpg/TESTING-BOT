@@ -76,7 +76,9 @@ où le terminal MT5 est installé.
   7. Les 30 meilleures strategies de la recherche
   8. Le portefeuille du Chef FTMO / strategies validees
   9. Ouvrir la PLATEFORME (voir les trades en direct)
-  0. Quitter
+  A. Lancer l'exploration automatiquement au demarrage de Windows
+  B. Ne plus lancer au demarrage de Windows
+  0. Quitter le menu (le paper trading continue dans sa fenetre)
 ```
 
 Le test de connexion (`python run.py check --symbols EURUSD XAUUSD`) affiche ceci :
@@ -204,6 +206,21 @@ python run.py paper --symbols EURUSD --timeframes H1 M15 --source approuvees --c
 L'exploration fonctionne même sans recherche préalable : les réglages par défaut de chaque stratégie sont alors
 utilisés. Après une recherche, ce sont les meilleurs réglages trouvés, plus les inventions des agents.
 3 marchés × 7 timeframes × 99 stratégies × 9 R:R, cela fait environ 19 000 comptes fictifs suivis en même temps.
+
+### Faire tourner le paper trading en continu
+
+Les options 6, 7 et 8 du menu ouvrent le paper trading **dans sa propre fenêtre** (`paper_24h.bat`). Le menu reste
+libre pour lancer une recherche en même temps.
+- **Réduisez la fenêtre sans la fermer.** Fermer le navigateur ne l'arrête pas : la plateforme se rouvre avec l'option 9.
+- Si le paper trading s'arrête (MT5 fermé, coupure internet, erreur), il **redémarre tout seul** au bout de 30 s et
+  reprend ses positions et ses comptes fictifs là où il en était.
+- Le PC ne se met pas en veille tant qu'il tourne. La session Windows doit rester ouverte et le PC allumé.
+- **Option A** : l'exploration se lance automatiquement à chaque démarrage de Windows, fenêtre réduite. MetaTrader 5
+  est ouvert automatiquement s'il est installé. **Option B** désactive ce lancement automatique.
+- Un deuxième lancement du même paper trading est refusé, pour éviter que deux copies écrivent dans les mêmes fichiers.
+
+Pour que ça tourne vraiment 24h/24 sans laisser votre PC allumé, installez le dossier sur un **VPS Windows**
+(ordinateur Windows loué en ligne, environ 10 à 20 $ par mois) avec MT5, puis activez l'option A.
 
 ### La plateforme en direct
 

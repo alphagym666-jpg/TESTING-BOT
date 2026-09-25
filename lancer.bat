@@ -40,13 +40,15 @@ echo   3. Recherche complete : tous les marches x tous les timeframes
 echo   4. Recherche FTMO INTENSIVE (beaucoup plus de tests, plusieurs heures)
 echo   5. Ouvrir la COMPARAISON (quelle strategie rapporte le plus / passe FTMO)
 echo.
-echo   --- PAPER TRADING EN DIRECT (trades fictifs sur prix reels) ---
+echo   --- PAPER TRADING 24h/24 (s'ouvre dans sa propre fenetre, le menu reste libre) ---
 echo   6. EXPLORATION : toutes les strategies x tous les R:R
 echo   7. Les 30 meilleures strategies de la recherche
 echo   8. Le portefeuille du Chef FTMO / strategies validees
 echo   9. Ouvrir la PLATEFORME (voir les trades en direct)
+echo   A. Lancer l'exploration automatiquement au demarrage de Windows
+echo   B. Ne plus lancer au demarrage de Windows
 echo.
-echo   0. Quitter
+echo   0. Quitter le menu (le paper trading continue dans sa fenetre)
 echo.
 echo   Aucune option n'envoie d'ordre a MetaTrader.
 echo.
@@ -61,6 +63,8 @@ if "%CHOIX%"=="6" goto explore
 if "%CHOIX%"=="7" goto paper
 if "%CHOIX%"=="8" goto paperok
 if "%CHOIX%"=="9" goto platform
+if /i "%CHOIX%"=="A" goto autostart
+if /i "%CHOIX%"=="B" goto noautostart
 if "%CHOIX%"=="0" exit /b 0
 goto menu
 
@@ -91,21 +95,42 @@ if exist "results\comparaison.html" (start "" "results\comparaison.html") else (
 pause & goto menu
 
 :explore
-echo Toutes les strategies x tous les R:R en paper trading. La plateforme s'ouvre dans le navigateur.
-echo Laissez cette fenetre et MT5 ouverts. Ctrl+C pour arreter (tout est sauvegarde).
-python run.py paper --symbols %SYMS% --timeframes %TFS% --source exploration --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO%
-pause & goto menu
+start "Paper trading - exploration" "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source exploration --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO%
+goto lance
 
 :paper
-python run.py paper --symbols %SYMS% --source meilleures --top 30 --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_meilleures --port 8766
-pause & goto menu
+start "Paper trading - 30 meilleures" "%~dp0paper_24h.bat" --symbols %SYMS% --source meilleures --top 30 --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_meilleures --port 8766
+goto lance
 
 :paperok
-python run.py paper --symbols %SYMS% --timeframes %TFS% --source portefeuille --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_validees --port 8767
+start "Paper trading - portefeuille FTMO" "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source portefeuille --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_validees --port 8767
+goto lance
+
+:lance
+echo.
+echo Le paper trading demarre dans une NOUVELLE fenetre : reduisez-la, ne la fermez pas.
+echo Il tourne en continu et redemarre tout seul s'il s'arrete. La plateforme s'ouvre dans le navigateur.
+echo Vous pouvez fermer le navigateur quand vous voulez et le rouvrir avec l'option 9.
+echo Ce menu reste libre : vous pouvez lancer une recherche en meme temps.
+pause & goto menu
+
+:autostart
+set STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+> "%STARTUP%\LaboMT5_paper_trading.bat" echo @echo off
+>> "%STARTUP%\LaboMT5_paper_trading.bat" echo start "Paper trading - exploration" /min "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source exploration --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO%
+echo.
+echo C'est fait : a chaque demarrage de Windows, l'exploration se lance toute seule (fenetre reduite).
+echo MetaTrader 5 est ouvert automatiquement par la plateforme s'il est installe.
+echo Pensez a garder la session Windows ouverte et le PC allume.
+pause & goto menu
+
+:noautostart
+del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\LaboMT5_paper_trading.bat" 2>nul
+echo Le lancement automatique au demarrage de Windows est desactive.
 pause & goto menu
 
 :platform
 start "" "http://localhost:8765"
-echo Si la page ne s'affiche pas : lancez d'abord le paper trading (option 6).
+echo Si la page ne s'affiche pas : lancez d'abord le paper trading (option 6) et attendez 30 secondes.
 echo Options 7 et 8 : http://localhost:8766 et http://localhost:8767
 pause & goto menu
