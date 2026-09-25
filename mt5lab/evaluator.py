@@ -37,7 +37,13 @@ def describe(c: dict) -> str:
         return f"{s['name']}({p})"
 
     s = c["signal"]
-    txt = one(s) if s["type"] == "single" else f"{one(s['a'])} {s['mode'].upper()}[{s['window']}] {one(s['b'])}"
+    if s["type"] == "rule":
+        from .inventions import describe_rule
+        txt = describe_rule(s)
+    elif s["type"] == "single":
+        txt = one(s)
+    else:
+        txt = f"{one(s['a'])} {s['mode'].upper()}[{s['window']}] {one(s['b'])}"
     if c.get("filter", "none") != "none":
         txt += f" + filtre {c['filter']}"
     return txt
@@ -46,6 +52,9 @@ def describe(c: dict) -> str:
 def compute_signal(df: pd.DataFrame, sig: dict) -> pd.Series:
     if sig["type"] == "single":
         return REGISTRY[sig["name"]].func(df, **sig["params"])
+    if sig["type"] == "rule":  # stratégie inventée par un agent
+        from .inventions import rule_signal
+        return rule_signal(df, sig)
     a = compute_signal(df, sig["a"])
     b = compute_signal(df, sig["b"])
     return combine(a, b, sig["mode"], sig.get("window", 3))
@@ -94,11 +103,13 @@ class Evaluator:
     """Pool de processus partagé par tous les agents."""
 
     def __init__(self, df_is: pd.DataFrame, df_oos: pd.DataFrame, cost: float, risk_pct: float = 1.0,
-                 workers: int | None = None):
+                 workers: int | None = None, extra: dict | None = None):
         self.datasets = {
             "is": {"df": df_is, "cost": cost, "risk_pct": risk_pct},
             "oos": {"df": df_oos, "cost": cost, "risk_pct": risk_pct},
         }
+        for name, d in (extra or {}).items():  # ex. isa / isb : sous-périodes pour les inventions
+            self.datasets[name] = {"df": d, "cost": cost, "risk_pct": risk_pct}
         self.workers = workers or max(1, (os.cpu_count() or 2))
         self.pool = None
         self.seen: dict[str, dict] = {}  # mémo global : aucun agent ne reteste le même candidat

@@ -46,14 +46,30 @@ def commission_for(table: dict, symbol: str) -> float:
     return table.get(symbol.upper(), table["*"])
 
 
+def ftmo_rules(a):
+    from mt5lab.ftmo import FtmoRules
+    return FtmoRules(target1=a.ftmo_target, target2=a.ftmo_phase2, max_daily=a.ftmo_daily, max_total=a.ftmo_total,
+                     min_days=a.ftmo_min_days)
+
+
+def add_ftmo_args(p):
+    g = p.add_argument_group("règles du challenge FTMO")
+    g.add_argument("--ftmo-target", type=float, default=10.0, help="objectif de profit en %% (défaut 10)")
+    g.add_argument("--ftmo-daily", type=float, default=3.0, help="perte max par jour en %% (défaut 3)")
+    g.add_argument("--ftmo-total", type=float, default=10.0, help="perte max totale en %% (défaut 10)")
+    g.add_argument("--ftmo-phase2", type=float, default=0.0, help="objectif phase 2 en %% (0 = pas de phase 2)")
+    g.add_argument("--ftmo-min-days", type=int, default=4, help="jours de trading minimum (défaut 4)")
+
+
 def cmd_compare(a):
     from mt5lab.compare import build_comparison
-    build_comparison(Path(a.out), a.capital)
+    build_comparison(Path(a.out), a.capital, ftmo_rules(a), a.risk)
 
 
 def cmd_lab(a):
     cfg = LabConfig(rounds=a.rounds, budget=a.budget, oos_fraction=a.oos, risk_pct=a.risk,
-                    workers=a.workers, seed=a.seed)
+                    workers=a.workers, seed=a.seed, ftmo=ftmo_rules(a), invent=not a.no_invent,
+                    invent_generations=a.invent_generations)
     out_root = Path(a.out)
     jobs = []
     if a.demo:
@@ -94,7 +110,7 @@ def cmd_lab(a):
         print(f"Rapport : {out_root / label / 'rapport.html'}")
     if len(jobs) > 1 or not (a.demo or a.csv):
         from mt5lab.compare import build_comparison
-        build_comparison(out_root, a.capital)
+        build_comparison(out_root, a.capital, ftmo_rules(a), a.risk)
 
 
 def cmd_live(a):
@@ -163,6 +179,9 @@ def main():
     lab.add_argument("--workers", type=int, default=None)
     lab.add_argument("--seed", type=int, default=int(time.time()) % 10000)
     lab.add_argument("--out", default="results")
+    lab.add_argument("--no-invent", action="store_true", help="pas de round d'invention de stratégies")
+    lab.add_argument("--invent-generations", type=int, default=8, help="générations d'évolution par agent inventeur")
+    add_ftmo_args(lab)
     lab.set_defaults(func=cmd_lab)
 
     live = sub.add_parser("live", help="exécuter une stratégie validée sur MT5")
@@ -191,11 +210,14 @@ def main():
     paper.add_argument("--poll", type=int, default=5, help="secondes entre deux vérifications")
     paper.add_argument("--results", default="results")
     paper.add_argument("--out", default="results/paper")
+    add_ftmo_args(paper)
     paper.set_defaults(func=cmd_paper)
 
     comp = sub.add_parser("compare", help="comparer tous les marchés × timeframes déjà testés")
     comp.add_argument("--out", default="results")
     comp.add_argument("--capital", type=float, default=100_000)
+    comp.add_argument("--risk", type=float, default=0.5, help="risque par trade en %% (pour le portefeuille FTMO)")
+    add_ftmo_args(comp)
     comp.set_defaults(func=cmd_compare)
 
     check = sub.add_parser("check", help="tester la connexion à MT5")

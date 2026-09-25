@@ -109,7 +109,7 @@ def test_lab_all_timeframes_with_alias_and_comparison(monkeypatch, tmp_path):
     import run
     monkeypatch.setattr(sys, "argv", ["run.py", "lab", "--symbols", "NASDAQ", "EURUSD", "--timeframes", "H1", "H4",
                                       "--rounds", "1", "--budget", "40", "--workers", "1", "--seed", "1",
-                                      "--commission", "EURUSD=5", "NASDAQ=0"])
+                                      "--commission", "EURUSD=5", "NASDAQ=0", "--no-invent"])
     run.main()
     for label in ("NASDAQ_H1", "NASDAQ_H4", "EURUSD_H1", "EURUSD_H4"):
         assert (tmp_path / "results" / label / "classement.csv").exists()

@@ -6,11 +6,14 @@ un test D1 plusieurs années ; comparer des gains totaux n'aurait pas de sens.
 from __future__ import annotations
 
 import html
+import json
 from pathlib import Path
 
 import pandas as pd
 
 from .data import TIMEFRAMES
+from .evaluator import candidate_key
+from .ftmo import FtmoRules, build_portfolio
 
 
 def collect(results_dir: Path) -> pd.DataFrame:
@@ -29,14 +32,47 @@ def collect(results_dir: Path) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)
-    for col in ("gain_mois_pct", "trades_mois", "oos_jours"):
+    for col in ("gain_mois_pct", "trades_mois", "oos_jours", "oos_debut", "oos_fin", "ftmo_pass", "ftmo_p1",
+                "ftmo_jours_p1", "ftmo_echec_p1"):
         if col not in out.columns:  # résultats d'une ancienne version
             out[col] = float("nan")
     return out
 
 
-def build_comparison(results_dir: Path, capital: float = 100_000) -> pd.DataFrame:
+def portfolio(results_dir: Path, allr: pd.DataFrame, rules: FtmoRules, risk_pct: float, log=print):
+    """Le Chef FTMO combine les stratégies validées (tous marchés et timeframes) pour maximiser la réussite."""
+    ok = allr[allr["_ok"] & allr["oos_debut"].notna()].copy()
+    if not len(ok):
+        return pd.DataFrame(), {}
+    ok["pkey"] = [f"{r.symbole}_{r.timeframe}|{candidate_key(json.loads(r.candidate))}" for r in ok.itertuples()]
+    ok = ok.drop_duplicates("pkey").sort_values("ftmo_pass", ascending=False).head(25)
+    trades, windows = {}, {}
+    for label in ok["pkey"].str.split("|").str[0].unique():
+        path = results_dir / label / "trades_oos.csv"
+        if not path.exists():
+            continue
+        t = pd.read_csv(path)
+        for k, g in t.groupby("key"):
+            trades[f"{label}|{k}"] = g[["entry_time", "exit_time", "r"]]
+    ok = ok[ok["pkey"].isin(trades)]
+    for r in ok.itertuples():
+        windows[r.pkey] = (pd.Timestamp(r.oos_debut), pd.Timestamp(r.oos_fin))
+    if not len(ok):
+        return pd.DataFrame(), {}
+    log(f"Chef FTMO : je cherche la meilleure combinaison parmi {len(ok)} stratégies validées "
+        f"({rules.label()}, {risk_pct:g} %/trade)")
+    chosen, res = build_portfolio(trades, windows, risk_pct, list(ok["pkey"]), rules, log=log)
+    port = ok.set_index("pkey").loc[chosen].reset_index()
+    if len(port):
+        port.drop(columns=[c for c in port.columns if c.startswith("_")]).to_csv(results_dir / "portefeuille_ftmo.csv",
+                                                                                 index=False)
+    return port, res
+
+
+def build_comparison(results_dir: Path, capital: float = 100_000, rules: FtmoRules | None = None,
+                     risk_pct: float = 0.5) -> pd.DataFrame:
     results_dir = Path(results_dir)
+    rules = rules or FtmoRules()
     allr = collect(results_dir)
     if not len(allr):
         print("[comparaison] aucun résultat trouvé")
@@ -46,9 +82,11 @@ def build_comparison(results_dir: Path, capital: float = 100_000) -> pd.DataFram
     allr["_tested"] = allr["trades_oos"].notna()
     allr = allr.sort_values(["_ok", "gain_mois_pct"], ascending=[False, False])
     cols = ["verdict", "symbole", "timeframe", "strategie", "risque", "gain_mois_pct", "gain_mois_usd", "trades_mois",
-            "wr_oos", "avgR_oos", "pf_oos", "dd_oos_pct", "trades_oos", "oos_jours", "candidate"]
+            "wr_oos", "avgR_oos", "pf_oos", "dd_oos_pct", "trades_oos", "oos_jours", "ftmo_pass", "ftmo_jours_p1",
+            "ftmo_echec_p1", "candidate"]
     allr[cols].to_csv(results_dir / "comparaison.csv", index=False)
-    _write_html(results_dir / "comparaison.html", allr, capital)
+    port, port_res = portfolio(results_dir, allr, rules, risk_pct)
+    _write_html(results_dir / "comparaison.html", allr, capital, rules, port, port_res)
     ok = allr[allr["_ok"]]
     print(f"\n===== COMPARAISON : {len(ok)} stratégies approuvées sur "
           f"{allr[['symbole', 'timeframe']].drop_duplicates().shape[0]} marchés × timeframes =====")
@@ -94,7 +132,22 @@ def _table(df, capital, esc):
     return f"<div class='scroll'><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>"
 
 
-def _write_html(path: Path, allr: pd.DataFrame, capital: float):
+def _ftmo_table(df, esc):
+    rows = ""
+    for i, (_, r) in enumerate(df.iterrows(), 1):
+        rows += (f"<tr><td>{i}</td><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{esc(r['strategie'])}</td>"
+                 f"<td>{esc(r['risque'])}</td><td class='pos'>{_fmt(r['ftmo_pass'], '{:.0f}')} %</td>"
+                 f"<td>{_fmt(r['ftmo_jours_p1'], '{:.0f}')}</td><td>{_fmt(r['ftmo_echec_p1'], '{:.0f}')} %</td>"
+                 f"<td>{_fmt(r['gain_mois_pct'])} %</td><td>{_fmt(r['trades_mois'], '{:.1f}')}</td>"
+                 f"<td>{_fmt(r['dd_oos_pct'], '{:.1f}')} %</td></tr>")
+    head = ("<tr><th>#</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th><th>Réussite challenge</th>"
+            "<th>Jours de bourse (médiane)</th><th>Échec</th><th>Gain / mois</th><th>Trades / mois</th><th>DD max</th></tr>")
+    return f"<div class='scroll'><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>"
+
+
+def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules | None = None,
+                port: pd.DataFrame | None = None, port_res: dict | None = None):
+    rules = rules or FtmoRules()
     esc = html.escape
     ok = allr[allr["_ok"]]
     syms = list(dict.fromkeys(allr["symbole"]))
@@ -130,12 +183,35 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float):
         fam = "".join(f"<tr><td>{esc(i)}</td><td>{r.n}</td><td>{esc(r.marches)}</td><td>{esc(r.tfs)}</td>"
                       f"<td>{r.gain:+.2f} %</td></tr>" for i, r in agg.iterrows())
     promising = allr[~allr["_ok"] & allr["_tested"] & (allr["gain_mois_pct"] > 0)].head(15)
+    ftmo_ok = ok[ok["ftmo_pass"].notna()].sort_values(["ftmo_pass", "ftmo_jours_p1"], ascending=[False, True])
+    ftmo_html = f"<h2>Objectif FTMO : {esc(rules.label())}</h2>"
+    if port is not None and len(port) and port_res:
+        prow = "".join(f"<tr><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{esc(r['strategie'])}</td>"
+                       f"<td>{esc(r['risque'])}</td><td>{_fmt(r['ftmo_pass'], '{:.0f}')} %</td></tr>"
+                       for _, r in port.iterrows())
+        ftmo_html += (f"<div class='cards'><div class='card'><span class='mut'>Portefeuille du Chef FTMO</span>"
+                      f"<b>{len(port)} stratégies</b></div><div class='card'><span class='mut'>Réussite du challenge</span>"
+                      f"<b class='pos'>{port_res['ftmo_pass']:.0f} %</b></div><div class='card'><span class='mut'>"
+                      f"Jours de bourse pour +{rules.target1:g} % (médiane)</span><b>{_fmt(port_res['ftmo_jours_p1'], '{:.0f}')}</b>"
+                      f"</div><div class='card'><span class='mut'>Échec (règle de perte touchée)</span>"
+                      f"<b>{_fmt(port_res['ftmo_echec_p1'], '{:.0f}')} %</b></div></div>"
+                      f"<p class='mut'>Stratégies tradées ENSEMBLE, chacune à son risque par trade. La perte du jour compte "
+                      f"toutes les positions ouvertes comme si elles étaient à leur stop.</p>"
+                      f"<div class='scroll'><table><thead><tr><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th>"
+                      f"<th>Réussite seule</th></tr></thead><tbody>{prow}</tbody></table></div>")
+    ftmo_html += "<h3>Meilleures stratégies seules pour le challenge</h3>"
+    ftmo_html += _ftmo_table(ftmo_ok.head(20), esc) if len(ftmo_ok) else \
+        "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"
+    ftmo_html += ("<p class='mut'>Réussite = % de challenges réussis sur des milliers de simulations construites à partir des "
+                  "journées réelles hors-échantillon. Suppose que la stratégie continue de se comporter comme sur cette "
+                  "période : à confirmer en paper trading.</p>")
     doc = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Comparaison des stratégies</title><style>{CSS}</style></head>
 <body><main><h1>Quelle stratégie rapporte le plus ?</h1>
 <p class="mut">Tous les marchés et timeframes testés. Les gains sont ceux de la période hors-échantillon (jamais vue pendant
 la recherche), ramenés par mois pour comparer équitablement M1 et D1. Commission et spread inclus.</p>
 <div class="cards">{cards_html}</div>
+{ftmo_html}
 <h2>Carte marché × timeframe (meilleure stratégie validée)</h2>
 <div class="scroll"><table>{grid}</table></div>
 <h2>Classement des stratégies validées, par gain mensuel</h2>

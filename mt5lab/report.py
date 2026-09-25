@@ -69,7 +69,16 @@ def write_report(path, label, board: pd.DataFrame, journal, agents, cfg, n_evals
         curves += (f'<div class="card"><span class="mut">{esc(row["risque"])}</span><div>{esc(row["strategie"])}</div>'
                    f'{_equity_svg(r)}<span class="mut">{len(r)} trades | {r.sum():+.1f} R au total</span></div>')
 
-    cols = ["verdict", "strategie", "risque", "trouve_par", "trades_is", "wr_is", "avgR_is", "pf_is",
+    inv = board[board.get("invention", pd.Series("", index=board.index)).fillna("") != ""] if len(board) else board
+    inv_rows = "".join(
+        f"<tr><td>{esc(str(r['invention']))}</td><td>{'oui' if r.get('confirmee_chef') is True else 'non'}</td>"
+        f"<td class='{'ok' if r['verdict'] == 'APPROUVÉ' else 'bad'}'>{esc(str(r['verdict']))}</td>"
+        f"<td>{esc(str(r['strategie']))}</td><td>{esc(str(r['risque']))}</td><td>{r['avgR_oos']}</td></tr>"
+        for _, r in inv.iterrows())
+    inv_html = ("<div class='scroll'><table><thead><tr><th>Agent</th><th>Confirmée par le chef</th><th>Validation finale</th>"
+                f"<th>Règle inventée</th><th>Risque</th><th>R moyen OOS</th></tr></thead><tbody>{inv_rows}</tbody></table></div>"
+                if len(inv) else "<p class='mut'>Pas de round d'invention.</p>")
+    cols = ["verdict", "invention", "strategie", "risque", "trouve_par", "trades_is", "wr_is", "avgR_is", "pf_is",
             "trades_oos", "wr_oos", "avgR_oos", "pf_oos", "ret_oos_pct", "dd_oos_pct", "cout_x2_avgR", "periodes_positives"]
     heads = "".join(f"<th>{esc(c)}</th>" for c in cols)
     body = ""
@@ -90,6 +99,8 @@ def write_report(path, label, board: pd.DataFrame, journal, agents, cfg, n_evals
 budget {cfg.budget} tests/agent/round · validation hors-échantillon sur les derniers {cfg.oos_fraction:.0%}</p>
 <div class="cards">{cards_html}</div>
 <h2>L'équipe</h2><div class="teams">{teams_html}</div>
+<h2>Inventions des agents</h2>
+{inv_html}
 <h2>Courbes des meilleures stratégies (historique complet, en R)</h2>
 <div class="cards">{curves or '<p class="mut">Aucune stratégie approuvée.</p>'}</div>
 <h2>Classement</h2>
