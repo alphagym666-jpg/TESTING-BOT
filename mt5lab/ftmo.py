@@ -113,7 +113,8 @@ def simulate(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), n: int = 3000,
 
 def build_portfolio(trades_by_key: dict[str, pd.DataFrame], windows: dict[str, tuple], risk_pct: float,
                     candidates: list[str], rules: FtmoRules = FtmoRules(), max_size: int = 6,
-                    min_window_days: int = 45, n: int = 2000, log=print) -> tuple[list[str], dict]:
+                    min_window_days: int = 45, n: int = 2000, log=print,
+                    names: dict[str, str] | None = None) -> tuple[list[str], dict]:
     """Chef FTMO : ajoute une à une les stratégies qui augmentent le plus la probabilité de passer le challenge.
 
     Les stratégies sont combinées sur leur période hors-échantillon commune (au moins min_window_days jours).
@@ -131,6 +132,7 @@ def build_portfolio(trades_by_key: dict[str, pd.DataFrame], windows: dict[str, t
                 and (np.isnan(d_old) or d_new <= 0.9 * d_old))
 
     chosen: list[str] = []
+    steps: list[dict] = []
     best_res: dict | None = None
     while len(chosen) < max_size:
         gain_key, gain_res = None, None
@@ -152,7 +154,10 @@ def build_portfolio(trades_by_key: dict[str, pd.DataFrame], windows: dict[str, t
             break
         chosen.append(gain_key)
         best_res = gain_res
+        best_res["etapes"] = steps
+        steps.append({"cle": gain_key, "reussite": best_res["ftmo_pass"], "jours": best_res["ftmo_jours_p1"]})
         log(f"Chef FTMO : + stratégie {len(chosen)} -> réussite {best_res['ftmo_pass']:.1f} % "
-            f"(+{rules.target1:g} % en ~{best_res['ftmo_jours_p1']:.0f} jours de bourse)")
+            f"(+{rules.target1:g} % en ~{best_res['ftmo_jours_p1']:.0f} jours de bourse)\n"
+            f"             = {(names or {}).get(gain_key, gain_key)}")
     best_res = best_res or {}
     return chosen, best_res

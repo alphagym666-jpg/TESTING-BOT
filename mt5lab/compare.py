@@ -61,11 +61,21 @@ def portfolio(results_dir: Path, allr: pd.DataFrame, rules: FtmoRules, risk_pct:
         return pd.DataFrame(), {}
     log(f"Chef FTMO : je cherche la meilleure combinaison parmi {len(ok)} stratégies validées "
         f"({rules.label()}, {risk_pct:g} %/trade)")
-    chosen, res = build_portfolio(trades, windows, risk_pct, list(ok["pkey"]), rules, log=log)
+    names = {r.pkey: f"{r.symbole} {r.timeframe} | {r.strategie} | {r.risque}" for r in ok.itertuples()}
+    chosen, res = build_portfolio(trades, windows, risk_pct, list(ok["pkey"]), rules, log=log, names=names)
     port = ok.set_index("pkey").loc[chosen].reset_index()
     if len(port):
-        port.drop(columns=[c for c in port.columns if c.startswith("_")]).to_csv(results_dir / "portefeuille_ftmo.csv",
-                                                                                 index=False)
+        steps = {e["cle"]: e for e in res.get("etapes", [])}
+        port.insert(0, "ordre", range(1, len(port) + 1))
+        port.insert(1, "reussite_portefeuille", [steps.get(k, {}).get("reussite") for k in port["pkey"]])
+        port.insert(2, "jours_portefeuille", [steps.get(k, {}).get("jours") for k in port["pkey"]])
+        port.drop(columns=[c for c in port.columns if c.startswith("_") or c == "pkey"]).to_csv(
+            results_dir / "portefeuille_ftmo.csv", index=False)
+        log(f"\n===== PORTEFEUILLE DU CHEF FTMO : {len(port)} stratégies à trader ENSEMBLE =====")
+        for r in port.itertuples():
+            log(f"  {r.ordre}. {r.symbole} {r.timeframe} | {r.strategie} | {r.risque}")
+        log(f"  -> réussite {res['ftmo_pass']:.1f} %, +{rules.target1:g} % en ~{res['ftmo_jours_p1']:.0f} jours de bourse")
+        log(f"  Détails : comparaison.html (en haut) et portefeuille_ftmo.csv")
     return port, res
 
 
@@ -186,8 +196,10 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules
     ftmo_ok = ok[ok["ftmo_pass"].notna()].sort_values(["ftmo_pass", "ftmo_jours_p1"], ascending=[False, True])
     ftmo_html = f"<h2>Objectif FTMO : {esc(rules.label())}</h2>"
     if port is not None and len(port) and port_res:
-        prow = "".join(f"<tr><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{esc(r['strategie'])}</td>"
-                       f"<td>{esc(r['risque'])}</td><td>{_fmt(r['ftmo_pass'], '{:.0f}')} %</td></tr>"
+        prow = "".join(f"<tr><td><b>{r['ordre']}</b></td><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td>"
+                       f"<td>{esc(r['strategie'])}</td><td>{esc(r['risque'])}</td><td>{_fmt(r['ftmo_pass'], '{:.0f}')} %</td>"
+                       f"<td class='pos'>{_fmt(r['reussite_portefeuille'], '{:.1f}')} %</td>"
+                       f"<td>{_fmt(r['jours_portefeuille'], '{:.0f}')}</td></tr>"
                        for _, r in port.iterrows())
         ftmo_html += (f"<div class='cards'><div class='card'><span class='mut'>Portefeuille du Chef FTMO</span>"
                       f"<b>{len(port)} stratégies</b></div><div class='card'><span class='mut'>Réussite du challenge</span>"
@@ -197,8 +209,9 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules
                       f"<b>{_fmt(port_res['ftmo_echec_p1'], '{:.0f}')} %</b></div></div>"
                       f"<p class='mut'>Stratégies tradées ENSEMBLE, chacune à son risque par trade. La perte du jour compte "
                       f"toutes les positions ouvertes comme si elles étaient à leur stop.</p>"
-                      f"<div class='scroll'><table><thead><tr><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th>"
-                      f"<th>Réussite seule</th></tr></thead><tbody>{prow}</tbody></table></div>")
+                      f"<div class='scroll'><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th>"
+                      f"<th>Réussite seule</th><th>Réussite du portefeuille après ajout</th>"
+                      f"<th>Jours pour +{rules.target1:g} % après ajout</th></tr></thead><tbody>{prow}</tbody></table></div>")
     ftmo_html += "<h3>Meilleures stratégies seules pour le challenge</h3>"
     ftmo_html += _ftmo_table(ftmo_ok.head(20), esc) if len(ftmo_ok) else \
         "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"
