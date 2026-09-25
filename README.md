@@ -156,7 +156,12 @@ Ce qui rend les chiffres réalistes :
   la sortie se fait au prix réel du tick, glissement compris. Le TP est pris à son niveau ;
 - **taille de lot, valeur du pip, lot minimum et pas de lot** : ceux de votre courtier ;
 - break-even, trailing stop et sortie sur signal gérés comme dans le backtest ;
-- **chaque stratégie a son compte virtuel** (10 000 par défaut, `--capital`) et son propre suivi.
+- **chaque stratégie a son compte virtuel** (100 000 par défaut, `--capital`) et son propre suivi ;
+- **perte max par trade** : 0,5 % par défaut (`--risk`), soit **500 sur 100 000**. Le lot est arrondi vers le bas
+  pour que la perte au stop, commission comprise, ne dépasse jamais ce montant. Le plafond est calculé sur le
+  capital de départ (ou sur le solde s'il a baissé), donc il ne grossit pas avec les gains. Si même le lot minimum
+  du courtier dépasse ce risque, le trade est ignoré. Seul un gap par-dessus le stop peut faire perdre un peu plus,
+  exactement comme en réel.
 
 Résultats dans `results/paper/` :
 - `tableau_de_bord.html` : classement des stratégies en direct, positions ouvertes avec P&L latent,

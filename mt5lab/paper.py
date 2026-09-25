@@ -59,8 +59,9 @@ class Slot:
     verdict: str = ""
     expected_avg_r: float | None = None
     expected_wr: float | None = None
-    balance: float = 10_000.0
-    peak: float = 10_000.0
+    balance: float = 100_000.0
+    peak: float = 100_000.0
+    capital: float = 100_000.0    # capital de départ : le risque par trade est plafonné sur cette base
     max_dd_pct: float = 0.0
     trades: int = 0
     wins: int = 0
@@ -79,7 +80,7 @@ def slot_id(symbol, timeframe, candidate) -> str:
     return f"{symbol}_{timeframe}_{h}"
 
 
-def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, capital=10_000.0) -> list[Slot]:
+def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, capital=100_000.0) -> list[Slot]:
     """Charge les stratégies à suivre depuis les classements produits par la recherche."""
     slots = []
     for sym in symbols:
@@ -94,7 +95,7 @@ def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, cap
         for _, row in board.iterrows():
             cand = json.loads(row["candidate"])
             slots.append(Slot(slot_id(sym, timeframe, cand), sym, timeframe, cand, str(row["verdict"]),
-                              _num(row.get("avgR_oos")), _num(row.get("wr_oos")), capital, capital))
+                              _num(row.get("avgR_oos")), _num(row.get("wr_oos")), capital, capital, capital))
         print(f"[paper] {sym} {timeframe} : {min(len(board), top)} stratégies suivies")
     return slots
 
@@ -165,14 +166,20 @@ class PaperEngine:
         tick_size = info.trade_tick_size or info.point
         return price_move / tick_size * (info.trade_tick_value or 0.0) * lots
 
-    def _lots(self, symbol: str, balance: float, dist: float) -> float:
+    def _lots(self, symbol: str, budget: float, dist: float) -> float:
+        """Plus grand lot dont la perte au stop (+ commission) reste <= budget. 0 si même le lot minimum dépasse."""
         info = self.c.symbol_info(symbol)
-        per_lot = self._money(symbol, dist, 1.0)
+        per_lot = self._money(symbol, dist, 1.0) + self.commission
         if per_lot <= 0:
             return 0.0
         step = info.volume_step or 0.01
-        lots = math.floor(balance * self.risk_pct / 100 / per_lot / step) * step
-        return round(min(max(lots, info.volume_min), info.volume_max), 8)
+        lots = math.floor(budget / per_lot / step + 1e-9) * step
+        lots = min(lots, info.volume_max)
+        return round(lots, 8) if lots >= info.volume_min else 0.0
+
+    def risk_budget(self, s: "Slot") -> float:
+        """Perte max autorisée par trade : risk_pct du capital de départ (ou du solde s'il a baissé)."""
+        return min(s.balance, s.capital) * self.risk_pct / 100
 
     # ------------------------------------------------------------------ positions
     def _open(self, s: Slot, side: int, closed: pd.DataFrame, tick):
@@ -182,8 +189,10 @@ class PaperEngine:
         dist = _stop_distance(closed, s.cfg, atr_arr, len(closed) - 1, side, price)
         if not np.isfinite(dist) or dist <= 0:
             return
-        lots = self._lots(s.symbol, s.balance, dist)
+        lots = self._lots(s.symbol, self.risk_budget(s), dist)
         if lots <= 0:
+            print(f"[paper] trade ignoré sur {s.symbol} : même le lot minimum dépasserait le risque max "
+                  f"de {self.risk_budget(s):.2f} ({describe(s.candidate)})")
             return
         tp = price + side * s.cfg.rr * dist if s.cfg.rr else None
         s.position = Position(side, price, price - side * dist, tp, dist, lots,
@@ -409,7 +418,8 @@ def write_dashboard(engine: PaperEngine):
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Paper trading MT5</title><style>{CSS}</style></head>
 <body><main><h1>Paper trading — trades fictifs sur prix réels</h1>
 <p class="mut">Prix en direct de {esc(str(getattr(acc, 'server', 'MT5')))} · aucun ordre envoyé à MetaTrader ·
-chaque stratégie a son compte virtuel ({engine.risk_pct:g} % de risque par trade) · démarré le {esc(engine.started)} ·
+chaque stratégie a son compte virtuel de {next(iter(engine.slots.values())).capital:,.0f}
+(perte max {engine.risk_pct:g} % par trade) · démarré le {esc(engine.started)} ·
 mis à jour le {datetime.now():%Y-%m-%d %H:%M:%S} (rafraîchissement auto 30 s)</p>
 <div class="cards">{cards_html}</div>
 <h2>Classement des stratégies (en direct)</h2>

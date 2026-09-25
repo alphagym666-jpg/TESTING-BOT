@@ -115,7 +115,7 @@ def main():
     lab.add_argument("--rounds", type=int, default=3)
     lab.add_argument("--budget", type=int, default=1000, help="tests max par agent et par round")
     lab.add_argument("--oos", type=float, default=0.35, help="part des données réservée à la validation")
-    lab.add_argument("--risk", type=float, default=1.0, help="risque par trade en %% pour le calcul du rendement")
+    lab.add_argument("--risk", type=float, default=0.5, help="risque par trade en %% pour le calcul du rendement")
     lab.add_argument("--workers", type=int, default=None)
     lab.add_argument("--seed", type=int, default=int(time.time()) % 10000)
     lab.add_argument("--out", default="results")
@@ -138,8 +138,9 @@ def main():
     paper.add_argument("--source", choices=["tous", "approuvees"], default="tous",
                        help="tous = les meilleurs finalistes de la recherche ; approuvees = seulement les validées")
     paper.add_argument("--top", type=int, default=20, help="nb max de stratégies suivies par symbole/timeframe")
-    paper.add_argument("--capital", type=float, default=10_000, help="capital virtuel de chaque stratégie")
-    paper.add_argument("--risk", type=float, default=1.0, help="risque par trade en %% du capital virtuel")
+    paper.add_argument("--capital", type=float, default=100_000, help="capital virtuel de chaque stratégie")
+    paper.add_argument("--risk", type=float, default=0.5,
+                       help="perte max par trade en %% du capital (0.5 %% de 100 000 = 500 max au stop)")
     paper.add_argument("--commission", type=float, default=0.0, help="commission aller-retour par lot (devise du compte)")
     paper.add_argument("--poll", type=int, default=5, help="secondes entre deux vérifications")
     paper.add_argument("--results", default="results")

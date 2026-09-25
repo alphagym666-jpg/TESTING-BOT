@@ -79,14 +79,15 @@ def setup(monkeypatch, tmp_path):
     REGISTRY.pop("_test_long", None)
 
 
-def _engine(tmp_path, rr=2.0):
+def _engine(tmp_path, rr=2.0, risk_pct=1.0, commission=0.0):
     from mt5lab.data import MT5Connector
     from mt5lab.paper import PaperEngine, Slot
     cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
             "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": rr, "management": "none", "max_hold": 200,
                      "direction": "both"}}
     conn = MT5Connector().connect(verbose=False)
-    return PaperEngine(conn, [Slot("s1", "EURUSD", "H1", cand)], tmp_path / "paper", risk_pct=1.0)
+    return PaperEngine(conn, [Slot("s1", "EURUSD", "H1", cand)], tmp_path / "paper", risk_pct=risk_pct,
+                       commission_per_lot=commission)
 
 
 def test_take_profit_on_real_ticks(setup):
@@ -104,7 +105,7 @@ def test_take_profit_on_real_ticks(setup):
     s = eng.slots["s1"]
     assert s.position is None and s.trades == 1 and s.wins == 1
     assert s.history_r[-1] == pytest.approx(2.0, abs=0.02)
-    assert s.balance == pytest.approx(10_000 * 1.02, rel=0.01)
+    assert s.balance == pytest.approx(100_000 * 1.02, rel=0.01)
     assert (tmp / "paper" / "trades.csv").exists()
     assert mk.sent == []                         # aucun ordre envoyé à MT5
 
@@ -136,3 +137,19 @@ def test_state_survives_restart_and_dashboard(setup):
     mk.push_ticks([eng2.slots["s1"].position.tp + 0.0001])
     eng2.step()
     assert eng2.slots["s1"].trades == 1
+
+
+@pytest.mark.parametrize("commission", [0.0, 7.0])
+def test_max_loss_half_percent_of_100k(setup, commission):
+    """0,5 % de 100 000 : la perte au stop (commission incluse) ne dépasse jamais 500."""
+    mk, tmp = setup
+    eng = _engine(tmp, risk_pct=0.5, commission=commission)
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    p = eng.slots["s1"].position
+    assert p.risk_money + commission * p.lots <= 500 + 1e-6
+    assert p.risk_money + commission * p.lots > 480          # on utilise bien le budget
+    mk.push_ticks([p.sl])                                     # stop touché pile
+    eng.step()
+    assert -500 - 1e-6 <= eng.slots["s1"].pnl < 0
