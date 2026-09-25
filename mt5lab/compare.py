@@ -13,7 +13,7 @@ import pandas as pd
 
 from .data import TIMEFRAMES
 from .evaluator import candidate_key
-from .ftmo import FtmoRules, build_portfolio
+from .ftmo import FtmoRules, build_portfolio, daily_table, simulate
 
 
 def collect(results_dir: Path) -> pd.DataFrame:
@@ -45,7 +45,7 @@ def portfolio(results_dir: Path, allr: pd.DataFrame, rules: FtmoRules, risk_pct:
     if not len(ok):
         return pd.DataFrame(), {}
     ok["pkey"] = [f"{r.symbole}_{r.timeframe}|{candidate_key(json.loads(r.candidate))}" for r in ok.itertuples()]
-    ok = ok.drop_duplicates("pkey").sort_values("ftmo_pass", ascending=False).head(25)
+    ok = ok.drop_duplicates("pkey")
     trades, windows = {}, {}
     for label in ok["pkey"].str.split("|").str[0].unique():
         path = results_dir / label / "trades_oos.csv"
@@ -57,6 +57,15 @@ def portfolio(results_dir: Path, allr: pd.DataFrame, rules: FtmoRules, risk_pct:
     ok = ok[ok["pkey"].isin(trades)]
     for r in ok.itertuples():
         windows[r.pkey] = (pd.Timestamp(r.oos_debut), pd.Timestamp(r.oos_fin))
+    # chiffres FTMO recalculés avec les règles et le risque actuels, par la même méthode que le portefeuille :
+    # la page et la console donnent exactement les mêmes chiffres pour une stratégie seule
+    for idx, r in ok.iterrows():
+        lo, hi = windows[r["pkey"]]
+        res = simulate(daily_table(trades[r["pkey"]], risk_pct, lo, hi), rules, 3000, seed=0)
+        for k in ("ftmo_pass", "ftmo_jours_p1", "ftmo_echec_p1"):
+            ok.at[idx, k] = res[k]
+            allr.at[idx, k] = res[k]
+    ok = ok.sort_values("ftmo_pass", ascending=False).head(25)
     if not len(ok):
         return pd.DataFrame(), {}
     log(f"Chef FTMO : je cherche la meilleure combinaison parmi {len(ok)} stratégies validées "
@@ -94,8 +103,8 @@ def build_comparison(results_dir: Path, capital: float = 100_000, rules: FtmoRul
     cols = ["verdict", "symbole", "timeframe", "strategie", "risque", "gain_mois_pct", "gain_mois_usd", "trades_mois",
             "wr_oos", "avgR_oos", "pf_oos", "dd_oos_pct", "trades_oos", "oos_jours", "ftmo_pass", "ftmo_jours_p1",
             "ftmo_echec_p1", "candidate"]
-    allr[cols].to_csv(results_dir / "comparaison.csv", index=False)
     port, port_res = portfolio(results_dir, allr, rules, risk_pct)
+    allr[cols].to_csv(results_dir / "comparaison.csv", index=False)
     _write_html(results_dir / "comparaison.html", allr, capital, rules, port, port_res)
     ok = allr[allr["_ok"]]
     print(f"\n===== COMPARAISON : {len(ok)} stratégies approuvées sur "
@@ -202,7 +211,8 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules
                        f"<td>{_fmt(r['jours_portefeuille'], '{:.0f}')}</td></tr>"
                        for _, r in port.iterrows())
         ftmo_html += (f"<div class='cards'><div class='card'><span class='mut'>Portefeuille du Chef FTMO</span>"
-                      f"<b>{len(port)} stratégies</b></div><div class='card'><span class='mut'>Réussite du challenge</span>"
+                      f"<b>{len(port)} stratégies tradées ensemble</b></div><div class='card'><span class='mut'>Réussite du challenge "
+                      f"avec les {len(port)} ensemble</span>"
                       f"<b class='pos'>{port_res['ftmo_pass']:.0f} %</b></div><div class='card'><span class='mut'>"
                       f"Jours de bourse pour +{rules.target1:g} % (médiane)</span><b>{_fmt(port_res['ftmo_jours_p1'], '{:.0f}')}</b>"
                       f"</div><div class='card'><span class='mut'>Échec (règle de perte touchée)</span>"
@@ -210,9 +220,10 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules
                       f"<p class='mut'>Stratégies tradées ENSEMBLE, chacune à son risque par trade. La perte du jour compte "
                       f"toutes les positions ouvertes comme si elles étaient à leur stop.</p>"
                       f"<div class='scroll'><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th>"
-                      f"<th>Réussite seule</th><th>Réussite du portefeuille après ajout</th>"
+                      f"<th>Réussite de cette stratégie seule</th><th>Réussite du portefeuille après ajout</th>"
                       f"<th>Jours pour +{rules.target1:g} % après ajout</th></tr></thead><tbody>{prow}</tbody></table></div>")
-    ftmo_html += "<h3>Meilleures stratégies seules pour le challenge</h3>"
+    ftmo_html += ("<h3>Meilleures stratégies seules pour le challenge</h3><p class='mut'>Chaque stratégie tradée "
+                  "SEULE. Le portefeuille ci-dessus combine plusieurs de ces stratégies, d'où une réussite plus élevée.</p>")
     ftmo_html += _ftmo_table(ftmo_ok.head(20), esc) if len(ftmo_ok) else \
         "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"
     ftmo_html += ("<p class='mut'>Réussite = % de challenges réussis sur des milliers de simulations construites à partir des "

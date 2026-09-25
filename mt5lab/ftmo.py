@@ -113,7 +113,7 @@ def simulate(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), n: int = 3000,
 
 def build_portfolio(trades_by_key: dict[str, pd.DataFrame], windows: dict[str, tuple], risk_pct: float,
                     candidates: list[str], rules: FtmoRules = FtmoRules(), max_size: int = 6,
-                    min_window_days: int = 45, n: int = 2000, log=print,
+                    min_window_days: int = 45, n: int = 3000, log=print,
                     names: dict[str, str] | None = None) -> tuple[list[str], dict]:
     """Chef FTMO : ajoute une à une les stratégies qui augmentent le plus la probabilité de passer le challenge.
 
@@ -147,7 +147,7 @@ def build_portfolio(trades_by_key: dict[str, pd.DataFrame], windows: dict[str, t
             merged = pd.concat([trades_by_key[x] for x in keys], ignore_index=True)
             ent, ext = to_dt(merged["entry_time"]), to_dt(merged["exit_time"])
             merged = merged[(ent >= lo) & (ext <= hi)]
-            res = simulate(daily_table(merged, risk_pct, lo, hi), rules, n)
+            res = simulate(daily_table(merged, risk_pct, lo, hi), rules, n, seed=0)
             if better(res, best_res) and (gain_res is None or better(res, gain_res)):
                 gain_key, gain_res = k, res
         if gain_key is None:

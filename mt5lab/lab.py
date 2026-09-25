@@ -159,8 +159,8 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             continue
         tr = tr[["entry_time", "exit_time", "r"]].assign(key=candidate_key(f.candidate))
         oos_trades.append(tr)
-        ftmo_res[f.key] = simulate(daily_table(tr, cfg.risk_pct, df_oos.index[0], df_oos.index[-1]), cfg.ftmo or FtmoRules(),
-                                   n=1500, seed=cfg.seed)
+        ftmo_res[f.key] = simulate(daily_table(tr, cfg.risk_pct, df_oos.index[0], df_oos.index[-1]),
+                                   cfg.ftmo or FtmoRules(), n=3000, seed=0)
     if oos_trades:
         pd.concat(oos_trades, ignore_index=True).to_csv(out_dir / "trades_oos.csv", index=False)
     ok_ftmo = [ftmo_res[f.key]["ftmo_pass"] for f in final if f.key in ftmo_res]
