@@ -104,6 +104,7 @@ class Group:
     day_budget: float | None = None   # perte possible max par jour, en % (réalisé + ouvert + nouveau trade)
     day_stop: float | None = None     # plus de nouveau trade après -X % réalisés dans la journée
     max_open: int | None = None       # positions ouvertes max en même temps
+    total_budget: float | None = None # perte totale max depuis le départ, en % (jamais dépassée par un nouveau trade)
     balance: float = 100_000.0
     peak: float = 100_000.0
     max_dd_pct: float = 0.0
@@ -121,7 +122,8 @@ class Group:
     skipped: int = 0                  # signaux refusés par les règles de risque
 
 
-GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open")]
+GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
+                                                                "total_budget")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -187,7 +189,7 @@ def load_combined_slots(results_dir: Path, capital=100_000.0) -> tuple[list[Slot
                  group=name, risk_pct=float(c["risk_pct"]))
         slots.append(s)
     groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
-                     "max_open": rules.get("max_open")}}
+                     "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0)}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
           f"(perte possible max {rules.get('day_budget')} %/jour)")
     return slots, groups
@@ -288,7 +290,7 @@ class PaperEngine:
         for name, g in (groups or {}).items():
             cap = g.get("capital", 100_000.0)
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
-                                      balance=cap, peak=cap, day_start=cap)
+                                      g.get("total_budget"), balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -403,6 +405,11 @@ class PaperEngine:
             open_risk = sum(x.position.risk_money for x in members) * 1.1
             new_risk = self.risk_budget(s) * 1.1
             if (max(0.0, -g.day_realized) + open_risk + new_risk) / g.capital * 100 > g.day_budget + 1e-9:
+                ok = False
+        if ok and g.total_budget is not None:  # même si tous les stops sautent, la perte totale reste sous le plafond
+            open_risk = sum(x.position.risk_money for x in members) * 1.1
+            new_risk = self.risk_budget(s) * 1.1
+            if (max(0.0, g.capital - g.balance) + open_risk + new_risk) / g.capital * 100 > g.total_budget + 1e-9:
                 ok = False
         if not ok:
             g.skipped += 1
@@ -697,7 +704,8 @@ class PaperEngine:
                 "pire_jour_pct": round(g.worst_day_pct, 2), "dd_max": round(g.max_dd_pct, 2), "trades": g.trades,
                 "gagnants": g.wins, "r_total": round(g.sum_r, 2), "pnl": round(g.pnl, 2), "ftmo": g.ftmo_status,
                 "ftmo_quand": g.ftmo_when, "jours_trades": len(g.trade_days), "refuses": g.skipped,
-                "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open},
+                "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open,
+                           "budget_total": g.total_budget},
                 "composants": [{"symbole": x.symbol, "tf": x.timeframe, "strategie": describe(x.candidate),
                                 "risque": x.cfg.label(), "risque_pct": x.risk_pct, "trades": x.trades,
                                 "gagnants": x.wins, "r_total": round(x.sum_r, 2), "en_position": bool(x.position)}

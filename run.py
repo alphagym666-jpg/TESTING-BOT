@@ -67,7 +67,8 @@ def cmd_directeur(a):
     cfg = DirectorConfig(a.symbols, a.timeframes, out=Path(a.out), capital=a.capital, risk_pct=a.risk_max,
                          day_budget=a.perte_max_jour, lab_risk_pct=a.risk, ftmo=ftmo_rules(a), rounds=a.rounds,
                          budget=a.budget, invent_generations=a.invent_generations, reuse=not a.refaire,
-                         second_pass=not a.sans_deuxieme_passe, years=a.annees)
+                         second_pass=not a.sans_deuxieme_passe, years=a.annees, total_budget=a.perte_max_totale,
+                         max_fail=a.echec_max, catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques)
     if a.demo:
         from mt5lab.data import synthetic
         freq = {"M1": "min", "M5": "5min", "M15": "15min", "M30": "30min", "H1": "h", "H4": "4h", "D1": "D"}
@@ -94,6 +95,7 @@ def cmd_compare(a):
 def cmd_lab(a):
     cfg = LabConfig(rounds=a.rounds, budget=a.budget, oos_fraction=a.oos, risk_pct=a.risk,
                     workers=a.workers, seed=a.seed, ftmo=ftmo_rules(a), invent=not a.no_invent,
+                    catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques,
                     invent_generations=a.invent_generations)
     out_root = Path(a.out)
     jobs = []
@@ -227,6 +229,8 @@ def main():
     lab.add_argument("--seed", type=int, default=int(time.time()) % 10000)
     lab.add_argument("--out", default="results")
     lab.add_argument("--no-invent", action="store_true", help="pas de round d'invention de stratégies")
+    lab.add_argument("--sans-catalogue", action="store_true", help="ne pas optimiser les 99 stratégies du catalogue")
+    lab.add_argument("--sans-equipes-banques", action="store_true", help="sans les équipes C et D")
     lab.add_argument("--invent-generations", type=int, default=8, help="générations d'évolution par agent inventeur")
     add_ftmo_args(lab)
     lab.set_defaults(func=cmd_lab)
@@ -273,8 +277,13 @@ def main():
                     help="années d'historique (défaut : 2 ans en M1/M5, 5 ans de M15 à D1)")
     di.add_argument("--capital", type=float, default=100_000)
     di.add_argument("--risk-max", type=float, default=1.0, help="risque MAX par trade essayé par le Directeur (%%)")
-    di.add_argument("--perte-max-jour", type=float, default=1.7,
+    di.add_argument("--perte-max-jour", type=float, default=2.5,
                     help="perte possible max par jour : le Directeur teste tous les scénarios jusqu'à ce plafond (%%)")
+    di.add_argument("--perte-max-totale", type=float, default=10.0, help="perte totale max, jamais dépassée (%%)")
+    di.add_argument("--echec-max", type=float, default=2.0,
+                    help="%% maximum de challenges ratés toléré pour retenir un scénario")
+    di.add_argument("--sans-catalogue", action="store_true", help="ne pas optimiser les 99 stratégies du catalogue")
+    di.add_argument("--sans-equipes-banques", action="store_true", help="sans les équipes C et D")
     di.add_argument("--risk", type=float, default=0.5, help="risque utilisé par les chefs pour noter les stratégies (%%)")
     di.add_argument("--commission", nargs="+", default=None)
     di.add_argument("--commission-points", type=float, default=0.0)

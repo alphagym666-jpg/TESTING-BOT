@@ -253,3 +253,23 @@ def test_combined_strategy_shares_one_account_and_respects_daily_budget(setup):
     snap = eng.snapshot()
     assert snap["groupes"][0]["composants"] and snap["groupes"][0]["ftmo"] == "en cours"
     assert mk.sent == []
+
+
+def test_combined_total_loss_cap(setup):
+    """Garde des 10 % : si le compte a déjà perdu 9,5 %, un trade de 0,9 % (frais compris) est refusé."""
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    mk, tmp = setup
+    cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+    conn = MT5Connector().connect(verbose=False)
+    eng = PaperEngine(conn, [Slot("c", "EURUSD", "H1", cand, group="g", risk_pct=0.9)], tmp / "paper", 0.5,
+                      groups={"g": {"capital": 100_000, "day_budget": 2.5, "total_budget": 10.0}})
+    g = eng.groups["g"]
+    g.balance, g.day = 90_500, "2000-01-01"  # perte subie les jours précédents
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    assert g.ftmo_status == "en cours"
+    assert eng.slots["c"].position is None and g.skipped == 1

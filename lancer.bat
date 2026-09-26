@@ -20,7 +20,8 @@ rem Regles du challenge FTMO : objectif, perte max par jour, perte max totale (e
 set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10
 rem Le Directeur : risque MAX par trade, et perte possible max par jour (il teste tous les scenarios jusqu'a ce plafond)
 set DIR_RISQUE_MAX=1.0
-set DIR_PERTE_JOUR=1.7
+set DIR_PERTE_JOUR=2.5
+set DIR_PERTE_TOTALE=10
 rem Historique teste : 2 ans en M1 et M5, 5 ans en M15, M30, H1, H4 et D1 (automatique)
 rem =====================================================================================
 
@@ -107,7 +108,7 @@ pause & goto menu
 :directeur
 echo Le Directeur reprend le travail deja fait, relance les cases faibles en mode intensif,
 echo puis construit la strategie combinee. Comptez de quelques minutes a plusieurs heures. Laissez MT5 ouvert.
-python run.py directeur --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --commission %COMMISSION% %FTMO%
+python run.py directeur --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
 if exist "results\directeur.html" start "" "results\directeur.html"
 pause & goto menu
 

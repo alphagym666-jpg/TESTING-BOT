@@ -32,6 +32,12 @@ def collect(results_dir: Path) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)
+    # une invention recopiée par un autre agent (même règle, autre nom) n'est comptée qu'une fois
+    def rule_key(r):
+        c = json.loads(r["candidate"])
+        sig = {k: v for k, v in c["signal"].items() if k != "name"}
+        return json.dumps([r["symbole"], r["timeframe"], sig, c["filter"], c["risk"]], sort_keys=True)
+    out = out[~out.apply(rule_key, axis=1).duplicated()].reset_index(drop=True)
     for col in ("gain_mois_pct", "trades_mois", "oos_jours", "oos_debut", "oos_fin", "ftmo_pass", "ftmo_p1",
                 "ftmo_jours_p1", "ftmo_echec_p1", "donnees_debut", "donnees_fin"):
         if col not in out.columns:  # résultats d'une ancienne version

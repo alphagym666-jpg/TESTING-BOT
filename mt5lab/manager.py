@@ -48,8 +48,12 @@ class DirectorConfig:
     capital: float = 100_000.0
     risk_pct: float = 1.0              # risque MAX par trade : le Directeur ne le dépasse jamais
     risk_levels: tuple = (0.25, 0.5, 0.75, 0.8, 0.9, 1.0)  # niveaux de risque par trade essayés (<= risk_pct)
-    day_budget: float = 1.7            # perte max possible par jour (réalisé + positions ouvertes + nouveau trade)
-    day_budgets: tuple = (0.5, 0.75, 1.0, 1.25, 1.5, 1.7)  # scénarios testés (jamais au-dessus de day_budget)
+    day_budget: float = 2.5            # perte max possible par jour (réalisé + positions ouvertes + nouveau trade)
+    day_budgets: tuple = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5)  # scénarios (jamais au-dessus de day_budget)
+    total_budget: float = 10.0         # perte totale max : aucun nouveau trade ne peut la faire dépasser
+    max_fail: float = 2.0              # % d'échecs toléré au challenge (limite de perte touchée) pour un scénario
+    catalog: bool = True               # optimisation des stratégies du catalogue dans chaque recherche
+    bank_teams: bool = True            # équipes C et D dans chaque recherche
     rr_variants: bool = True           # essayer aussi chaque stratégie validée avec tous les R:R
     lab_risk_pct: float = 0.5          # risque utilisé pendant la recherche des chefs (pour noter les stratégies)
     ftmo: FtmoRules = field(default_factory=FtmoRules)
@@ -71,6 +75,33 @@ def _fmt(v, f="{:.1f}"):
         return str(v)
 
 
+def _txt(v) -> str:
+    return "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v)
+
+
+def same_rule_key(sym, tf, cand: dict) -> str:
+    """Clé qui ignore le nom : une invention recopiée par un autre agent reste la même stratégie."""
+    sig = {k: v for k, v in cand["signal"].items() if k != "name"}
+    return json.dumps([sym, tf, sig, cand["filter"], cand["risk"]], sort_keys=True)
+
+
+def kind(r) -> str:
+    """Type de stratégie, pour le classement."""
+    equipe = _txt(r.get("equipe", ""))
+    name = _txt(r.get("strategie", ""))
+    if name.startswith("FAILLE") or equipe == "C":
+        return "Faille des banques (équipe C)"
+    if equipe == "D":
+        return "Invention institutionnelle (équipe D)"
+    if _txt(r.get("invention", "")) or name.startswith("INVENTION"):
+        return "Invention (équipes A/B)"
+    if equipe == "Optimiseur du catalogue":
+        return "Catalogue optimisé"
+    if equipe == "Directeur":
+        return "Idée du Directeur"
+    return "Catalogue"
+
+
 class Director:
     def __init__(self, cfg: DirectorConfig, get_data: Callable[[str, str], tuple], log: Callable = print):
         self.cfg = cfg
@@ -82,6 +113,8 @@ class Director:
         self.directives: list[str] = []
         self.combined: dict = {}
         self.scenario_rows: list[dict] = []
+        self.allr = pd.DataFrame()
+        self.card_ids: dict = {}
         self.multi_tf: list[dict] = []
 
     # --------------------------------------------------------------------------- utilitaires
@@ -100,7 +133,8 @@ class Director:
         k = 2 if intensive else 1
         return LabConfig(rounds=c.rounds + (2 if intensive else 0), budget=c.budget * k, risk_pct=c.lab_risk_pct,
                          seed=c.seed + seed, ftmo=c.ftmo, invent_generations=c.invent_generations * k,
-                         invent_attempts=3 + (2 if intensive else 0), seeds=seeds or [], invent_bias=bias or [])
+                         invent_attempts=3 + (2 if intensive else 0), seeds=seeds or [], invent_bias=bias or [],
+                         catalog=c.catalog, bank_teams=c.bank_teams)
 
     def run_cell(self, sym, tf, lab_cfg: LabConfig, why: str):
         try:
@@ -150,6 +184,7 @@ class Director:
             self.say("Aucun résultat à examiner.")
             return allr
         allr = allr[allr["symbole"].isin(self.cfg.symbols) & allr["timeframe"].isin(self.cfg.timeframes)]
+        self.allr = allr
         self.review_rows = []
         for sym in self.cfg.symbols:
             for tf in self.cfg.timeframes:
@@ -312,13 +347,17 @@ class Director:
         res["pire_jour"] = float(daily["worst"].min()) if len(daily) else 0.0
         return res
 
-    @staticmethod
-    def _better(a, b) -> bool:
-        """Plus de réussite ; à réussite égale (±0,5 pt), plus rapide ; puis moins d'échecs."""
+    def _better(self, a, b) -> bool:
+        """Échecs sous le seuil toléré d'abord ; puis plus de réussite ; à réussite égale (±0,5 pt), plus rapide ;
+        puis moins d'échecs."""
         if a is None or math.isnan(a.get("ftmo_pass", float("nan"))):
             return False
         if b is None:
             return True
+        a_ok = a.get("ftmo_echec_p1", 100) <= self.cfg.max_fail
+        b_ok = b.get("ftmo_echec_p1", 100) <= self.cfg.max_fail
+        if a_ok != b_ok:
+            return a_ok
         if a["ftmo_pass"] > b["ftmo_pass"] + 0.5:
             return True
         if a["ftmo_pass"] < b["ftmo_pass"] - 0.5:
@@ -414,7 +453,7 @@ class Director:
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": weights[k],
                   "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False)}
                  for k in keys]
-        rules = {**rules, "day_budget": self.cfg.day_budget}
+        rules = {**rules, "day_budget": self.cfg.day_budget, "total_budget": self.cfg.total_budget}
         self._last_setup = (list(keys), dict(weights), dict(rules))
         combined = {"nom": "Stratégie combinée du Directeur", "ftmo_regles": self.cfg.ftmo.label(),
                     "risque_max_par_trade": R, "regles": rules, "resultat": final, "composants": comps,
@@ -456,7 +495,8 @@ class Director:
             keys, w, rules = comb
             trades, windows, info = pool
             comb = {"nom": "Stratégie combinée du Directeur", "ftmo_regles": self.cfg.ftmo.label(),
-                    "risque_max_par_trade": self.cfg.risk_pct, "regles": {**rules, "day_budget": b}, "resultat": res,
+                    "risque_max_par_trade": self.cfg.risk_pct,
+                    "regles": {**rules, "day_budget": b, "total_budget": self.cfg.total_budget}, "resultat": res,
                     "composants": [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"],
                                     "candidate": info[k]["candidate"], "strategie": info[k]["strategie"],
                                     "risque_config": info[k]["risque"], "risk_pct": w[k],
@@ -514,6 +554,89 @@ class Director:
             self.say(f"Test multi-TF de {row['composant']} : positif sur {row['positifs']} timeframes"
                      + (" -> robuste" if row["robuste"] else " -> spécifique à son timeframe"))
 
+    # --------------------------------------------------------------------------- fiches
+    def build_cards(self):
+        """Une fiche détaillée par stratégie : composants de la stratégie combinée, stratégies validées,
+        meilleure version de chaque stratégie du catalogue."""
+        from .fiches import build_card, write_cards
+        cards, seen = [], set()
+
+        def stats_of(r):
+            if r is None:
+                return {}
+            per = ""
+            if pd.notna(r.get("donnees_debut")):
+                per = f"{str(r['donnees_debut'])[:10]} → {str(r['donnees_fin'])[:10]}"
+            return {"Verdict": r.get("verdict"), "Période testée": per,
+                    "Trades hors-échantillon": None if pd.isna(r.get("trades_oos")) else int(r.get("trades_oos")),
+                    "Taux de réussite OOS (%)": r.get("wr_oos"),
+                    "R moyen OOS": r.get("avgR_oos"), "Profit factor OOS": r.get("pf_oos"),
+                    "Gain par mois (%)": r.get("gain_mois_pct"), "Drawdown max OOS (%)": r.get("dd_oos_pct"),
+                    "Réussite FTMO seule (%)": r.get("ftmo_pass"),
+                    "Jours pour l'objectif": None if pd.isna(r.get("ftmo_jours_p1")) else int(r.get("ftmo_jours_p1"))}
+
+        def row_for(sym, tf, cand):
+            if not len(self.allr):
+                return None
+            k = candidate_key(cand)
+            m = self.allr[(self.allr["symbole"] == sym) & (self.allr["timeframe"] == tf)]
+            for _, r in m.iterrows():
+                if candidate_key(json.loads(r["candidate"])) == k:
+                    return r
+            return None
+
+        def add(cand, sym, tf, origin, risk=None, rules=None):
+            key = (sym, tf, candidate_key(cand))
+            same = same_rule_key(sym, tf, cand)
+            if key in seen or same in seen:
+                return
+            seen.update({key, same})
+            card = build_card(cand, sym, tf, stats_of(row_for(sym, tf, cand)), risk, origin, rules)
+            self.card_ids[key] = card["id"]
+            cards.append(card)
+
+        rules = {}
+        if self.combined:
+            rg = self.combined.get("regles", {})
+            rules = {"Perte possible max par jour (%)": rg.get("day_budget"),
+                     "Perte totale max (%)": rg.get("total_budget"), "Positions ouvertes max": rg.get("max_open"),
+                     "Arrêt après perte réalisée du jour (%)": rg.get("day_stop")}
+            for i, comp in enumerate(self.combined.get("composants", []), 1):
+                add(comp["candidate"], comp["symbole"], comp["timeframe"], f"stratégie combinée n°{i}",
+                    comp["risk_pct"], rules)
+        if len(self.allr):
+            ok = self.allr[self.allr["_ok"]].sort_values(["ftmo_pass", "gain_mois_pct"], ascending=False)
+            for _, r in ok.iterrows():
+                add(json.loads(r["candidate"]), r["symbole"], r["timeframe"], kind(r), self.cfg.lab_risk_pct)
+            for _, r in self.catalog_ranking().iterrows():
+                add(json.loads(r["candidate"]), r["symbole"], r["timeframe"], "catalogue : meilleure version",
+                    self.cfg.lab_risk_pct)
+        if cards:
+            path = write_cards(cards, self.cfg.out)
+            self.say(f"{len(cards)} fiches détaillées écrites : {path}")
+
+    def catalog_ranking(self) -> pd.DataFrame:
+        """Meilleure version de chaque stratégie du catalogue, tous marchés et timeframes confondus."""
+        a = self.allr
+        if not len(a) or "meilleure_version_de" not in a:
+            return pd.DataFrame()
+        cat = a[a["meilleure_version_de"].fillna("") != ""].copy()
+        if not len(cat):
+            return cat
+        cat["_ok2"] = cat["_ok"].astype(int)
+        cat = cat.sort_values(["_ok2", "avgR_oos", "gain_mois_pct"], ascending=False)
+        return cat.drop_duplicates("meilleure_version_de").drop(columns="_ok2")
+
+    def failles(self) -> list[dict]:
+        out = []
+        for sym in self.cfg.symbols:
+            for tf in self.cfg.timeframes:
+                p = self.cfg.out / f"{sym}_{tf}" / "failles.json"
+                if p.exists():
+                    for fa in json.loads(p.read_text(encoding="utf-8")):
+                        out.append({**fa, "symbole": sym, "timeframe": tf})
+        return out
+
     # --------------------------------------------------------------------------- campagne
     def run(self):
         t0 = time.time()
@@ -526,6 +649,7 @@ class Director:
             self.scenarios(allr)
             if self.combined:
                 self.multi_tf_test()
+            self.build_cards()
         self.say(f"Campagne terminée en {(time.time() - t0) / 60:.0f} min. Rapport : {self.cfg.out / 'directeur.html'}")
         write_report(self)
         return self.combined
@@ -590,10 +714,56 @@ def write_report(d: Director):
         f"<tr><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{r['validees']}</td>"
         f"<td>{_fmt(r['meilleure_ftmo'])} %</td><td>{_fmt(r['meilleur_gain_mois'], '{:+.2f}')} %</td>"
         f"<td>{r['inventions_validees']}/{r['inventions']}</td><td>{esc(r['note'])}</td></tr>" for r in d.review_rows)
+    def fiche(sym, tf, cand, text):
+        cid = d.card_ids.get((sym, tf, candidate_key(cand)))
+        return f"<a href='fiches_strategies.html#{cid}'>{esc(text)}</a>" if cid else esc(text)
+
+    best_rows = ""
+    if len(d.allr):
+        ok = d.allr[d.allr["_ok"]].sort_values(["ftmo_pass", "ftmo_jours_p1", "gain_mois_pct"],
+                                               ascending=[False, True, False])
+        ok = ok[~pd.Series([same_rule_key(r.symbole, r.timeframe, json.loads(r.candidate)) for r in ok.itertuples()],
+                           index=ok.index).duplicated()].head(60)
+        for i, (_, r) in enumerate(ok.iterrows(), 1):
+            best_rows += (f"<tr><td><b>{i}</b></td><td>{fiche(r['symbole'], r['timeframe'], json.loads(r['candidate']), r['strategie'][:110])}</td>"
+                          f"<td>{esc(kind(r))}</td><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td>"
+                          f"<td>{esc(str(r['risque']))}</td><td class='pos'>{_fmt(r['ftmo_pass'])} %</td>"
+                          f"<td>{_fmt(r['ftmo_jours_p1'], '{:.0f}')}</td><td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
+                          f"<td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td><td>{_fmt(r['wr_oos'], '{:.0f}')} %</td>"
+                          f"<td>{_fmt(r['trades_mois'])}</td><td>{_fmt(r['dd_oos_pct'])} %</td></tr>")
+    best_tbl = ("<div class='scroll'><table><thead><tr><th>#</th><th>Stratégie (lien vers la fiche)</th><th>Type</th>"
+                "<th>Marché</th><th>TF</th><th>Réglage</th><th>Réussite FTMO seule</th><th>Jours pour l'objectif</th>"
+                "<th>Gain / mois</th><th>R moyen</th><th>Réussite</th><th>Trades / mois</th><th>DD max</th></tr></thead>"
+                f"<tbody>{best_rows}</tbody></table></div>") if best_rows else \
+        "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"
+    from .strategies import REGISTRY as _REG
+    cat = d.catalog_ranking()
+    cat_rows = ""
+    for i, (_, r) in enumerate(cat.iterrows(), 1):
+        nm = r["meilleure_version_de"]
+        cat_rows += (f"<tr><td>{i}</td><td>{fiche(r['symbole'], r['timeframe'], json.loads(r['candidate']), nm)}</td>"
+                     f"<td>{esc(_REG[nm].family if nm in _REG else '')}</td><td>{esc(r['symbole'])} {esc(r['timeframe'])}</td>"
+                     f"<td>{esc(str(r['risque']))}</td><td class='{'good' if r['_ok'] else ''}'>{esc(str(r['verdict']))}</td>"
+                     f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
+                     f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
+                     f"<td>{_fmt(r['ftmo_pass'])} %</td></tr>")
+    cat_tbl = ("<div class='scroll'><table><thead><tr><th>#</th><th>Stratégie</th><th>Famille</th><th>Meilleur marché</th>"
+               "<th>Meilleur réglage</th><th>Verdict</th><th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th>"
+               "<th>Gain / mois</th><th>Réussite FTMO seule</th></tr></thead>"
+               f"<tbody>{cat_rows}</tbody></table></div>") if cat_rows else "<p class='mut'>—</p>"
+    fl = d.failles()
+    fl_rows = "".join(
+        f"<tr><td>{esc(f['symbole'])} {esc(f['timeframe'])}</td><td>{esc(f.get('agent', ''))}</td>"
+        f"<td>{esc(f.get('description', ''))}</td><td>{_fmt(f.get('t'))}</td><td>{_fmt(f.get('t_controle'))}</td>"
+        f"<td>{esc(f.get('strategie', ''))}</td></tr>" for f in fl)
+    fl_tbl = ("<div class='scroll'><table><thead><tr><th>Marché</th><th>Analyste</th><th>Faille</th><th>t (recherche)</th>"
+              "<th>t (contrôle du Chef C)</th><th>Stratégie jouée</th></tr></thead>"
+              f"<tbody>{fl_rows}</tbody></table></div>") if fl_rows else "<p class='mut'>Aucune faille confirmée.</p>"
     direc = "".join(f"<li>{esc(x)}</li>" for x in d.directives) or "<li class='mut'>Aucune : toutes les cases avaient des stratégies validées.</li>"
     doc = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Rapport du Directeur</title><style>{CSS}</style></head><body><main>
-<h1>Rapport du Directeur</h1>
+<title>Classement du Directeur</title><style>{CSS}</style></head><body><main>
+<h1>Classement général du Directeur</h1>
+<p><a href="fiches_strategies.html">Toutes les fiches détaillées des stratégies</a> · <a href="comparaison.html">Comparaison par marché et timeframe</a></p>
 <p class="mut">{esc(d.cfg.ftmo.label())} · risque par trade {min(d.cfg.risk_levels):g} à {d.cfg.risk_pct:g} % ·
 perte possible max {d.cfg.day_budget:g} % par jour · {len(d.cfg.symbols)} marchés × {len(tfs)} timeframes</p>
 <h2>La stratégie combinée</h2>
@@ -604,6 +774,18 @@ perte possible max {d.cfg.day_budget:g} % par jour · {len(d.cfg.symbols)} march
 <p class="mut">Pour chaque scénario, le Directeur construit la meilleure stratégie combinée (composants, R:R, risque par trade).
 Le scénario retenu est celui qui passe le challenge le plus souvent, puis le plus vite.</p>
 {scen}
+<h2>Classement des meilleures stratégies validées</h2>
+<p class="mut">Tous marchés, timeframes et équipes confondus. Réussite = challenge FTMO tradé avec cette stratégie SEULE
+({d.cfg.lab_risk_pct:g} % par trade). La stratégie combinée ci-dessus les assemble pour aller plus vite.</p>
+{best_tbl}
+<h2>Classement du catalogue : la meilleure version de chaque stratégie</h2>
+<p class="mut">Chacune des stratégies du catalogue (SMC, Stochastique, zones, chandeliers…) optimisée par les agents :
+réglages, R:R, stop, gestion, filtre et sens. Résultats hors-échantillon ; seule la mention APPROUVÉ indique un edge validé.</p>
+{cat_tbl}
+<h2>Failles des algorithmes des banques (équipe C)</h2>
+<p class="mut">Empreintes statistiques des gros acteurs trouvées par les 5 analystes et confirmées par le Chef C sur une période
+qu'ils n'avaient pas vue. Chaque faille est aussi jouée comme stratégie et passe la validation finale.</p>
+{fl_tbl}
 <h2>Test sur tous les timeframes</h2>
 <p class="mut">Chaque composant rejoué sans aucune réoptimisation sur les 35 % les plus récents de chaque timeframe de son marché (R moyen par trade).</p>
 {('<div class="scroll"><table><thead><tr><th>Composant</th>' + ''.join(f'<th>{t}</th>' for t in tfs) + '<th>Verdict</th></tr></thead><tbody>' + mtf + '</tbody></table></div>') if mtf else '<p class="mut">—</p>'}

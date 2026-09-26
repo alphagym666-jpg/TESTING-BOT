@@ -163,8 +163,11 @@ class LiveTrader:
 
 
 def load_candidate(path: str, index: int = 0) -> dict:
+    """Stratégie à trader : liste de candidats (meilleures_strategies.json) ou fiche (fiches/ID.json)."""
     with open(path, encoding="utf-8") as fh:
         items = json.load(fh)
+    if isinstance(items, dict):  # fiche détaillée
+        return items["candidate"]
     if not items:
         raise RuntimeError("Aucune stratégie approuvée dans ce fichier.")
     return items[index]

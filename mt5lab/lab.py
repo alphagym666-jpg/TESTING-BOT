@@ -76,6 +76,12 @@ def run_inventions(lead_a, lead_b, ev, df_train, cfg: LabConfig, journal, rules)
             continue
         entry.update(agent=agent.tag, lead=lead)
         cand = entry["candidate"]
+        rule = json.dumps({k: v for k, v in cand["signal"].items() if k != "name"}, sort_keys=True)
+        twin = next((e for e in out if json.dumps({k: v for k, v in e["candidate"]["signal"].items() if k != "name"},
+                                                  sort_keys=True) == rule), None)
+        if twin is not None:
+            lead.log(f"{agent.tag} retombe sur la règle déjà trouvée par {twin['agent']} : je ne la compte qu'une fois")
+            continue
         if entry["confirmed"]:
             confirmed_specs.append({k: v for k, v in cand["signal"].items() if k != "name"})
             lead.log(f"Je confirme l'invention de {agent.tag} : {describe(cand)}")
