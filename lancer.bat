@@ -38,9 +38,10 @@ echo.
 echo   1. Tester la connexion a MT5
 echo   2. Changer marches / timeframes
 echo.
-echo   --- LE DIRECTEUR (pousse les chefs et les agents, construit la strategie combinee) ---
+echo   --- LE DIRECTEUR (4 chefs, 20 agents : pousse tout le monde, construit la strategie combinee) ---
 echo   D. Lancer le DIRECTEUR : strategie combinee pour passer FTMO le plus vite possible
-echo   R. Ouvrir le rapport du Directeur
+echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
+echo   F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
 echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24)
 echo.
 echo   --- RECHERCHE (les agents testent et inventent des strategies) ---
@@ -73,6 +74,7 @@ if "%CHOIX%"=="8" goto paperok
 if "%CHOIX%"=="9" goto platform
 if /i "%CHOIX%"=="D" goto directeur
 if /i "%CHOIX%"=="R" goto rapportdir
+if /i "%CHOIX%"=="F" goto fiches
 if /i "%CHOIX%"=="C" goto papercomb
 if /i "%CHOIX%"=="A" goto autostart
 if /i "%CHOIX%"=="B" goto noautostart
@@ -114,6 +116,10 @@ pause & goto menu
 
 :rapportdir
 if exist "results\directeur.html" (start "" "results\directeur.html") else (echo Lancez d'abord le Directeur : option D.)
+pause & goto menu
+
+:fiches
+if exist "results\fiches_strategies.html" (start "" "results\fiches_strategies.html") else (echo Lancez d'abord le Directeur : option D.)
 pause & goto menu
 
 :papercomb

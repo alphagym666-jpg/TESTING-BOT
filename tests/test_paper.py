@@ -273,3 +273,27 @@ def test_combined_total_loss_cap(setup):
     eng.step()
     assert g.ftmo_status == "en cours"
     assert eng.slots["c"].position is None and g.skipped == 1
+
+
+def test_exploration_labels_failles_and_catalog_best(tmp_path):
+    import json
+
+    import pandas as pd
+
+    from mt5lab.paper import load_exploration_slots
+    faille = {"signal": {"type": "rule", "name": "FAILLE A12-1", "trigger": {"f": "momentum", "n": 5, "op": ">", "v": 0.0},
+                         "filters": [{"f": "hour", "n": 0, "op": "between", "v": [8, 10]}], "mirror": True},
+              "filter": "none", "risk": {"sl_mode": "atr", "sl_value": 1.5, "rr": 2.0, "management": "none",
+                                         "max_hold": 200, "direction": "both"}}
+    best = {"signal": {"type": "single", "name": "smc_fvg", "params": {"min_atr": 0.3, "mode": "rejet", "max_age": 30}},
+            "filter": "kill_zones", "risk": {"sl_mode": "swing", "sl_value": 10, "rr": 3.0, "management": "breakeven",
+                                             "max_hold": 200, "direction": "long"}}
+    rows = [{"verdict": "rejeté", "score_is": 2.0, "equipe": "C", "meilleure_version_de": "", "candidate": json.dumps(faille)},
+            {"verdict": "rejeté", "score_is": 1.0, "equipe": "Optimiseur du catalogue", "meilleure_version_de": "smc_fvg",
+             "candidate": json.dumps(best)}]
+    (tmp_path / "EURUSD_H1").mkdir()
+    pd.DataFrame(rows).to_csv(tmp_path / "EURUSD_H1" / "classement.csv", index=False)
+    slots = load_exploration_slots(tmp_path, ["EURUSD"], ["H1"])
+    labels = {s.verdict for s in slots}
+    assert "faille des banques" in labels and "catalogue : meilleure version" in labels
+    assert any(s.candidate == best for s in slots)

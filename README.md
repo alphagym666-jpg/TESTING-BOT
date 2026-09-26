@@ -18,17 +18,39 @@ réparti entre **10 agents chercheurs** supervisés par **2 chefs d'équipe**.
 | | 8. Optimiseur R:R | Tous les SL (ATR, swing, %) × tous les R:R (1:0.5 → 1:5, ou sortie sur signal) × break-even / trailing |
 | | 9. Explorateur aléatoire | Tire au hasard dans tout l'espace des possibilités |
 | | 10. Généticien | Mute et croise les meilleurs candidats |
+| **Chef C — Algorithmes des banques** | 11. Chasseur de liquidité | Chasses aux stops : balayage des plus hauts/bas puis retour, range de la veille |
+| | 12. Horloge institutionnelle | Ouvertures de sessions, fixing, heures, minutes, jours de la semaine |
+| | 13. Niveaux ronds et ordres | Niveaux psychologiques, plus hauts/bas de la veille |
+| | 14. Exécution VWAP/TWAP | Écart au VWAP du jour, pics de volume |
+| | 15. Flux calendaires | Fin de mois, jour de la semaine, range asiatique |
+| **Chef D — Inventions institutionnelles** | 16 à 20. Inventeurs | Liquidité, sessions, niveaux, VWAP, synthèse : inventent des stratégies à partir des failles de l'équipe C |
+
+Au-dessus des 4 chefs, **le Directeur** mène la campagne (voir plus bas).
 
 À chaque round, le Chef A fait cartographier toutes les familles puis transmet ses champions au
-Chef B, qui les filtre, les combine et optimise leur R:R. À la fin :
+Chef B, qui les filtre, les combine et optimise leur R:R. Ensuite :
+- les agents 1 à 10 **inventent** leurs propres stratégies ;
+- l'**équipe C** cherche les failles des algorithmes des banques : leurs empreintes statistiques dans les prix,
+  mesurées sur une 1re partie de l'historique et confirmées par le Chef C sur une autre. Chaque faille confirmée
+  devient une stratégie jouable (« FAILLE A12-1 »…) ;
+- l'**équipe D** invente des stratégies complètes à partir de ces failles, que le Chef D confirme ;
+- l'**optimiseur du catalogue** travaille chacune des 99 stratégies du catalogue (réglages, R:R, stop, gestion,
+  filtre, sens) pour en sortir la meilleure version.
+
+Personne n'a accès aux vrais algorithmes des banques : l'équipe C cherche uniquement ce qui est mesurable dans
+l'historique de prix, et chaque faille passe la même validation que le reste.
+
+À la fin :
 
 1. **Validation hors-échantillon** : chaque chef reteste ses candidats sur les derniers 35 % de
    l'historique, que personne n'a vus pendant la recherche. Rejet si trop peu de trades, espérance
    négative, profit factor < 1.1, edge non significatif statistiquement, ou trop de dégradation.
    Le seuil de significativité est **corrigé pour les tests multiples** (Šidák) : plus on présente de
    candidats, plus la barre monte, pour qu'une stratégie « chanceuse » ne passe pas.
-2. **Contre-expertise croisée** : chaque chef vérifie les trouvailles de l'autre avec des coûts
+2. **Contre-expertise croisée** : chaque chef vérifie les trouvailles d'un autre avec des coûts
    (spread + commission) doublés et exige un résultat positif sur chaque moitié de la période de validation.
+3. Les meilleures versions des 99 stratégies du catalogue sont validées de la même façon, dans leur propre
+   famille de tests (avec sa propre correction statistique).
 
 > Tests de contrôle : sur des marchés **100 % aléatoires** (où aucune stratégie ne peut gagner), la plateforme
 > n'approuve **aucune** stratégie. Sans ces garde-fous, elle en approuvait plusieurs par pur hasard. Sur un marché
@@ -77,7 +99,8 @@ où le terminal MT5 est installé.
   8. Le portefeuille du Chef FTMO / strategies validees
   9. Ouvrir la PLATEFORME (voir les trades en direct)
   D. Lancer le DIRECTEUR : strategie combinee pour passer FTMO le plus vite possible
-  R. Ouvrir le rapport du Directeur
+  R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
+  F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24)
   A. Lancer l'exploration automatiquement au demarrage de Windows
   B. Ne plus lancer au demarrage de Windows
@@ -178,23 +201,34 @@ toute la campagne :
 4. **Stratégie combinée** : il assemble les meilleures stratégies validées de tous les marchés et timeframes, y
    compris leurs **variantes de R:R** qui restent gagnantes hors-échantillon. Il règle ensuite le **risque de chaque
    composant** (0,25 à 1 % par trade), le nombre max de positions et un arrêt journalier.
-5. **Scénarios de perte max par jour** : il refait tout pour 0,5 / 0,75 / 1 / 1,25 / 1,5 / 1,7 % par jour. Un
-   trade n'est pris que si *perte déjà réalisée aujourd'hui + risque des positions ouvertes + risque du nouveau
-   trade* (frais compris) reste sous ce plafond. Il garde le scénario qui **passe le challenge le plus souvent, puis
-   le plus vite**.
+5. **Scénarios de perte max par jour** : il refait tout pour 0,5 / 0,75 / 1 / 1,25 / 1,5 / 1,75 / 2 / 2,25 /
+   2,5 % par jour. Un trade n'est pris que si *perte déjà réalisée aujourd'hui + risque des positions ouvertes +
+   risque du nouveau trade* (frais compris) reste sous ce plafond. La **perte totale de 10 %** est protégée de la
+   même façon : un nouveau trade n'est jamais pris s'il pouvait la faire dépasser. Il garde le scénario qui a
+   moins de 2 % d'échecs puis **passe le challenge le plus souvent, puis le plus vite**.
 6. **Test sur tous les timeframes** : chaque composant est rejoué, sans réoptimisation, sur les autres timeframes
    de son marché.
 
-Résultats : `results/directeur.html` (rapport complet : stratégie combinée, tableau des scénarios, test
-multi-timeframes, revue, directives, journal) et `results/strategie_combinee.json`.
+Résultats :
+- `results/directeur.html` : **le classement général** (option R du menu) avec la stratégie combinée, les
+  scénarios, le classement des meilleures stratégies validées (tous marchés, timeframes et équipes), la meilleure
+  version de chacune des stratégies du catalogue, les failles des banques, le test multi-timeframes, la revue,
+  les directives et le journal ;
+- `results/fiches_strategies.html` (option F) : **une fiche détaillée par stratégie**, pour la trader, la suivre
+  en paper trading ou la coder en bot MetaTrader : règles d'entrée en français, filtre, sens, stop, objectif,
+  gestion, durée max, taille de position, règles du compte, statistiques, pseudo-code et code Python exact de la
+  logique ;
+- `results/fiches/*.json` : la même fiche en JSON, lisible par le bot Python de la plateforme
+  (`python run.py live --symbol XAUUSD --timeframe H4 --strategies results/fiches/ID.json`, simulation par défaut) ;
+- `results/strategie_combinee.json`.
 
 L'option **C** fait tourner la stratégie combinée en paper trading 24h/24 sur **un seul compte fictif**, avec les
 mêmes règles de risque. Elle est visible dans l'onglet « Stratégie combinée » de la plateforme
 (http://localhost:8768) : équité, progression vers l'objectif, perte du jour par rapport au plafond, risque ouvert,
 pire journée, drawdown et statut du challenge.
 
-Réglages en haut de `lancer.bat` : `DIR_RISQUE_MAX` (risque max par trade, 1 %) et `DIR_PERTE_JOUR` (perte max
-par jour, 1,7 %).
+Réglages en haut de `lancer.bat` : `DIR_RISQUE_MAX` (risque max par trade, 1 %), `DIR_PERTE_JOUR` (perte max
+par jour, 2,5 %) et `DIR_PERTE_TOTALE` (perte totale max, 10 %).
 
 ## Les agents inventent leurs propres stratégies
 
@@ -258,7 +292,9 @@ python run.py paper --symbols EURUSD --timeframes H1 M15 --source approuvees --c
 ```
 
 L'exploration fonctionne même sans recherche préalable : les réglages par défaut de chaque stratégie sont alors
-utilisés. Après une recherche, ce sont les meilleurs réglages trouvés, plus les inventions des agents.
+utilisés. Après une recherche, ce sont les meilleurs réglages trouvés, plus les inventions des agents, les failles
+des banques, la meilleure version exacte de chaque stratégie du catalogue et les stratégies validées (étiquetées
+« portefeuille FTMO n°… » quand elles en font partie).
 3 marchés × 7 timeframes × 99 stratégies × 9 R:R, cela fait environ 19 000 comptes fictifs suivis en même temps.
 
 ### Faire tourner le paper trading en continu

@@ -246,8 +246,18 @@ def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_0
                     sig = c["signal"]
                     if sig["type"] == "single" and sig["name"] in signals and not signals[sig["name"]][2]:
                         signals[sig["name"]] = (sig, "none", "réglages de la recherche")
-                    elif sig["type"] == "rule":  # 2) inventions des agents
-                        signals[sig.get("name", signal_key(sig))] = (sig, "none", "invention")
+                    elif sig["type"] == "rule":  # 2) inventions des agents et failles des banques
+                        nm = sig.get("name", "")
+                        kind = ("faille des banques" if nm.startswith("FAILLE") else
+                                "invention institutionnelle" if str(r.get("equipe", "")) == "D" else "invention")
+                        signals[nm or signal_key(sig)] = (sig, "none", kind)
+                    best_of = r.get("meilleure_version_de", "")
+                    if isinstance(best_of, str) and best_of and r["verdict"] != "APPROUVÉ":
+                        # 4) meilleure version de chaque stratégie du catalogue, avec son réglage exact
+                        s = Slot(slot_id(sym, tf, c), sym, tf, c, "catalogue : meilleure version",
+                                 _num(r.get("avgR_oos")), _num(r.get("wr_oos")), capital, capital, capital,
+                                 day_start=capital)
+                        slots.setdefault(s.id, s)
                     if r["verdict"] == "APPROUVÉ":  # 3) stratégies validées, telles quelles (filtre compris)
                         signals["validée " + signal_key(sig) + c["filter"]] = (sig, c["filter"], "validée")
                         # ... et aussi avec leur réglage EXACT (stop, R:R, gestion, sens) trouvé par la recherche
@@ -261,7 +271,7 @@ def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_0
                             "risk": asdict(RiskConfig("atr", sl_atr, rr, "none", 200, "both"))}
                     s = Slot(slot_id(sym, tf, cand), sym, tf, cand, origin or "catalogue", capital=capital,
                              balance=capital, peak=capital, day_start=capital)
-                    slots[s.id] = s
+                    slots.setdefault(s.id, s)  # une étiquette précise (portefeuille, validée...) est conservée
     out = list(slots.values())
     print(f"[paper] EXPLORATION : {len(out)} comptes fictifs "
           f"({len(symbols)} marchés × {len(timeframes)} timeframes × stratégies × {len(rr_levels)} R:R)")
