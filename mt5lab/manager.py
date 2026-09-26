@@ -33,6 +33,7 @@ import pandas as pd
 
 from .backtest import RR_LEVELS, RiskConfig, run_backtest
 from .compare import build_comparison
+from .data import DEFAULT_YEARS
 from .evaluator import candidate_key, compute_signal, describe
 from .ftmo import FtmoRules, apply_risk_rules, daily_table, simulate, to_dt
 from .lab import LabConfig, run_lab
@@ -55,7 +56,8 @@ class DirectorConfig:
     rounds: int = 3
     budget: int = 1000
     invent_generations: int = 8
-    reuse: bool = True                 # reprendre les résultats déjà calculés
+    reuse: bool = True                 # reprendre les résultats déjà calculés (s'ils couvrent assez d'années)
+    years: float | None = None         # années d'historique exigées (défaut : 2 ans en M1/M5, 5 ans de M15 à D1)
     second_pass: bool = True           # relancer les cases faibles en mode intensif
     max_components: int = 8
     min_window_days: int = 45
@@ -112,6 +114,15 @@ class Director:
         self.say(f"{sym} {tf} : {why}")
         return run_lab(df, cost, lab_cfg, f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}")
 
+    @staticmethod
+    def _covered_years(path: Path) -> float | None:
+        try:
+            b = pd.read_csv(path, usecols=["donnees_debut", "donnees_fin"], nrows=1)
+            a, z = pd.Timestamp(b["donnees_debut"].iloc[0]), pd.Timestamp(b["donnees_fin"].iloc[0])
+            return (z - a).days / 365.25
+        except Exception:
+            return None
+
     # --------------------------------------------------------------------------- 1. passe 1
     def pass1(self):
         lv = self.levels()
@@ -120,10 +131,16 @@ class Director:
                  f"{len(self.cfg.symbols)} marchés × {len(self.cfg.timeframes)} timeframes")
         for sym in self.cfg.symbols:
             for tf in self.cfg.timeframes:
-                done = (self.cfg.out / f"{sym}_{tf}" / "classement.csv").exists()
-                if done and self.cfg.reuse:
-                    self.say(f"{sym} {tf} : je reprends le travail déjà fait par les chefs")
-                    continue
+                path = self.cfg.out / f"{sym}_{tf}" / "classement.csv"
+                if path.exists() and self.cfg.reuse:
+                    need = self.cfg.years or DEFAULT_YEARS.get(tf, 5)
+                    got = self._covered_years(path)
+                    if got is not None and got >= need * 0.9:
+                        self.say(f"{sym} {tf} : je reprends le travail déjà fait par les chefs ({got:.1f} ans testés)")
+                        continue
+                    self.say(f"{sym} {tf} : l'ancienne recherche ne couvrait que "
+                             f"{'une période inconnue' if got is None else f'{got:.1f} ans'} ; j'exige {need:g} ans, "
+                             f"je la fais refaire")
                 self.run_cell(sym, tf, self.lab_cfg(), "je confie la case aux 2 chefs et à leurs 10 agents")
 
     # --------------------------------------------------------------------------- 2. revue

@@ -33,7 +33,7 @@ def collect(results_dir: Path) -> pd.DataFrame:
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)
     for col in ("gain_mois_pct", "trades_mois", "oos_jours", "oos_debut", "oos_fin", "ftmo_pass", "ftmo_p1",
-                "ftmo_jours_p1", "ftmo_echec_p1"):
+                "ftmo_jours_p1", "ftmo_echec_p1", "donnees_debut", "donnees_fin"):
         if col not in out.columns:  # résultats d'une ancienne version
             out[col] = float("nan")
     return out
@@ -177,13 +177,18 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules
         grid += f"<tr><td><b>{esc(sy)}</b></td>"
         for t in tfs:
             cell = ok[(ok["symbole"] == sy) & (ok["timeframe"] == t)]
-            tested = len(allr[(allr["symbole"] == sy) & (allr["timeframe"] == t)])
+            cell_all = allr[(allr["symbole"] == sy) & (allr["timeframe"] == t)]
+            tested = len(cell_all)
+            per = ""
+            if tested and pd.notna(cell_all["donnees_debut"].iloc[0]):
+                a, b = pd.Timestamp(cell_all["donnees_debut"].iloc[0]), pd.Timestamp(cell_all["donnees_fin"].iloc[0])
+                per = f"<br><span class='mut'>testé sur {(b - a).days / 365.25:.1f} ans</span>"
             if len(cell):
                 b = cell.iloc[0]
                 grid += (f"<td class='cell good' title='{esc(b['strategie'])} | {esc(b['risque'])}'>"
-                         f"{b['gain_mois_pct']:+.2f} %/mois<br><span class='mut'>{len(cell)} validée(s)</span></td>")
+                         f"{b['gain_mois_pct']:+.2f} %/mois<br><span class='mut'>{len(cell)} validée(s)</span>{per}</td>")
             else:
-                grid += f"<td class='cell mut'>{'aucune validée' if tested else 'non testé'}</td>"
+                grid += f"<td class='cell mut'>{'aucune validée' if tested else 'non testé'}{per}</td>"
         grid += "</tr>"
     best = ok.iloc[0] if len(ok) else None
     cards = [("Marchés × timeframes testés", allr[["symbole", "timeframe"]].drop_duplicates().shape[0]),

@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]
+
+# historique utilisé par défaut pour les tests des agents (en années)
+DEFAULT_YEARS = {"M1": 2, "M5": 2, "M15": 5, "M30": 5, "H1": 5, "H4": 5, "D1": 5, "W1": 10}
+# bougies par an (marché ouvert ~24 h/24, 5 jours/7) pour estimer les quantités
+BARS_PER_YEAR = {"M1": 374_400, "M5": 74_880, "M15": 24_960, "M30": 12_480, "H1": 6_240, "H4": 1_560, "D1": 260,
+                 "W1": 52}
 
 # noms courants -> noms utilisés par les courtiers (FTMO : US100.cash, XAUUSD...)
 SYMBOL_ALIASES = {
@@ -162,6 +169,43 @@ class MT5Connector:
         df["time"] = pd.to_datetime(df["time"], unit="s")
         df = df.set_index("time").rename(columns={"tick_volume": "volume"})
         return df[["open", "high", "low", "close", "volume", "spread"]]
+
+    def rates_years(self, symbol: str, timeframe: str = "H1", years: float | None = None) -> pd.DataFrame:
+        """Historique sur une DURÉE (par défaut : 2 ans en M1/M5, 5 ans de M15 à D1), avec la période réellement
+        couverte affichée. Si le serveur du courtier en fournit moins, on le dit clairement."""
+        years = years or DEFAULT_YEARS.get(timeframe, 5)
+        symbol = self.resolve(symbol)
+        self.symbol_info(symbol)
+        tf = getattr(self.mt5, f"TIMEFRAME_{timeframe}")
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc) + timedelta(days=1)
+        start = now - timedelta(days=365.25 * years + 1)
+        raw = None
+        get_range = getattr(self.mt5, "copy_rates_range", None)
+        if get_range is not None:
+            for _ in range(3):  # le terminal télécharge l'historique à la demande : on réessaie
+                raw = get_range(symbol, tf, start, now)
+                if raw is not None and len(raw) and pd.to_datetime(raw["time"][0], unit="s") <= \
+                        pd.Timestamp(start.replace(tzinfo=None)) + pd.Timedelta(days=30):
+                    break
+                time.sleep(2)
+        if raw is None or not len(raw):  # repli : par nombre de bougies
+            df = self.rates(symbol, timeframe, int(years * BARS_PER_YEAR.get(timeframe, 6240) * 1.05))
+        else:
+            df = pd.DataFrame(raw)
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+            df = df.set_index("time").rename(columns={"tick_volume": "volume"})[
+                ["open", "high", "low", "close", "volume", "spread"]]
+        covered = (df.index[-1] - df.index[0]).days / 365.25 if len(df) else 0
+        msg = (f"[MT5] {symbol} {timeframe} : {len(df):,} bougies du {df.index[0]:%Y-%m-%d} au {df.index[-1]:%Y-%m-%d} "
+               f"({covered:.1f} ans)").replace(",", " ")
+        if covered < years * 0.9:
+            msg += (f" -- ATTENTION : {years:g} ans demandés, le serveur n'en fournit que {covered:.1f}. "
+                    "Dans MT5 : Outils > Options > Graphiques > « Barres max. dans l'historique » et "
+                    "« dans le graphique » = Unlimited, puis ouvrez un graphique de ce timeframe et faites défiler "
+                    "vers le passé (touche Début) pour télécharger plus d'historique.")
+        print(msg)
+        return df
 
     def cost_in_price(self, symbol: str, commission_points: float = 0.0, commission_per_lot: float = 0.0) -> float:
         """Coût aller-retour approximatif en unités de prix : spread courant + commission.

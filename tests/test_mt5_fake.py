@@ -125,3 +125,19 @@ def test_lab_all_timeframes_with_alias_and_comparison(monkeypatch, tmp_path):
     with MT5Connector() as c:
         eng = PaperEngine(c, slots, tmp_path / "paper", 0.5, {"EURUSD": 5.0, "NASDAQ": 0.0})
         assert eng.commission("EURUSD") == 5.0 and eng.commission("US100.cash") == 0.0
+
+
+def test_rates_years_by_duration_and_coverage_warning(monkeypatch, capsys):
+    """Historique demandé en années : période couverte affichée, avertissement si le courtier en fournit moins."""
+    m = make_fake(max_bars=3000)
+    full = m.copy_rates_from_pos("EURUSD.m", 16385, 0, 3000)
+    m.copy_rates_range = lambda s, tf, a, b: full[(full["time"] >= int(a.timestamp())) & (full["time"] <= int(b.timestamp()))]
+    monkeypatch.setitem(sys.modules, "MetaTrader5", m)
+    monkeypatch.chdir("/")
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    from mt5lab.data import MT5Connector
+    with MT5Connector() as c:
+        df = c.rates_years("EURUSD", "H1", 5)
+    out = capsys.readouterr().out
+    assert len(df) > 0 and "ans)" in out
+    assert "ATTENTION" in out   # les données de test ne couvrent pas 5 ans

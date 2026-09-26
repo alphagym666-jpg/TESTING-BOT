@@ -205,6 +205,7 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             "sharpe_oos": round(o.get("sharpe", 0), 2),
             "oos_jours": round(oos_days, 1),
             "oos_debut": str(df_oos.index[0]), "oos_fin": str(df_oos.index[-1]),
+            "donnees_debut": str(df.index[0]), "donnees_fin": str(df.index[-1]),
             "trades_mois": round((o.get("trades") or 0) / months, 1) if months > 0 else None,
             "gain_mois_pct": round(o.get("return_pct", 0) / months, 2) if months > 0 else None,
             "cout_x2_avgR": round(st.get("double_cost_avg_r", float("nan")), 3) if st else None,

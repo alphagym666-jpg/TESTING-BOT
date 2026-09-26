@@ -145,6 +145,26 @@ Résultats dans `results/<SYMBOLE>_<TF>/` :
 
 Plus de rounds (`--rounds`) et de budget (`--budget`) = recherche plus large (et plus longue).
 
+## Historique testé
+
+Les agents testent sur une **durée** d'historique MT5, et plus sur un nombre fixe de bougies :
+
+| Timeframes | Historique testé |
+|---|---|
+| M1, M5 | 2 ans |
+| M15, M30, H1, H4, D1 | 5 ans |
+
+`--annees N` impose une autre durée pour tous les timeframes. La période réellement couverte est affichée pour
+chaque marché et timeframe, dans la console et dans `comparaison.html` (« testé sur X ans »). Si le serveur de votre
+courtier fournit moins d'historique, un avertissement le dit. Dans MT5, réglez Outils > Options > Graphiques >
+« Barres max. dans l'historique » et « dans le graphique » sur **Unlimited**, puis ouvrez un graphique du timeframe
+concerné et faites défiler vers le passé (touche Début) pour télécharger plus d'historique.
+
+Le Directeur fait **refaire automatiquement** les recherches qui ne couvraient pas assez d'années.
+
+Plus d'historique rend les tests plus fiables, mais aussi plus longs : 2 ans en M1 représentent environ 750 000
+bougies. Comptez plusieurs heures pour 3 marchés × 7 timeframes.
+
 ## Le Directeur : la stratégie combinée pour passer FTMO le plus vite
 
 Au-dessus des 2 chefs et des 10 agents, **le Directeur** (menu, option **D**, ou `python run.py directeur`) mène

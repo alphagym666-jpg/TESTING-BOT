@@ -67,7 +67,7 @@ def cmd_directeur(a):
     cfg = DirectorConfig(a.symbols, a.timeframes, out=Path(a.out), capital=a.capital, risk_pct=a.risk_max,
                          day_budget=a.perte_max_jour, lab_risk_pct=a.risk, ftmo=ftmo_rules(a), rounds=a.rounds,
                          budget=a.budget, invent_generations=a.invent_generations, reuse=not a.refaire,
-                         second_pass=not a.sans_deuxieme_passe)
+                         second_pass=not a.sans_deuxieme_passe, years=a.annees)
     if a.demo:
         from mt5lab.data import synthetic
         freq = {"M1": "min", "M5": "5min", "M15": "15min", "M30": "30min", "H1": "h", "H4": "4h", "D1": "D"}
@@ -81,7 +81,7 @@ def cmd_directeur(a):
     comm = parse_commission(a.commission)
     with MT5Connector() as conn:
         def get_data(sym, tf):
-            df = conn.rates(sym, tf, a.bars or 30000)
+            df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
             return df, conn.cost_in_price(sym, a.commission_points, commission_for(comm, sym))
         Director(cfg, get_data).run()
 
@@ -114,7 +114,7 @@ def cmd_lab(a):
             for sym in a.symbols:
                 for tf in a.timeframes:
                     try:
-                        df = conn.rates(sym, tf, a.bars or 30000)
+                        df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
                     except Exception as exc:
                         print(f"[lab] {sym} {tf} ignoré : {exc}")
                         continue
@@ -212,7 +212,9 @@ def main():
     lab.add_argument("--timeframes", "--timeframe", nargs="+", default=["H1"],
                      help="un ou plusieurs : M1 M5 M15 M30 H1 H4 D1 (ou ALL)")
     lab.add_argument("--capital", type=float, default=100_000, help="capital pour exprimer les gains en $/mois")
-    lab.add_argument("--bars", type=int, default=None)
+    lab.add_argument("--bars", type=int, default=None, help="nombre de bougies (sinon : durée en années)")
+    lab.add_argument("--annees", type=float, default=None,
+                     help="années d'historique (défaut : 2 ans en M1/M5, 5 ans de M15 à D1)")
     lab.add_argument("--cost", type=float, default=None, help="coût aller-retour en prix (sinon spread MT5)")
     lab.add_argument("--commission-points", type=float, default=0.0)
     lab.add_argument("--commission", nargs="+", default=None,
@@ -266,7 +268,9 @@ def main():
     di = sub.add_parser("directeur", help="le Directeur : pousse chefs et agents et construit la stratégie combinée")
     di.add_argument("--symbols", nargs="+", default=["NASDAQ", "XAUUSD", "EURUSD"])
     di.add_argument("--timeframes", nargs="+", default=["ALL"])
-    di.add_argument("--bars", type=int, default=None)
+    di.add_argument("--bars", type=int, default=None, help="nombre de bougies (sinon : durée en années)")
+    di.add_argument("--annees", type=float, default=None,
+                    help="années d'historique (défaut : 2 ans en M1/M5, 5 ans de M15 à D1)")
     di.add_argument("--capital", type=float, default=100_000)
     di.add_argument("--risk-max", type=float, default=1.0, help="risque MAX par trade essayé par le Directeur (%%)")
     di.add_argument("--perte-max-jour", type=float, default=1.7,

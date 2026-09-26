@@ -21,8 +21,7 @@ set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10
 rem Le Directeur : risque MAX par trade, et perte possible max par jour (il teste tous les scenarios jusqu'a ce plafond)
 set DIR_RISQUE_MAX=1.0
 set DIR_PERTE_JOUR=1.7
-rem Nombre de bougies par marche et timeframe
-set BARS=30000
+rem Historique teste : 2 ans en M1 et M5, 5 ans en M15, M30, H1, H4 et D1 (automatique)
 rem =====================================================================================
 
 :menu
@@ -89,14 +88,14 @@ set /p TFS=Timeframes (ex: M15 H1 H4, ou ALL pour tous) :
 goto menu
 
 :lab
-echo Recherche en cours : environ 2 a 4 minutes par marche et par timeframe. Laissez MT5 ouvert.
-python run.py lab --symbols %SYMS% --timeframes %TFS% --bars %BARS% --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
+echo Recherche sur 2 ans (M1, M5) et 5 ans (M15 a D1) : comptez plusieurs heures pour tout. Laissez MT5 ouvert.
+python run.py lab --symbols %SYMS% --timeframes %TFS% --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
 if exist "results\comparaison.html" start "" "results\comparaison.html"
 pause & goto menu
 
 :labxl
 echo Recherche intensive : 6 rounds, 3000 tests par agent et par round, 15 generations d'inventions.
-python run.py lab --symbols %SYMS% --timeframes %TFS% --bars 60000 --rounds 6 --budget 3000 --invent-generations 15 --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
+python run.py lab --symbols %SYMS% --timeframes %TFS% --rounds 6 --budget 3000 --invent-generations 15 --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
 if exist "results\comparaison.html" start "" "results\comparaison.html"
 pause & goto menu
 
@@ -108,7 +107,7 @@ pause & goto menu
 :directeur
 echo Le Directeur reprend le travail deja fait, relance les cases faibles en mode intensif,
 echo puis construit la strategie combinee. Comptez de quelques minutes a plusieurs heures. Laissez MT5 ouvert.
-python run.py directeur --symbols %SYMS% --timeframes %TFS% --bars %BARS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --commission %COMMISSION% %FTMO%
+python run.py directeur --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --commission %COMMISSION% %FTMO%
 if exist "results\directeur.html" start "" "results\directeur.html"
 pause & goto menu
 
