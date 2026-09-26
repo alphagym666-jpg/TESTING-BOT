@@ -227,7 +227,8 @@ def simplify(spec: dict) -> dict:
 class Inventor:
     """Fait évoluer des règles sur les données d'un agent."""
 
-    def __init__(self, agent_no: int, agent_tag: str, df: pd.DataFrame, rng: random.Random):
+    def __init__(self, agent_no: int, agent_tag: str, df: pd.DataFrame, rng: random.Random, bias=None):
+        self.bias = [f for f in (bias or []) if f in FEATURES]  # indicateurs recommandés par le Directeur
         self.no = agent_no
         self.tag = agent_tag
         self.df = df
@@ -248,6 +249,9 @@ class Inventor:
 
     def random_cond(self, allow_hour=True) -> dict:
         pool = [f for f in self.pool if allow_hour or f != "hour"]
+        favored = [f for f in self.bias if allow_hour or f != "hour"]
+        if favored and self.rng.random() < 0.5:  # une fois sur deux, une piste du Directeur
+            pool = favored
         f = self.rng.choice(pool)
         n = self.rng.choice(FEATURES[f][2])
         if f == "hour":

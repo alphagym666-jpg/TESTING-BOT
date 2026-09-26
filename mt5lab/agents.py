@@ -236,6 +236,20 @@ class GeneticAgent(Agent):
             s["params"][k] = self.rng.choice(grid[k])
         return s
 
+    def _mutate_rule(self, spec):
+        from .inventions import FEATURES
+        spec = copy.deepcopy(spec)
+        cond = self.rng.choice([spec["trigger"]] + spec.get("filters", []))
+        if cond["op"] == "between":
+            a = max(0, min(22, cond["v"][0] + self.rng.choice([-1, 1])))
+            cond["v"] = [a, min(24, a + max(1, cond["v"][1] - cond["v"][0]))]
+        elif self.rng.random() < 0.7:
+            v = cond["v"]
+            cond["v"] = float(f"{v * self.rng.choice([0.8, 0.9, 1.1, 1.2]) if v else self.rng.choice([-0.1, 0.1]):.3g}")
+        else:
+            cond["n"] = self.rng.choice(FEATURES[cond["f"]][2])
+        return spec
+
     def _mutate(self, c):
         c = copy.deepcopy(c)
         what = self.rng.random()
@@ -243,6 +257,8 @@ class GeneticAgent(Agent):
         if what < 0.35:
             if sig["type"] == "single":
                 c["signal"] = self._mutate_single(sig)
+            elif sig["type"] == "rule":  # invention : on ajuste un seuil ou une période
+                c["signal"] = self._mutate_rule(sig)
             else:
                 part = self.rng.choice(["a", "b"])
                 sig[part] = self._mutate_single(sig[part])

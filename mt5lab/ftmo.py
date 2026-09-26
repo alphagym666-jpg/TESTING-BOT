@@ -41,21 +41,28 @@ class FtmoRules:
 
 
 def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> pd.DataFrame:
-    """trades : colonnes entry_time, exit_time, r. Renvoie une ligne par jour ouvré (P&L %, pire moment %, trade?)."""
+    """trades : colonnes entry_time, exit_time, r (et optionnellement w = risque en % de CE trade).
+
+    Renvoie une ligne par jour ouvré : P&L %, pire moment de la journée %, jour tradé ?
+    Le pire moment compte chaque position encore ouverte comme si elle était à son stop.
+    """
     if trades is None or not len(trades):
         return pd.DataFrame(columns=["pnl", "worst", "traded"])
     t = trades.sort_values("exit_time").reset_index(drop=True)
     entry = to_dt(t["entry_time"]).to_numpy()
     exit_ = to_dt(t["exit_time"]).to_numpy()
-    pnl = t["r"].to_numpy(dtype=float) * risk_pct
-    ent_sorted, ex_sorted = np.sort(entry), np.sort(exit_)
-    # positions encore ouvertes au moment de chaque sortie (hors celle qui sort)
-    n_open = np.searchsorted(ent_sorted, exit_, "left") - np.searchsorted(ex_sorted, exit_, "right")
-    n_open = np.maximum(n_open, 0)
+    w = t["w"].to_numpy(dtype=float) if "w" in t.columns else np.full(len(t), float(risk_pct))
+    pnl = t["r"].to_numpy(dtype=float) * w
+    # risque encore ouvert au moment de chaque sortie (hors la position qui sort), pondéré par le risque de chacune
+    o_ent, o_ex = np.argsort(entry, kind="stable"), np.argsort(exit_, kind="stable")
+    cw_ent = np.concatenate([[0.0], np.cumsum(w[o_ent])])
+    cw_ex = np.concatenate([[0.0], np.cumsum(w[o_ex])])
+    open_w = cw_ent[np.searchsorted(entry[o_ent], exit_, "left")] - cw_ex[np.searchsorted(exit_[o_ex], exit_, "right")]
+    open_w = np.maximum(open_w, 0.0)
     day = pd.DatetimeIndex(exit_).normalize()
-    df = pd.DataFrame({"day": day, "pnl": pnl, "n_open": n_open})
+    df = pd.DataFrame({"day": day, "pnl": pnl, "open_w": open_w})
     df["cum"] = df.groupby("day")["pnl"].cumsum()
-    df["worst"] = df["cum"] - risk_pct * df["n_open"]
+    df["worst"] = df["cum"] - df["open_w"]
     g = df.groupby("day").agg(pnl=("pnl", "sum"), worst=("worst", "min"))
     g["worst"] = np.minimum(g["worst"], 0.0)
     entry_days = set(pd.DatetimeIndex(entry).normalize())
@@ -65,6 +72,46 @@ def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> 
     out = g.reindex(days, fill_value=0.0)
     out["traded"] = [d in entry_days for d in out.index]
     return out
+
+
+def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_open: int | None = None,
+                     default_w: float = 0.5, day_budget: float | None = None, safety: float = 1.1) -> pd.DataFrame:
+    """Règles de risque du Directeur, appliquées dans l'ordre chronologique des entrées :
+
+    - day_budget : un trade n'est pris que si  perte déjà réalisée aujourd'hui + risque des positions ouvertes
+                   + risque du nouveau trade  <= day_budget %. Même si tous les stops sautent, la journée ne perd
+                   pas plus de day_budget % (hors gap par-dessus un stop). Chaque risque est compté avec une marge
+                   `safety` (+10 %) pour couvrir spread, commission et glissement au stop.
+    - day_stop   : plus de nouveau trade dans la journée une fois la perte réalisée du jour <= -day_stop %
+    - max_open   : pas plus de max_open positions ouvertes en même temps
+    """
+    if trades is None or not len(trades) or (day_stop is None and max_open is None and day_budget is None):
+        return trades
+    import heapq
+    t = trades.copy()
+    if "w" not in t.columns:
+        t["w"] = default_w
+    t["e_dt"], t["x_dt"] = to_dt(t["entry_time"]), to_dt(t["exit_time"])
+    t = t.sort_values("e_dt").reset_index(drop=True)
+    keep = np.zeros(len(t), dtype=bool)
+    open_heap: list[tuple] = []          # (heure de sortie, P&L en %, risque en %)
+    realized: dict = {}                  # jour -> P&L réalisé %
+    for i, row in enumerate(t.itertuples()):
+        while open_heap and open_heap[0][0] <= row.e_dt:
+            x, p, _w = heapq.heappop(open_heap)
+            realized[x.normalize()] = realized.get(x.normalize(), 0.0) + p
+        today = realized.get(row.e_dt.normalize(), 0.0)
+        if day_stop is not None and today <= -day_stop:
+            continue
+        if max_open is not None and len(open_heap) >= max_open:
+            continue
+        if day_budget is not None:
+            open_risk = sum(o[2] for o in open_heap) * safety
+            if max(0.0, -today) + open_risk + row.w * safety > day_budget + 1e-9:
+                continue
+        keep[i] = True
+        heapq.heappush(open_heap, (row.x_dt, row.r * row.w, row.w))
+    return t.loc[keep].drop(columns=["e_dt", "x_dt"]).reset_index(drop=True)
 
 
 def _phase(pnl, worst, traded, target, rules: FtmoRules, n: int, rng, block: int = 5):

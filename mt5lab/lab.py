@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +30,8 @@ class LabConfig:
     invent_generations: int = 8
     invent_pop: int = 40
     invent_attempts: int = 3
+    seeds: list = field(default_factory=list)        # idées du Directeur : stratégies qui marchent ailleurs
+    invent_bias: list = field(default_factory=list)  # indicateurs que le Directeur demande aux inventeurs d'explorer
 
 
 def stress_test(df: pd.DataFrame, oos_start: int, f: Finding, cost: float, risk_pct: float) -> dict:
@@ -61,7 +63,8 @@ def run_inventions(lead_a, lead_b, ev, df_train, cfg: LabConfig, journal, rules)
     # le Généticien (agent 10) passe en dernier : il fait évoluer les inventions confirmées des autres
     order.sort(key=lambda t: t[0].number == 10)
     for agent, lead in order:
-        inv = Inventor(agent.number, agent.tag, df_train, _random.Random(cfg.seed * 100 + agent.number))
+        inv = Inventor(agent.number, agent.tag, df_train, _random.Random(cfg.seed * 100 + agent.number),
+                       bias=cfg.invent_bias)
         seeds = confirmed_specs if agent.number == 10 else None
         entry = invent(inv, ev, "isa", "isb", cfg.invent_generations, cfg.invent_pop, cfg.invent_attempts,
                        seeds=seeds, log=journal.log)
@@ -103,6 +106,18 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
         lead_a, lead_b = build_team(cfg.seed, cfg.budget, ev, journal, rules)
         lead_a.brief()
         lead_b.brief()
+        if cfg.seeds:  # le Directeur apporte des idées venues d'autres marchés / timeframes
+            from .evaluator import score as _score
+            from .agents import Finding as _Finding
+            n_ok = 0
+            for c, res in ev.evaluate([dict(c) for c in cfg.seeds], "is"):
+                sc = _score(res, rules.min_trades_is)
+                if math.isfinite(sc):
+                    f = _Finding(c, res, sc, "Directeur (idée transférée)")
+                    lead_b.findings[f.key] = f
+                    n_ok += 1
+            journal.log("Directeur", f"J'apporte {len(cfg.seeds)} idées qui ont marché ailleurs ; {n_ok} tiennent la route "
+                                     f"ici et partent chez le Chef B pour être filtrées, combinées et optimisées")
         for rnd in range(1, cfg.rounds + 1):
             champs = lambda: sorted(lead_a.champions() + lead_b.champions(), key=lambda f: f.score, reverse=True)[:15]
             lead_a.supervise_round({"round": rnd, "champions": champs()}, rnd)
