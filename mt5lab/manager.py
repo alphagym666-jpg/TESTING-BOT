@@ -568,6 +568,7 @@ class Director:
             if pd.notna(r.get("donnees_debut")):
                 per = f"{str(r['donnees_debut'])[:10]} → {str(r['donnees_fin'])[:10]}"
             return {"Verdict": r.get("verdict"), "Période testée": per,
+                    "Walk-forward (périodes gagnantes)": _txt(r.get("walk_forward")),
                     "Trades hors-échantillon": None if pd.isna(r.get("trades_oos")) else int(r.get("trades_oos")),
                     "Taux de réussite OOS (%)": r.get("wr_oos"),
                     "R moyen OOS": r.get("avgR_oos"), "Profit factor OOS": r.get("pf_oos"),
@@ -591,7 +592,14 @@ class Director:
             if key in seen or same in seen:
                 return
             seen.update({key, same})
-            card = build_card(cand, sym, tf, stats_of(row_for(sym, tf, cand)), risk, origin, rules)
+            row = row_for(sym, tf, cand)
+            periods = []
+            if row is not None and _txt(row.get("par_periode")):
+                try:
+                    periods = json.loads(row["par_periode"])
+                except (TypeError, ValueError):
+                    periods = []
+            card = build_card(cand, sym, tf, stats_of(row), risk, origin, rules, periods)
             self.card_ids[key] = card["id"]
             cards.append(card)
 

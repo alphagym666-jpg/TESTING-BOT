@@ -236,6 +236,14 @@ def f_asia(df, n):
     return ((df["close"] - lo) / (hi - lo).replace(0, np.nan) - 0.5).where(~asia)
 
 
+@feature("htf_trend", True, [60, 240, 1440], "tendance du timeframe supérieur ({n} min, EMA 50 : +1 haussière, -1 baissière)")
+def f_htf(df, n):
+    from .strategies import bar_minutes, htf_direction
+    if not bar_minutes(df) < n:
+        return _nan(df)
+    return htf_direction(df, n, "ema50")
+
+
 # caractéristiques jouées en fenêtres (entre a et b) : bornes et largeurs possibles
 BETWEEN = {"hour": (0, 24, [2, 3, 4, 6, 8], "h"), "dow": (0, 5, [1, 2, 3], " (jour)"), "minute": (0, 60, [5, 10, 15, 30], " min")}
 BANK_FEATURES = ["sweep", "prev_day_pos", "round_dist", "session_move", "vwap_dist", "vol_spike", "asia_pos",

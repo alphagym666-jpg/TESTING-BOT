@@ -80,7 +80,10 @@ def run_backtest(
 ):
     """Backtest un vecteur de signaux avec une config de risque.
 
-    cost = coût aller-retour en prix (spread + commission).
+    cost = coût aller-retour en prix (spread + commission). Si les données contiennent une colonne « cost »
+    (spread réel de chaque bougie + commission), c'est le plus grand des deux qui est retenu.
+    Colonnes « swap_long » / « swap_short » (prix par nuit) : swaps comptés pour chaque nuit passée en position.
+    Colonne « news_block » : aucune entrée sur une bougie qui s'ouvre près d'une annonce économique importante.
     """
     o = df["open"].to_numpy(dtype=float)
     h = df["high"].to_numpy(dtype=float)
@@ -89,6 +92,15 @@ def run_backtest(
     sig = signals.to_numpy()
     atr_arr = ind.atr(df, 14).to_numpy()
     n = len(df)
+    # coûts réels quand ils sont connus (données MT5) : spread de la bougie d'entrée + commission, et swaps par nuit
+    bar_cost = df["cost"].to_numpy(dtype=float) if "cost" in df.columns else None
+    has_swap = "swap_long" in df.columns and isinstance(df.index, pd.DatetimeIndex)
+    if has_swap:
+        sw_long = df["swap_long"].to_numpy(dtype=float)
+        sw_short = df["swap_short"].to_numpy(dtype=float)
+        day_num = (df.index.normalize().asi8 // 86_400_000_000_000)
+    # filtre des nouvelles : pas d'entrée dans la fenêtre autour d'une annonce à fort impact
+    news_block = df["news_block"].to_numpy(dtype=bool) if "news_block" in df.columns else None
 
     if cfg.direction == "long":
         sig = np.where(sig > 0, sig, 0)
@@ -103,6 +115,8 @@ def run_backtest(
         ptr += 1
         e = i + 1
         if e >= n or np.isnan(atr_arr[i]):
+            continue
+        if news_block is not None and news_block[e]:
             continue
         side = int(np.sign(sig[i]))
         entry = o[e]
@@ -137,7 +151,12 @@ def run_backtest(
                 sl = max(sl, trail) if side > 0 else min(sl, trail)
         if exit_px is None:
             exit_px, exit_bar = c[last], last
-        r = ((exit_px - entry) * side - cost) / risk
+        trade_cost = max(cost, bar_cost[e]) if bar_cost is not None and np.isfinite(bar_cost[e]) else cost
+        swap = 0.0
+        if has_swap:  # swap positif = crédit, négatif = frais (convention MT5), une fois par nuit passée
+            nights = int(day_num[exit_bar] - day_num[e])
+            swap = (sw_long[e] if side > 0 else sw_short[e]) * nights
+        r = ((exit_px - entry) * side - trade_cost + swap) / risk
         trades.append((i, e, exit_bar, side, entry, exit_px, risk, r))
         # pas de positions simultanées : on saute les signaux pendant le trade
         while ptr < len(idx) and idx[ptr] < exit_bar:

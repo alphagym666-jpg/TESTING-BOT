@@ -27,6 +27,13 @@ FILTER_TEXT = {
     "kill_zones": "Seulement de 7h à 10h et de 12h à 15h (killzones ICT, heure du serveur MT5).",
     "chop_trending": "Seulement si le Choppiness(14) est sous 45 (marché directionnel).",
     "chop_ranging": "Seulement si le Choppiness(14) est au-dessus de 55 (marché en range).",
+    "htf_H1_ema50": "Achats seulement si la dernière bougie H1 terminée a clôturé au-dessus de l'EMA 50 H1 ; ventes en dessous.",
+    "htf_H4_ema50": "Achats seulement si la dernière bougie H4 terminée a clôturé au-dessus de l'EMA 50 H4 ; ventes en dessous.",
+    "htf_H4_ema200": "Achats seulement si la dernière bougie H4 terminée a clôturé au-dessus de l'EMA 200 H4 ; ventes en dessous.",
+    "htf_D1_ema50": "Achats seulement si la dernière bougie D1 terminée a clôturé au-dessus de l'EMA 50 D1 ; ventes en dessous.",
+    "htf_H4_structure": "Achats seulement si la structure SMC H4 est haussière (dernier BOS/CHoCH vers le haut) ; ventes si baissière.",
+    "htf_D1_structure": "Achats seulement si la structure SMC D1 est haussière (dernier BOS/CHoCH vers le haut) ; ventes si baissière.",
+    "htf_H4_supertrend": "Achats seulement si le Supertrend(10, 3) H4 est haussier ; ventes s'il est baissier.",
 }
 DIRECTION_TEXT = {"both": "Achats et ventes.", "long": "Achats seulement.", "short": "Ventes seulement."}
 
@@ -147,7 +154,7 @@ def pseudo_code(c: dict, tf: str, risk_pct: float | None) -> str:
 
 
 def build_card(c: dict, symbol: str, tf: str, stats: dict | None = None, risk_pct: float | None = None,
-               origin: str = "", extra_rules: dict | None = None) -> dict:
+               origin: str = "", extra_rules: dict | None = None, periods: list | None = None) -> dict:
     r = c["risk"]
     name = describe(c)
     return {
@@ -169,6 +176,7 @@ def build_card(c: dict, symbol: str, tf: str, stats: dict | None = None, risk_pc
                    if risk_pct is not None else "Risque par trade à choisir (ex. 0,5 % du capital)."),
         "regles_compte": extra_rules or {},
         "stats": stats or {},
+        "periodes": periods or [],
         "pseudo_code": pseudo_code(c, tf, risk_pct),
         "code_python": logic_source(c["signal"]),
         "candidate": c, "risk_pct": risk_pct,
@@ -223,6 +231,10 @@ def write_cards(cards: list[dict], out_dir: Path, title: str = "Fiches des strat
 {f'<dt>Règles du compte</dt><dd><ul>{rules}</ul></dd>' if rules else ''}
 </dl>
 {f'<table>{stats}</table>' if stats else ''}
+{('<details open><summary>Résultats par période (walk-forward, sans rien changer à la stratégie)</summary><table>'
+  + ''.join(f"<tr><td class='mut'>{esc(p['debut'])} → {esc(p['fin'])}</td><td>{p['trades']} trades</td>"
+            f"<td>R moyen {p['r_moyen']:+.2f}</td><td>R total {p['r_total']:+.1f}</td></tr>" for p in c.get('periodes', []))
+  + '</table></details>') if c.get('periodes') else ''}
 <details open><summary>Pseudo-code (pour coder le bot)</summary><pre>{esc(c['pseudo_code'])}</pre></details>
 <details><summary>Code Python exact de la logique du signal</summary><pre>{esc(c['code_python'])}</pre></details>
 <p class="mut">Fichier pour le bot Python : fiches/{esc(c['id'])}.json</p>

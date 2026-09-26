@@ -281,8 +281,11 @@ def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_0
 class PaperEngine:
     def __init__(self, conn, slots: list[Slot], out_dir: Path, risk_pct: float = 1.0,
                  commission_per_lot: float | dict = 0.0, bars: int = 1000, ftmo: FtmoRules | None = None,
-                 quiet: bool | None = None, save_every: float = 20.0, groups: dict | None = None):
+                 quiet: bool | None = None, save_every: float = 20.0, groups: dict | None = None,
+                 news=None, news_window: int = 30):
         self.c = conn
+        self.news, self.news_window = news, news_window  # pas d'entrée autour des annonces importantes
+        self._currencies: dict[str, set] = {}
         self.mt5 = conn.mt5
         self.out = Path(out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
@@ -490,6 +493,8 @@ class PaperEngine:
         if not np.isfinite(dist) or dist <= 0:
             return
         when = _now(tick)
+        if self.news is not None and self._news_blackout(s, when):
+            return
         if s.group and not self.group_allows(s, when):
             return
         lots = self._lots(s.symbol, self.risk_budget(s), dist)
@@ -509,9 +514,36 @@ class PaperEngine:
                                          f"SL {s.position.sl:.{d}f} | TP {'signal' if tp is None else f'{tp:.{d}f}'} | "
                                          f"{describe(s.candidate)} [{s.cfg.label()}]")
 
+    def _swap(self, symbol: str, p: Position, price: float, when: str) -> float:
+        """Swaps (frais ou crédit de nuit) pour chaque nuit passée en position, comme chez le courtier."""
+        try:
+            nights = (pd.Timestamp(when[:10]) - pd.Timestamp(p.opened[:10])).days
+            if nights <= 0:
+                return 0.0
+            sl, ss = self.c.swap_in_price(symbol, price)
+            return self._money(symbol, (sl if p.side > 0 else ss) * nights, p.lots)
+        except Exception:
+            return 0.0
+
+    def _news_blackout(self, s: Slot, when: str) -> bool:
+        from .data import news_blocked
+        if s.timeframe in ("H4", "D1", "W1"):  # même règle que la recherche : filtre seulement jusqu'à H1
+            return False
+        if s.symbol not in self._currencies:
+            try:
+                self._currencies[s.symbol] = self.c.currencies(s.symbol)
+            except Exception:
+                self._currencies[s.symbol] = {"USD"}
+        if news_blocked(self.news, self._currencies[s.symbol], when, self.news_window):
+            self.event(when, "NOUVELLE", s, "entrée annulée : annonce économique importante à moins de "
+                                            f"{self.news_window} min")
+            return True
+        return False
+
     def _close(self, s: Slot, price: float, when: str, reason: str):
         p = s.position
         gross = self._money(s.symbol, (price - p.entry) * p.side, p.lots)
+        gross += self._swap(s.symbol, p, price, when)
         pnl = gross - self.commission(s.symbol) * p.lots
         r = pnl / p.risk_money if p.risk_money > 0 else 0.0
         s.balance += pnl

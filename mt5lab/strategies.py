@@ -327,7 +327,51 @@ FILTERS: dict[str, dict] = {
     "kill_zones": {"windows": [(7, 10), (12, 15)]},   # killzones ICT Londres / New York (heure serveur)
     "chop_trending": {"n": 14, "max": 45},             # Choppiness bas = marché directionnel
     "chop_ranging": {"n": 14, "min": 55},              # Choppiness haut = marché en range
+    # tendance du timeframe SUPÉRIEUR (bougies supérieures terminées seulement)
+    "htf_H1_ema50": {"minutes": 60, "method": "ema50"},
+    "htf_H4_ema50": {"minutes": 240, "method": "ema50"},
+    "htf_H4_ema200": {"minutes": 240, "method": "ema200"},
+    "htf_D1_ema50": {"minutes": 1440, "method": "ema50"},
+    "htf_H4_structure": {"minutes": 240, "method": "structure"},
+    "htf_D1_structure": {"minutes": 1440, "method": "structure"},
+    "htf_H4_supertrend": {"minutes": 240, "method": "supertrend"},
 }
+
+_HTF_CACHE: dict = {}
+
+
+def bar_minutes(df: pd.DataFrame) -> float:
+    if not isinstance(df.index, pd.DatetimeIndex) or len(df) < 3:
+        return float("nan")
+    return float(pd.Series(df.index[:200]).diff().median().total_seconds() / 60)
+
+
+def htf_direction(df: pd.DataFrame, minutes: int, method: str) -> pd.Series:
+    """Direction (+1 / -1) de la tendance du timeframe supérieur, connue à chaque bougie SANS regarder le futur :
+    on n'utilise que les bougies supérieures déjà terminées."""
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return pd.Series(np.nan, index=df.index)
+    key = (id(df), len(df), df.index[0], df.index[-1], minutes, method)
+    if key in _HTF_CACHE:
+        return _HTF_CACHE[key]
+    rule = f"{minutes}min"
+    agg = df.resample(rule, label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    if method == "ema50":
+        d = np.sign(agg["close"] - ind.ema(agg["close"], 50))
+    elif method == "ema200":
+        d = np.sign(agg["close"] - ind.ema(agg["close"], 200))
+    elif method == "supertrend":
+        d = ind.supertrend(agg, 10, 3.0)
+    else:  # structure SMC (BOS / CHoCH) du timeframe supérieur
+        from .strategies_smc import structure
+        d = pd.Series(structure(agg, 3)["trend"], index=agg.index)
+    d = d.shift(1)  # la bougie supérieure en cours n'est pas terminée : on prend la précédente
+    out = pd.Series(d.reindex(df.index.floor(rule)).to_numpy(), index=df.index)
+    if len(_HTF_CACHE) > 200:
+        _HTF_CACHE.clear()
+    _HTF_CACHE[key] = out
+    return out
 
 
 def apply_filter(df: pd.DataFrame, sig: pd.Series, name: str) -> pd.Series:
@@ -360,6 +404,11 @@ def apply_filter(df: pd.DataFrame, sig: pd.Series, name: str) -> pd.Series:
     elif name.startswith("chop_"):
         ch = ind.choppiness(df, p["n"])
         ok_long = ok_short = (ch < p["max"]) if name == "chop_trending" else (ch > p["min"])
+    elif name.startswith("htf_"):
+        if not bar_minutes(df) < p["minutes"]:  # le timeframe supérieur doit être plus grand que celui du graphique
+            return sig
+        d = htf_direction(df, p["minutes"], p["method"])
+        ok_long, ok_short = d > 0, d < 0
     else:
         raise KeyError(name)
     ok_long, ok_short = ok_long.fillna(False), ok_short.fillna(False)

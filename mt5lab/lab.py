@@ -37,8 +37,9 @@ class LabConfig:
     invent_bias: list = field(default_factory=list)  # indicateurs que le Directeur demande aux inventeurs d'explorer
 
 
-def stress_test(df: pd.DataFrame, oos_start: int, f: Finding, cost: float, risk_pct: float) -> dict:
-    """Contre-expertise sur la période hors-échantillon : coûts doublés + stabilité sur ses 2 moitiés."""
+def stress_test(df: pd.DataFrame, oos_start: int, f: Finding, cost: float, risk_pct: float, wf_parts: int = 5) -> dict:
+    """Contre-expertise : coûts doublés + stabilité sur les 2 moitiés de l'OOS + walk-forward sur tout l'historique
+    (la stratégie, sans rien changer, doit gagner sur au moins 4 des 5 périodes successives)."""
     sig = apply_filter(df, compute_signal(df, f.candidate["signal"]), f.candidate["filter"])
     cfg = RiskConfig(**f.candidate["risk"])
     oos, oos_sig = df.iloc[oos_start:], sig.iloc[oos_start:]
@@ -48,8 +49,19 @@ def stress_test(df: pd.DataFrame, oos_start: int, f: Finding, cost: float, risk_
         r = run_backtest(oos.iloc[part], oos_sig.iloc[part], cfg, cost=cost, risk_pct=risk_pct)
         seg_n += 1
         seg_pos += r.trades >= 3 and r.avg_r > 0
+    wf_pos, wf_n, periods = 0, 0, []
+    for part in np.array_split(np.arange(len(df)), wf_parts):
+        r = run_backtest(df.iloc[part], sig.iloc[part], cfg, cost=cost, risk_pct=risk_pct)
+        start = df.index[part[0]]
+        periods.append({"debut": str(start)[:10], "fin": str(df.index[part[-1]])[:10], "trades": r.trades,
+                        "r_moyen": round(r.avg_r, 3), "r_total": round(r.total_r, 1)})
+        if r.trades >= 5:
+            wf_n += 1
+            wf_pos += r.avg_r > 0
+    need = max(3, int(np.ceil(0.8 * wf_n)))
     return {"double_cost_avg_r": double.avg_r, "segments_positive": f"{seg_pos}/{seg_n}",
-            "robust": bool(double.avg_r > 0 and seg_pos == seg_n)}
+            "robust": bool(double.avg_r > 0 and seg_pos == seg_n),
+            "wf": f"{wf_pos}/{wf_n}", "wf_ok": bool(wf_n >= 3 and wf_pos >= need), "periodes": periods}
 
 
 def run_inventions(lead_a, lead_b, ev, df_train, cfg: LabConfig, journal, rules) -> list[dict]:
@@ -339,9 +351,12 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
         f.stress = stress_test(df, split, f, cost, cfg.risk_pct)
         if not f.stress["robust"]:
             f.verdict = "rejeté en contre-expertise (" + reviewer.name + ")"
+        elif not f.stress["wf_ok"]:
+            f.verdict = f"rejeté : instable dans le temps (walk-forward {f.stress['wf']})"
     final = [f for f, _ in approved if f.verdict == "APPROUVÉ"]
-    journal.log("Plateforme", f"Contre-expertise : {len(final)}/{len(approved)} stratégies survivent aux coûts doublés "
-                              f"et restent positives sur chaque moitié de l'OOS")
+    journal.log("Plateforme", f"Contre-expertise : {len(final)}/{len(approved)} stratégies survivent aux coûts doublés, "
+                              f"restent positives sur chaque moitié de l'OOS et gagnent sur au moins 4 des 5 périodes "
+                              f"de l'historique (walk-forward)")
     journal.log("Plateforme", f"{n_evals} backtests uniques exécutés en {time.time() - t0:.0f}s")
 
     # simulation du challenge FTMO sur les trades hors-échantillon de chaque finaliste testé
@@ -395,6 +410,8 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             "gain_mois_pct": round(o.get("return_pct", 0) / months, 2) if months > 0 else None,
             "cout_x2_avgR": round(st.get("double_cost_avg_r", float("nan")), 3) if st else None,
             "periodes_positives": st.get("segments_positive"),
+            "walk_forward": st.get("wf"),
+            "par_periode": json.dumps(st.get("periodes", [])) if st else None,
             **{k: ftmo_res.get(f.key, {}).get(k) for k in
                ("ftmo_pass", "ftmo_p1", "ftmo_p2", "ftmo_jours_p1", "ftmo_jours_p2", "ftmo_echec_p1")},
             "candidate": json.dumps(f.candidate),

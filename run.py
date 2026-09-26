@@ -46,6 +46,25 @@ def commission_for(table: dict, symbol: str) -> float:
     return table.get(symbol.upper(), table["*"])
 
 
+def load_news_arg(a):
+    """Calendrier des nouvelles (mql5/ExportNews.mq5). Absent -> pas de filtre, avec un message."""
+    if getattr(a, "sans_nouvelles", False):
+        return None
+    from mt5lab.data import load_news
+    news = load_news(getattr(a, "nouvelles", None))
+    if news is None:
+        print("[nouvelles] pas de calendrier (news.csv) : filtre des nouvelles désactivé. Pour l'activer, lancez le "
+              "script mql5/ExportNews.mq5 dans MT5 (voir README).")
+    return news
+
+
+def news_args(p):
+    p.add_argument("--sans-nouvelles", action="store_true",
+                   help="ne pas bloquer les entrées autour des annonces économiques importantes")
+    p.add_argument("--fenetre-nouvelles", type=int, default=30, help="minutes bloquées avant/après une annonce")
+    p.add_argument("--nouvelles", default=None, help="chemin du calendrier news.csv (sinon trouvé automatiquement)")
+
+
 def ftmo_rules(a):
     from mt5lab.ftmo import FtmoRules
     return FtmoRules(target1=a.ftmo_target, target2=a.ftmo_phase2, max_daily=a.ftmo_daily, max_total=a.ftmo_total,
@@ -80,10 +99,13 @@ def cmd_directeur(a):
         return
     from mt5lab.data import MT5Connector
     comm = parse_commission(a.commission)
+    news = load_news_arg(a)
     with MT5Connector() as conn:
         def get_data(sym, tf):
             df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
-            return df, conn.cost_in_price(sym, a.commission_points, commission_for(comm, sym))
+            c = commission_for(comm, sym)
+            df = conn.enrich(df, sym, a.commission_points, c, news, a.fenetre_nouvelles)
+            return df, conn.cost_in_price(sym, a.commission_points, c)
         Director(cfg, get_data).run()
 
 
@@ -112,6 +134,7 @@ def cmd_lab(a):
     else:
         from mt5lab.data import MT5Connector
         comm = parse_commission(a.commission)
+        news = load_news_arg(a)
         with MT5Connector() as conn:
             for sym in a.symbols:
                 for tf in a.timeframes:
@@ -125,6 +148,8 @@ def cmd_lab(a):
                         continue
                     cost = a.cost if a.cost is not None else \
                         conn.cost_in_price(sym, a.commission_points, commission_for(comm, sym))
+                    df = conn.enrich(df, sym, a.commission_points, commission_for(comm, sym), news,
+                                     a.fenetre_nouvelles)
                     jobs.append((f"{sym}_{tf}", df, cost))
     for n, (label, df, cost) in enumerate(jobs, 1):
         print(f"\n########## [{n}/{len(jobs)}] {label} ##########")
@@ -185,7 +210,7 @@ def cmd_paper(a):
     with MT5Connector() as conn:
         comm = parse_commission(a.commission)
         eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots},
-                          ftmo=ftmo_rules(a), groups=groups)
+                          ftmo=ftmo_rules(a), groups=groups, news=load_news_arg(a), news_window=a.fenetre_nouvelles)
         write_dashboard(eng)
         eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
 
@@ -233,6 +258,7 @@ def main():
     lab.add_argument("--sans-equipes-banques", action="store_true", help="sans les équipes C et D")
     lab.add_argument("--invent-generations", type=int, default=8, help="générations d'évolution par agent inventeur")
     add_ftmo_args(lab)
+    news_args(lab)
     lab.set_defaults(func=cmd_lab)
 
     live = sub.add_parser("live", help="exécuter une stratégie validée sur MT5")
@@ -267,6 +293,7 @@ def main():
     paper.add_argument("--results", default="results")
     paper.add_argument("--out", default="results/paper")
     add_ftmo_args(paper)
+    news_args(paper)
     paper.set_defaults(func=cmd_paper)
 
     di = sub.add_parser("directeur", help="le Directeur : pousse chefs et agents et construit la stratégie combinée")
@@ -295,6 +322,7 @@ def main():
     di.add_argument("--demo", action="store_true", help="données synthétiques (sans MT5)")
     di.add_argument("--out", default="results")
     add_ftmo_args(di)
+    news_args(di)
     di.set_defaults(func=cmd_directeur)
 
     comp = sub.add_parser("compare", help="comparer tous les marchés × timeframes déjà testés")

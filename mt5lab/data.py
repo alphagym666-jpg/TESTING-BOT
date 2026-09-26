@@ -220,6 +220,48 @@ class MT5Connector:
             cost += commission_per_lot / tick_value * tick_size
         return cost
 
+    def swap_in_price(self, symbol: str, price: float) -> tuple[float, float]:
+        """Swaps par nuit (achat, vente) convertis en PRIX (positif = crédit, négatif = frais).
+        Gère les modes MT5 les plus courants : points, devise du compte, pourcentage annuel. Sinon 0."""
+        info = self.symbol_info(symbol)
+        mode = int(getattr(info, "swap_mode", 0) or 0)
+        sl, ss = float(getattr(info, "swap_long", 0) or 0), float(getattr(info, "swap_short", 0) or 0)
+        if mode == 1:  # en points
+            return sl * info.point, ss * info.point
+        tick_value, tick_size = info.trade_tick_value or 0.0, info.trade_tick_size or info.point
+        if mode in (2, 3, 4) and tick_value > 0:  # en argent pour 1 lot (devise du compte ~ approximation)
+            return sl / tick_value * tick_size, ss / tick_value * tick_size
+        if mode in (5, 6):  # pourcentage annuel du prix
+            return price * sl / 100 / 360, price * ss / 100 / 360
+        return 0.0, 0.0
+
+    def currencies(self, symbol: str) -> set[str]:
+        """Devises qui font bouger le symbole (pour le filtre des nouvelles). L'or et les indices US -> USD."""
+        info = self.symbol_info(symbol)
+        cur = {getattr(info, "currency_base", "") or "", getattr(info, "currency_profit", "") or ""}
+        cur = {c.upper() for c in cur if c}
+        cur = {"USD" if c in ("XAU", "XAG") else c for c in cur}
+        return cur or {"USD"}
+
+    def enrich(self, df: pd.DataFrame, symbol: str, commission_points: float = 0.0, commission_per_lot: float = 0.0,
+               news: pd.DataFrame | None = None, news_window: int = 30) -> pd.DataFrame:
+        """Ajoute les coûts RÉELS aux données : spread de chaque bougie + commission (colonne « cost »),
+        swaps par nuit (« swap_long » / « swap_short ») et blocage autour des nouvelles (« news_block »)."""
+        info = self.symbol_info(symbol)
+        df = df.copy()
+        comm = commission_points * info.point
+        tick_value, tick_size = info.trade_tick_value or 0.0, info.trade_tick_size or info.point
+        if commission_per_lot and tick_value > 0:
+            comm += commission_per_lot / tick_value * tick_size
+        if "spread" in df.columns:
+            df["cost"] = df["spread"].astype(float) * info.point + comm
+        sl, ss = self.swap_in_price(symbol, float(df["close"].iloc[-1]))
+        if sl or ss:
+            df["swap_long"], df["swap_short"] = sl, ss
+        if news is not None and len(news):
+            df["news_block"] = news_mask(df.index, news, self.currencies(symbol), news_window)
+        return df
+
     def diagnose(self, symbols=("EURUSD",), timeframe: str = "H1") -> bool:
         """Vérifie tout ce qu'il faut pour la recherche et le trading. Renvoie True si tout est OK."""
         ok = True
@@ -300,3 +342,60 @@ def synthetic(bars: int = 8000, seed: int = 7, start_price: float = 1.10, freq: 
     idx = pd.date_range("2020-01-01", periods=bars, freq=freq)
     volume = rng.integers(100, 5000, size=bars).astype(float)
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume}, index=idx)
+
+
+# ---------------------------------------------------------------------------------------------- nouvelles économiques
+NEWS_FILE = "news.csv"
+
+
+def news_paths() -> list[Path]:
+    """Endroits où chercher le calendrier exporté par mql5/ExportNews.mq5 (dossier data/ ou dossier commun MT5)."""
+    paths = [Path("data") / NEWS_FILE, Path(NEWS_FILE)]
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        paths.append(Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files" / NEWS_FILE)
+    return paths
+
+
+def load_news(path: str | Path | None = None, min_importance: int = 3) -> pd.DataFrame | None:
+    """Charge les nouvelles à fort impact (time, currency, importance, event). None si aucun fichier."""
+    for p in ([Path(path)] if path else news_paths()):
+        if p.exists():
+            df = pd.read_csv(p, sep=None, engine="python")
+            df.columns = [c.strip().lower() for c in df.columns]
+            df["time"] = pd.to_datetime(df["time"], format="mixed")
+            df["currency"] = df["currency"].astype(str).str.upper()
+            if "importance" in df.columns:
+                df = df[df["importance"].astype(float) >= min_importance]
+            print(f"[nouvelles] {len(df)} annonces à fort impact chargées ({p})")
+            return df.sort_values("time").reset_index(drop=True)
+    return None
+
+
+def news_mask(index: pd.DatetimeIndex, news: pd.DataFrame, currencies: set[str], window: int = 30) -> np.ndarray:
+    """True pour les bougies dont l'OUVERTURE (= moment d'entrée) tombe à moins de `window` minutes d'une annonce
+    à fort impact sur une devise du symbole. Appliqué seulement aux timeframes <= H1 (au-delà, une bougie
+    contient presque toujours une annonce et le filtre bloquerait tout)."""
+    out = np.zeros(len(index), dtype=bool)
+    if not isinstance(index, pd.DatetimeIndex) or len(index) < 2:
+        return out
+    step = pd.Series(index[1:] - index[:-1]).median()
+    if step > pd.Timedelta(minutes=60):
+        return out
+    ev = news.loc[news["currency"].isin(currencies), "time"].to_numpy(dtype="datetime64[ns]")
+    if not len(ev):
+        return out
+    t = index.to_numpy(dtype="datetime64[ns]")
+    w = np.timedelta64(window, "m")
+    lo = np.searchsorted(ev, t - w, side="left")
+    hi = np.searchsorted(ev, t + w, side="right")
+    return hi > lo
+
+
+def news_blocked(news: pd.DataFrame | None, currencies: set[str], when, window: int = 30) -> bool:
+    """Vrai si `when` est à moins de `window` minutes d'une annonce importante (utilisé par le paper trading)."""
+    if news is None or not len(news):
+        return False
+    when = pd.Timestamp(when)
+    ev = news.loc[news["currency"].isin(currencies), "time"]
+    return bool(((ev - when).abs() <= pd.Timedelta(minutes=window)).any())

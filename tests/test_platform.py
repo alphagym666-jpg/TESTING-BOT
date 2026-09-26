@@ -80,3 +80,15 @@ def test_lot_size():
                            volume_step=0.01, volume_min=0.01, volume_max=100)
     # 10 000 $ x 1 % = 100 $ de risque ; SL de 50 pips = 500 ticks x 1 $ = 500 $/lot -> 0.2 lot
     assert lot_size(info, 10_000, 1.0, 0.0050) == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("flt", [f for f in __import__("mt5lab.strategies", fromlist=["FILTERS"]).FILTERS if f.startswith("htf_")])
+def test_higher_timeframe_filters_have_no_lookahead(flt):
+    from mt5lab.strategies import apply_filter
+    df = synthetic(3000, seed=4, freq="15min")
+    sig = compute_signal(df, {"type": "single", "name": "ema_cross", "params": {"fast": 5, "slow": 21}})
+    full = apply_filter(df, sig, flt)
+    for cut in (1500, 2222):
+        part = apply_filter(df.iloc[:cut], sig.iloc[:cut], flt)
+        assert (full.iloc[:cut].to_numpy() == part.to_numpy()).all(), (flt, cut)
+    assert (full != 0).sum() < (sig != 0).sum()  # le filtre retire bien des signaux
