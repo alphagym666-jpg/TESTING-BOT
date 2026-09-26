@@ -264,6 +264,23 @@ class Director:
             self.run_cell(r["symbole"], r["timeframe"], self.lab_cfg(True, seeds, bias, seed=101), msg)
 
     # --------------------------------------------------------------------------- 4. stratégie combinée
+    def paused_by_controller(self) -> list[dict]:
+        """Stratégies mises en pause par le contrôleur de qualité du paper trading (results/paper*/controle_qualite.json)."""
+        out = []
+        for path in sorted(self.cfg.out.glob("paper*/controle_qualite.json")):
+            try:
+                rows = json.loads(path.read_text(encoding="utf-8")).get("strategies", [])
+            except (OSError, ValueError):
+                continue
+            out += [r for r in rows if r.get("en_pause")]
+        return out
+
+    @staticmethod
+    def _same_symbol(ours: str, paper: str) -> bool:
+        from .data import SYMBOL_ALIASES
+        names = [ours.upper()] + [a.upper() for a in SYMBOL_ALIASES.get(ours.upper(), [])]
+        return any(paper.upper().startswith(n) for n in names)
+
     def _pool(self, allr: pd.DataFrame):
         """Stratégies validées (sans doublons) + leurs variantes de R:R qui restent gagnantes hors-échantillon."""
         ok = allr[allr["_ok"] & allr["oos_debut"].notna()].copy()
@@ -287,7 +304,21 @@ class Director:
                 seen_rules.add(same)
                 windows[key] = (pd.Timestamp(r.oos_debut), pd.Timestamp(r.oos_fin))
                 info[key] = {"symbole": r.symbole, "timeframe": r.timeframe, "candidate": cand,
-                             "strategie": r.strategie, "risque": r.risque, "seule_ftmo": r.ftmo_pass, "variante": False}
+                             "strategie": r.strategie, "risque": r.risque, "seule_ftmo": r.ftmo_pass, "variante": False,
+                             "attendu_r": None if pd.isna(r.avgR_oos) else float(r.avgR_oos),
+                             "attendu_wr": None if pd.isna(r.wr_oos) else float(r.wr_oos)}
+        paused = self.paused_by_controller()
+        if paused:
+            for key in list(info):
+                x = info[key]
+                ck = candidate_key(x["candidate"])
+                hit = next((p for p in paused if p.get("timeframe") == x["timeframe"]
+                            and self._same_symbol(x["symbole"], str(p.get("symbole", "")))
+                            and candidate_key(p["candidate"]) == ck), None)
+                if hit:
+                    del info[key]
+                    self.say(f"Contrôleur de qualité : {x['symbole']} {x['timeframe']} « {x['strategie']} » est en pause "
+                             f"en paper trading ({hit.get('raison', '')}) -> écartée de la stratégie combinée")
         if self.cfg.rr_variants:
             n_var = 0
             for key in list(info):
@@ -318,7 +349,8 @@ class Director:
                     windows[k2] = (lo, hi)
                     solo = simulate(daily_table(trades[k2], self.cfg.lab_risk_pct, lo, hi), self.cfg.ftmo, 1500, seed=0)
                     info[k2] = {**base, "candidate": v, "risque": RiskConfig(**v["risk"]).label(),
-                                "seule_ftmo": solo["ftmo_pass"], "variante": True}
+                                "seule_ftmo": solo["ftmo_pass"], "variante": True,
+                                "attendu_r": float(res.avg_r), "attendu_wr": float(res.win_rate)}
                     n_var += 1
             self.say(f"Variantes de R:R : {n_var} variantes restent gagnantes hors-échantillon et rejoignent le choix")
         return trades, windows, info
@@ -481,7 +513,8 @@ class Director:
         final = self._eval(keys, weights, rules["day_stop"], rules["max_open"], trades, windows, n=5000)
         comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": weights[k],
-                  "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False)}
+                  "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False),
+                  "r_moyen_attendu": info[k].get("attendu_r"), "wr_attendu": info[k].get("attendu_wr")}
                  for k in keys]
         rules = {**rules, "day_budget": self.cfg.day_budget, "total_budget": self.cfg.total_budget}
         self._last_setup = (list(keys), dict(weights), dict(rules))
@@ -531,7 +564,9 @@ class Director:
                                     "candidate": info[k]["candidate"], "strategie": info[k]["strategie"],
                                     "risque_config": info[k]["risque"], "risk_pct": w[k],
                                     "reussite_seule": info[k]["seule_ftmo"],
-                                    "variante_rr": info[k].get("variante", False)} for k in keys],
+                                    "variante_rr": info[k].get("variante", False),
+                                    "r_moyen_attendu": info[k].get("attendu_r"),
+                                    "wr_attendu": info[k].get("attendu_wr")} for k in keys],
                     "cree_le": time.strftime("%Y-%m-%d %H:%M")}
             self.scenario_rows.append({"budget": b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
                                        "reussis_oos": res.get("challenges_oos", {}).get("reussis"),

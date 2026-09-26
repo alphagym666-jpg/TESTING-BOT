@@ -50,6 +50,7 @@ class Position:
     bars_held: int = 0
     be_done: bool = False
     opened_msc: int = 0
+    shadow: bool = False  # composant en pause : trade suivi pour le contrôle, mais hors du compte combiné
 
     @property
     def sl_initial(self) -> float:
@@ -85,6 +86,8 @@ class Slot:
     trade_days: list = field(default_factory=list)
     group: str = ""                  # composant d'une stratégie combinée (compte partagé)
     risk_pct: float | None = None    # risque propre à ce composant (sinon le risque général)
+    paused: bool = False             # mis en pause par le contrôleur de qualité (sous-performance en direct)
+    pause_reason: str = ""
 
     @property
     def cfg(self) -> RiskConfig:
@@ -186,7 +189,8 @@ def load_combined_slots(results_dir: Path, capital=100_000.0) -> tuple[list[Slot
         cand = c["candidate"]
         s = Slot(slot_id(c["symbole"], c["timeframe"], cand) + f"_comb{i}", c["symbole"], c["timeframe"], cand,
                  f"combinée n°{i}", capital=capital, balance=capital, peak=capital, day_start=capital,
-                 group=name, risk_pct=float(c["risk_pct"]))
+                 group=name, risk_pct=float(c["risk_pct"]), expected_avg_r=c.get("r_moyen_attendu"),
+                 expected_wr=c.get("wr_attendu"))
         slots.append(s)
     groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0)}}
@@ -360,6 +364,10 @@ class PaperEngine:
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(st), encoding="utf-8")
         tmp.replace(self.state_path)
+        try:
+            self.write_quality()
+        except OSError:
+            pass
         self._last_save = time.time()
         self._dirty = False
 
@@ -408,7 +416,7 @@ class PaperEngine:
             return False
         if when[:10] != g.day:
             self._roll_day(g, g.balance, when)
-        members = [x for x in self.slots.values() if x.group == g.name and x.position]
+        members = [x for x in self.slots.values() if x.group == g.name and x.position and not x.position.shadow]
         ok = True
         if g.max_open is not None and len(members) >= g.max_open:
             ok = False
@@ -469,10 +477,10 @@ class PaperEngine:
             fl, when = 0.0, None
             for x in members:
                 t = self.mt5.symbol_info_tick(x.symbol)
-                if t is not None:
+                if t is not None and not (x.position and x.position.shadow):
                     fl += self.floating(x, t)
                     when = when or _now(t)
-            if when and self._ftmo_check(g, g.balance + fl, when, not any(x.position for x in members)):
+            if when and self._ftmo_check(g, g.balance + fl, when, not any(x.position and not x.position.shadow for x in members)):
                 self.events.append({"t": when, "type": "FTMO", "symbole": "COMBINÉE", "tf": "",
                                     "texte": f"stratégie combinée « {g.name} » : challenge {g.ftmo_status}"})
                 self._dirty = True
@@ -495,7 +503,8 @@ class PaperEngine:
         when = _now(tick)
         if self.news is not None and self._news_blackout(s, when):
             return
-        if s.group and not self.group_allows(s, when):
+        shadow = bool(s.group and s.paused)
+        if s.group and not shadow and not self.group_allows(s, when):
             return
         lots = self._lots(s.symbol, self.risk_budget(s), dist)
         if lots <= 0:
@@ -503,10 +512,10 @@ class PaperEngine:
         tp = price + side * s.cfg.rr * dist if s.cfg.rr else None
         s.position = Position(side, price, price - side * dist, tp, dist, lots,
                               self._money(s.symbol, dist, lots), when, (tick.ask - tick.bid) / info.point,
-                              opened_msc=int(getattr(tick, "time_msc", 0)))
+                              opened_msc=int(getattr(tick, "time_msc", 0)), shadow=shadow)
         if when[:10] not in s.trade_days:
             s.trade_days.append(when[:10])
-        g = self.groups.get(s.group)
+        g = None if shadow else self.groups.get(s.group)
         if g is not None and when[:10] not in g.trade_days:
             g.trade_days.append(when[:10])
         d = info.digits
@@ -577,7 +586,7 @@ class PaperEngine:
         self.recent.append(row)
         if len(self.recent) > 3000:
             self.recent = self.recent[-2000:]
-        g = self.groups.get(s.group)
+        g = None if p.shadow else self.groups.get(s.group)
         if g is not None:  # le compte partagé de la stratégie combinée encaisse aussi le trade
             self._roll_day(g, g.balance, when)
             g.balance += pnl
@@ -590,8 +599,55 @@ class PaperEngine:
             g.max_dd_pct = max(g.max_dd_pct, (g.peak - g.balance) / g.peak * 100 if g.peak > 0 else 0)
         s.position = None
         self.event(when, "FERMETURE", s, f"{row['sens']} {reason} @ {price} -> {r:+.2f}R | {pnl:+.2f} | "
-                                         f"solde {s.balance:,.2f}")
+                                         f"solde {s.balance:,.2f}" + (" (en pause : hors compte combiné)" if p.shadow else ""))
         self.update_ftmo(s, s.balance, when)
+        self.quality_check(s, when)
+
+    # ------------------------------------------------------------------ contrôleur de qualité
+    QC_MIN_TRADES = 20
+    QC_WINDOW = 50
+
+    def quality_stats(self, s: Slot) -> dict:
+        """Compare le R moyen EN DIRECT au R moyen attendu (hors-échantillon de la recherche)."""
+        h = np.array(s.history_r[-self.QC_WINDOW:], dtype=float)
+        out = {"trades": s.trades, "r_moyen_direct": round(float(h.mean()), 3) if len(h) else None,
+               "r_moyen_attendu": s.expected_avg_r, "z": None}
+        if len(h) >= 2 and s.expected_avg_r is not None:
+            sd = float(h.std(ddof=1)) or 1.0
+            out["z"] = round(float((h.mean() - s.expected_avg_r) / (sd / np.sqrt(len(h)))), 2)
+        return out
+
+    def quality_check(self, s: Slot, when: str):
+        """Met en pause une stratégie qui fait nettement moins bien en direct que dans la recherche
+        (au moins 20 trades, R moyen négatif ET écart statistique z < -2), et la réactive si ses 20 derniers
+        trades (suivis même en pause) redeviennent bons. Un composant en pause ne touche plus le compte combiné."""
+        if s.expected_avg_r is None or s.trades < self.QC_MIN_TRADES:
+            return
+        q = self.quality_stats(s)
+        if not s.paused and q["z"] is not None and q["z"] < -2.0 and q["r_moyen_direct"] < 0:
+            s.paused = True
+            s.pause_reason = (f"{when[:16]} : R moyen en direct {q['r_moyen_direct']:+.2f} contre {s.expected_avg_r:+.2f} "
+                              f"attendu sur {min(s.trades, self.QC_WINDOW)} trades (z = {q['z']})")
+            self.event(when, "CONTRÔLE", s, f"MISE EN PAUSE — {s.pause_reason}. Le Directeur en sera informé.")
+        elif s.paused:
+            last = np.array(s.history_r[-self.QC_MIN_TRADES:], dtype=float)
+            if len(last) >= self.QC_MIN_TRADES and last.mean() > 0 and last.mean() >= 0.5 * s.expected_avg_r:
+                s.paused, s.pause_reason = False, ""
+                self.event(when, "CONTRÔLE", s, f"RÉACTIVÉE — {self.QC_MIN_TRADES} derniers trades à "
+                                                f"{last.mean():+.2f}R en moyenne")
+
+    def write_quality(self):
+        """controle_qualite.json : lu par le Directeur pour écarter les stratégies en pause."""
+        rows = []
+        for s in self.slots.values():
+            if not s.trades:
+                continue
+            rows.append({"symbole": s.symbol, "timeframe": s.timeframe, "strategie": describe(s.candidate),
+                         "candidate": s.candidate, "groupe": s.group, "en_pause": s.paused, "raison": s.pause_reason,
+                         **self.quality_stats(s)})
+        (self.out / "controle_qualite.json").write_text(json.dumps(
+            {"maj": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "strategies": rows}, indent=1, ensure_ascii=False,
+            default=str), encoding="utf-8")
 
     # ------------------------------------------------------------------ ticks
     def process_ticks(self, symbol: str):
@@ -729,14 +785,14 @@ class PaperEngine:
                     "profit_pct": round((eq - s.capital) / s.capital * 100, 2),
                     "pire_jour_pct": round(s.worst_day_pct, 2), "jours_trades": len(s.trade_days),
                     "ftmo": s.ftmo_status, "ftmo_quand": s.ftmo_when, "en_position": bool(p),
-                    "attendu_r": s.expected_avg_r})
+                    "attendu_r": s.expected_avg_r, "en_pause": s.paused, "pause_raison": s.pause_reason})
         slot_rows.sort(key=lambda r: r["r_total"], reverse=True)
         group_rows = []
         for g in self.groups.values():
             members = [x for x in self.slots.values() if x.group == g.name]
-            fl = sum(self.floating(x, ticks.get(x.symbol)) for x in members)
+            fl = sum(self.floating(x, ticks.get(x.symbol)) for x in members if not (x.position and x.position.shadow))
             eq = g.balance + fl
-            open_risk = sum(x.position.risk_money for x in members if x.position)
+            open_risk = sum(x.position.risk_money for x in members if x.position and not x.position.shadow)
             group_rows.append({
                 "nom": g.name, "capital": g.capital, "solde": round(g.balance, 2), "equite": round(eq, 2),
                 "latent": round(fl, 2), "profit_pct": round((eq - g.capital) / g.capital * 100, 2),
@@ -750,7 +806,10 @@ class PaperEngine:
                            "budget_total": g.total_budget},
                 "composants": [{"symbole": x.symbol, "tf": x.timeframe, "strategie": describe(x.candidate),
                                 "risque": x.cfg.label(), "risque_pct": x.risk_pct, "trades": x.trades,
-                                "gagnants": x.wins, "r_total": round(x.sum_r, 2), "en_position": bool(x.position)}
+                                "gagnants": x.wins, "r_total": round(x.sum_r, 2), "en_position": bool(x.position),
+                                "en_pause": x.paused, "pause_raison": x.pause_reason,
+                                "r_moyen": round(x.sum_r / x.trades, 3) if x.trades else 0.0,
+                                "attendu_r": x.expected_avg_r}
                                for x in members]})
         acc = self.mt5.account_info()
         prices = {}

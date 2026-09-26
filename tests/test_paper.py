@@ -297,3 +297,39 @@ def test_exploration_labels_failles_and_catalog_best(tmp_path):
     labels = {s.verdict for s in slots}
     assert "faille des banques" in labels and "catalogue : meilleure version" in labels
     assert any(s.candidate == best for s in slots)
+
+
+def test_quality_controller_pauses_and_excludes_from_combined(setup):
+    """Contrôleur de qualité : 20 trades à -1R alors que la recherche attendait +0,3R -> pause ;
+    en pause, le composant trade « à blanc » (hors compte combiné) ; le Directeur lit la pause."""
+    import json as _json
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    mk, tmp = setup
+    cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+    conn = MT5Connector().connect(verbose=False)
+    s = Slot("c", "EURUSD", "H1", cand, group="g", risk_pct=0.5, expected_avg_r=0.3)
+    eng = PaperEngine(conn, [s], tmp / "paper", 0.5, groups={"g": {"capital": 100_000, "day_budget": 2.5}})
+    s.history_r = list(np.random.default_rng(1).normal(-1.0, 0.3, 25))
+    s.trades = 25
+    eng.quality_check(s, "2024-01-01 10:00:00")
+    assert s.paused and "attendu" in s.pause_reason
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    assert s.position is not None and s.position.shadow        # trade suivi mais hors du compte combiné
+    g = eng.groups["g"]
+    mk.push_ticks([s.position.tp + 0.0001])
+    eng.step()
+    assert g.trades == 0 and g.balance == 100_000 and s.trades == 26
+    eng.save()
+    q = _json.loads((tmp / "paper" / "controle_qualite.json").read_text(encoding="utf-8"))
+    assert q["strategies"][0]["en_pause"]
+    from mt5lab.manager import Director
+    assert Director._same_symbol("NASDAQ", "US100.cash") and not Director._same_symbol("EURUSD", "GBPUSD")
+    s.history_r += [2.0] * 20
+    eng.quality_check(s, "2024-02-01 10:00:00")
+    assert not s.paused
+    assert mk.sent == []

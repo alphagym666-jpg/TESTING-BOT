@@ -192,7 +192,8 @@ function viewStrat(){return `<p class="note">Un compte fictif par stratégie × 
  table("strat",[["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Risque","risque"],["Origine","origine"],["Trades","trades",null,1],
  ["Réussite","gagnants",(v,r)=>r.trades?fmt(v/r.trades*100,0)+" %":"—",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["P&L","pnl",money,1],
  ["Objectif FTMO","profit_pct",prog],["Pire jour","pire_jour_pct",v=>`<span class="${cls(v)}">${fmt(v,2)} %</span>`,1],["DD max","dd_max",v=>fmt(v,2)+" %",1],
- ["Challenge","ftmo",ftmoCell],["Attendu (recherche)","attendu_r",v=>v==null?"—":rr(v),1],["","en_position",v=>v?'<span class="tag run">en position</span>':""]],filt(D.comptes))}
+ ["Challenge","ftmo",ftmoCell],["Attendu (recherche)","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],["","en_position",v=>v?'<span class="tag run">en position</span>':""]],filt(D.comptes))}
+function pauseCell(v,x){return v?`<span class="tag ko" title="${esc(x.pause_raison||"")}">en pause</span>`:(x.trades>=20&&x.attendu_r!=null?'<span class="tag ok">conforme</span>':"")}
 function viewRR(){const c=filt(D.comptes),by={};c.forEach(x=>{const k=x.rr==null?"signal":"1:"+x.rr;(by[k]=by[k]||{k,rr:x.rr??99,t:0,w:0,R:0,p:0,n:0});
  const b=by[k];b.t+=x.trades;b.w+=x.gagnants;b.R+=x.r_total;b.p+=x.pnl;b.n++});
  const rows=Object.values(by).sort((a,b)=>a.rr-b.rr);if(!rows.length)return `<div class="empty">Pas encore de trade clôturé</div>`;
@@ -236,6 +237,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    <div class="tile"><div class="mut">Jours tradés</div><div class="v">${g.jours_trades}</div><div class="mut" style="font-size:12px">minimum ${D.ftmo.min_days}</div></div></div>`+
   table("comp",[["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Réglage","risque"],["Risque/trade","risque_pct",v=>fmt(v,2)+" %",1],
    ["Trades","trades",null,1],["Réussite","gagnants",(v,x)=>x.trades?fmt(v/x.trades*100,0)+" %":"—",1],["R total","r_total",rr,1],
+   ["R moyen","r_moyen",rr,1],["Attendu","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
