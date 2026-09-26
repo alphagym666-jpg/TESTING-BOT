@@ -76,6 +76,9 @@ où le terminal MT5 est installé.
   7. Les 30 meilleures strategies de la recherche
   8. Le portefeuille du Chef FTMO / strategies validees
   9. Ouvrir la PLATEFORME (voir les trades en direct)
+  D. Lancer le DIRECTEUR : strategie combinee pour passer FTMO le plus vite possible
+  R. Ouvrir le rapport du Directeur
+  C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24)
   A. Lancer l'exploration automatiquement au demarrage de Windows
   B. Ne plus lancer au demarrage de Windows
   0. Quitter le menu (le paper trading continue dans sa fenetre)
@@ -141,6 +144,37 @@ Résultats dans `results/<SYMBOLE>_<TF>/` :
 - `journal_agents.txt` — ce que chaque agent et chef a fait
 
 Plus de rounds (`--rounds`) et de budget (`--budget`) = recherche plus large (et plus longue).
+
+## Le Directeur : la stratégie combinée pour passer FTMO le plus vite
+
+Au-dessus des 2 chefs et des 10 agents, **le Directeur** (menu, option **D**, ou `python run.py directeur`) mène
+toute la campagne :
+1. **Il confie chaque marché × timeframe aux chefs**, ou reprend le travail déjà fait.
+2. **Revue** : il note chaque case (stratégies validées, réussite FTMO), ce qui marche le mieux, et quels agents
+   inventeurs livrent de la qualité.
+3. **Directives** : là où rien n'est validé, il relance une recherche **intensive** (budget ×2, +2 rounds,
+   générations d'inventions ×2) et apporte ses idées : les stratégies qui marchent ailleurs, transmises au Chef B,
+   et les indicateurs des inventions validées, imposés aux inventeurs. La barre de validation ne baisse jamais.
+4. **Stratégie combinée** : il assemble les meilleures stratégies validées de tous les marchés et timeframes, y
+   compris leurs **variantes de R:R** qui restent gagnantes hors-échantillon. Il règle ensuite le **risque de chaque
+   composant** (0,25 à 1 % par trade), le nombre max de positions et un arrêt journalier.
+5. **Scénarios de perte max par jour** : il refait tout pour 0,5 / 0,75 / 1 / 1,25 / 1,5 / 1,7 % par jour. Un
+   trade n'est pris que si *perte déjà réalisée aujourd'hui + risque des positions ouvertes + risque du nouveau
+   trade* (frais compris) reste sous ce plafond. Il garde le scénario qui **passe le challenge le plus souvent, puis
+   le plus vite**.
+6. **Test sur tous les timeframes** : chaque composant est rejoué, sans réoptimisation, sur les autres timeframes
+   de son marché.
+
+Résultats : `results/directeur.html` (rapport complet : stratégie combinée, tableau des scénarios, test
+multi-timeframes, revue, directives, journal) et `results/strategie_combinee.json`.
+
+L'option **C** fait tourner la stratégie combinée en paper trading 24h/24 sur **un seul compte fictif**, avec les
+mêmes règles de risque. Elle est visible dans l'onglet « Stratégie combinée » de la plateforme
+(http://localhost:8768) : équité, progression vers l'objectif, perte du jour par rapport au plafond, risque ouvert,
+pire journée, drawdown et statut du challenge.
+
+Réglages en haut de `lancer.bat` : `DIR_RISQUE_MAX` (risque max par trade, 1 %) et `DIR_PERTE_JOUR` (perte max
+par jour, 1,7 %).
 
 ## Les agents inventent leurs propres stratégies
 

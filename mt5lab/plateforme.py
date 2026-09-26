@@ -140,9 +140,9 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 <div id="view"></div>
 </main>
 <script>
-const TABS=[["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
+const TABS=[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
 ["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
-let tab=localStorageGet("tab")||"pos",D=null,sortState={};
+let tab=localStorageGet("tab")||"comb",D=null,sortState={};
 function localStorageGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function localStorageSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -210,9 +210,36 @@ function viewFtmo(){const c=filt(D.comptes);const ok=c.filter(x=>x.ftmo==="RÉUS
  table("ftmo",[["Challenge","ftmo",ftmoCell],["Quand","ftmo_quand"],["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Risque","risque"],
  ["Progression","profit_pct",prog],["Pire jour","pire_jour_pct",v=>`<span class="${cls(v)}">${fmt(v,2)} %</span>`,1],["Jours tradés","jours_trades",null,1],
  ["Trades","trades",null,1],["DD max","dd_max",v=>fmt(v,2)+" %",1]],[...ok,...c.filter(x=>x.ftmo==="en cours").sort((a,b)=>b.profit_pct-a.profit_pct),...ko])}
+function gauge(val,limit,label,good){if(Math.abs(val)<1e-9)val=0;const w=Math.max(0,Math.min(100,Math.abs(val)/limit*100));
+ return `<div class="tile"><div class="mut">${label}</div><div class="v ${good?cls(val):""}">${fmt(val,2,true)} %</div>
+ <span class="meter${val<0?" neg":""}" style="width:100%"><i style="width:${w}%"></i></span>
+ <div class="mut" style="font-size:12px">limite ${fmt(limit,1)} %</div></div>`}
+function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty">Pas de stratégie combinée dans ce paper trading.<br>
+ Lancez le Directeur (menu, option D) puis le paper trading de la stratégie combinée (option C).</div>`;
+ return G.map(g=>{const st=g.ftmo==="RÉUSSI"?'<span class="tag ok">challenge réussi</span>':g.ftmo.startsWith("ÉCHOUÉ")?`<span class="tag ko">${esc(g.ftmo.toLowerCase())}</span>`:'<span class="tag run">challenge en cours</span>';
+  const r=g.regles||{};
+  return `<h3 style="margin:6px 0 8px;font-size:16px">${esc(g.nom)} ${st}</h3>
+  <p class="note">Un seul compte de ${fmt(g.capital,0)} $ partagé par ${g.composants.length} composants · perte possible max
+  ${r.budget_jour==null?"—":fmt(r.budget_jour,1)+" %"} par jour · positions max ${r.max_positions??"illimité"} ·
+  ${g.refuses} signaux refusés par les règles de risque</p>
+  <div class="tiles">
+   <div class="tile"><div class="mut">Équité</div><div class="v">${fmt(g.equite,2)} $</div><div class="mut" style="font-size:12px">solde ${fmt(g.solde,2)} · latent ${fmt(g.latent,2,true)}</div></div>
+   ${gauge(g.profit_pct,D.ftmo.target1,"Objectif FTMO",true)}
+   ${gauge(g.jour_pct,r.budget_jour??D.ftmo.max_daily,"Aujourd'hui",true)}
+   ${gauge(-g.risque_ouvert_pct,r.budget_jour??D.ftmo.max_daily,"Risque ouvert (si tous les stops sautent)",false)}
+   ${gauge(g.pire_jour_pct,D.ftmo.max_daily,"Pire journée",true)}
+   ${gauge(-g.dd_max,D.ftmo.max_total,"Drawdown max",false)}
+  </div>
+  <div class="tiles"><div class="tile"><div class="mut">Trades</div><div class="v">${g.trades}</div><div class="mut" style="font-size:12px">${g.trades?fmt(g.gagnants/g.trades*100,0)+" % gagnants":""}</div></div>
+   <div class="tile"><div class="mut">R total</div><div class="v">${rr(g.r_total)}</div></div>
+   <div class="tile"><div class="mut">P&L réalisé</div><div class="v">${money(g.pnl)}</div></div>
+   <div class="tile"><div class="mut">Jours tradés</div><div class="v">${g.jours_trades}</div><div class="mut" style="font-size:12px">minimum ${D.ftmo.min_days}</div></div></div>`+
+  table("comp",[["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Réglage","risque"],["Risque/trade","risque_pct",v=>fmt(v,2)+" %",1],
+   ["Trades","trades",null,1],["Réussite","gagnants",(v,x)=>x.trades?fmt(v/x.trades*100,0)+" %":"—",1],["R total","r_total",rr,1],
+   ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- const v={pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ const v={comb:viewComb,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view"),sc=el.querySelector(".scroll"),top=sc?sc.scrollTop:0;el.innerHTML=v();
  const sc2=el.querySelector(".scroll");if(sc2)sc2.scrollTop=top}
 function fillSelect(id,vals){const el=document.getElementById(id),cur=el.value,first=el.options[0].outerHTML;

@@ -19,6 +19,7 @@ Campagne :
 """
 from __future__ import annotations
 
+import copy
 import html
 import json
 import math
@@ -30,10 +31,10 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from .backtest import RiskConfig, run_backtest
+from .backtest import RR_LEVELS, RiskConfig, run_backtest
 from .compare import build_comparison
 from .evaluator import candidate_key, compute_signal, describe
-from .ftmo import FtmoRules, apply_risk_rules, daily_table, simulate
+from .ftmo import FtmoRules, apply_risk_rules, daily_table, simulate, to_dt
 from .lab import LabConfig, run_lab
 from .strategies import REGISTRY, apply_filter
 
@@ -46,7 +47,9 @@ class DirectorConfig:
     capital: float = 100_000.0
     risk_pct: float = 1.0              # risque MAX par trade : le Directeur ne le dépasse jamais
     risk_levels: tuple = (0.25, 0.5, 0.75, 0.8, 0.9, 1.0)  # niveaux de risque par trade essayés (<= risk_pct)
-    day_budget: float = 1.0            # perte max possible par jour (réalisé + positions ouvertes + nouveau trade)
+    day_budget: float = 1.7            # perte max possible par jour (réalisé + positions ouvertes + nouveau trade)
+    day_budgets: tuple = (0.5, 0.75, 1.0, 1.25, 1.5, 1.7)  # scénarios testés (jamais au-dessus de day_budget)
+    rr_variants: bool = True           # essayer aussi chaque stratégie validée avec tous les R:R
     lab_risk_pct: float = 0.5          # risque utilisé pendant la recherche des chefs (pour noter les stratégies)
     ftmo: FtmoRules = field(default_factory=FtmoRules)
     rounds: int = 3
@@ -76,6 +79,7 @@ class Director:
         self.review_rows: list[dict] = []
         self.directives: list[str] = []
         self.combined: dict = {}
+        self.scenario_rows: list[dict] = []
         self.multi_tf: list[dict] = []
 
     # --------------------------------------------------------------------------- utilitaires
@@ -209,6 +213,7 @@ class Director:
 
     # --------------------------------------------------------------------------- 4. stratégie combinée
     def _pool(self, allr: pd.DataFrame):
+        """Stratégies validées (sans doublons) + leurs variantes de R:R qui restent gagnantes hors-échantillon."""
         ok = allr[allr["_ok"] & allr["oos_debut"].notna()].copy()
         trades, windows, info = {}, {}, {}
         for label in (ok["symbole"] + "_" + ok["timeframe"]).unique():
@@ -216,14 +221,54 @@ class Director:
             if not path.exists():
                 continue
             t = pd.read_csv(path)
+            t["entry_time"], t["exit_time"] = to_dt(t["entry_time"]), to_dt(t["exit_time"])
             for k, g in t.groupby("key"):
                 trades[f"{label}|{k}"] = g[["entry_time", "exit_time", "r"]].reset_index(drop=True)
+        seen_rules = set()
         for r in ok.itertuples():
-            key = f"{r.symbole}_{r.timeframe}|{candidate_key(json.loads(r.candidate))}"
-            if key in trades and key not in info:
+            cand = json.loads(r.candidate)
+            key = f"{r.symbole}_{r.timeframe}|{candidate_key(cand)}"
+            sig = {k: v for k, v in cand["signal"].items() if k != "name"}  # une invention recopiée = même règle
+            same = (r.symbole, r.timeframe, json.dumps(sig, sort_keys=True), cand["filter"],
+                    json.dumps(cand["risk"], sort_keys=True))
+            if key in trades and key not in info and same not in seen_rules:
+                seen_rules.add(same)
                 windows[key] = (pd.Timestamp(r.oos_debut), pd.Timestamp(r.oos_fin))
-                info[key] = {"symbole": r.symbole, "timeframe": r.timeframe, "candidate": json.loads(r.candidate),
-                             "strategie": r.strategie, "risque": r.risque, "seule_ftmo": r.ftmo_pass}
+                info[key] = {"symbole": r.symbole, "timeframe": r.timeframe, "candidate": cand,
+                             "strategie": r.strategie, "risque": r.risque, "seule_ftmo": r.ftmo_pass, "variante": False}
+        if self.cfg.rr_variants:
+            n_var = 0
+            for key in list(info):
+                base = info[key]
+                c = base["candidate"]
+                try:
+                    df, cost = self.data(base["symbole"], base["timeframe"])
+                except Exception:
+                    continue
+                lo, hi = windows[key]
+                sig = apply_filter(df, compute_signal(df, c["signal"]), c["filter"])
+                mask = (df.index >= lo) & (df.index <= hi)
+                if mask.sum() < 50:
+                    continue
+                for rr in RR_LEVELS:
+                    if rr == c["risk"]["rr"] or (rr is None and c["risk"]["management"] == "breakeven"):
+                        continue
+                    v = copy.deepcopy(c)
+                    v["risk"]["rr"] = rr
+                    res, tr = run_backtest(df[mask], sig[mask], RiskConfig(**v["risk"]), cost=cost,
+                                           risk_pct=self.cfg.lab_risk_pct, return_trades=True)
+                    if res.trades < 20 or res.avg_r <= 0 or res.profit_factor < 1.1:
+                        continue
+                    k2 = f"{base['symbole']}_{base['timeframe']}|{candidate_key(v)}"
+                    if k2 in info:
+                        continue
+                    trades[k2] = tr[["entry_time", "exit_time", "r"]].reset_index(drop=True)
+                    windows[k2] = (lo, hi)
+                    solo = simulate(daily_table(trades[k2], self.cfg.lab_risk_pct, lo, hi), self.cfg.ftmo, 1500, seed=0)
+                    info[k2] = {**base, "candidate": v, "risque": RiskConfig(**v["risk"]).label(),
+                                "seule_ftmo": solo["ftmo_pass"], "variante": True}
+                    n_var += 1
+            self.say(f"Variantes de R:R : {n_var} variantes restent gagnantes hors-échantillon et rejoignent le choix")
         return trades, windows, info
 
     def levels(self) -> list[float]:
@@ -267,17 +312,18 @@ class Director:
         return (not np.isnan(da) and not np.isnan(db) and da <= db * 1.05
                 and a.get("ftmo_echec_p1", 100) < b.get("ftmo_echec_p1", 100) - 0.5)
 
-    def build_combined(self, allr: pd.DataFrame) -> dict:
-        trades, windows, info = self._pool(allr)
+    def build_combined(self, allr: pd.DataFrame, pool=None, quiet=False) -> dict:
+        trades, windows, info = pool or self._pool(allr)
+        say = (lambda m: None) if quiet else self.say
         if not trades:
-            self.say("Pas encore de stratégie validée avec des trades : impossible de construire la stratégie combinée.")
+            say("Pas encore de stratégie validée avec des trades : impossible de construire la stratégie combinée.")
             return {}
         def solo(k):
             v = info[k]["seule_ftmo"]
             return -1.0 if v is None or v != v else float(v)
-        cand = sorted(info, key=solo, reverse=True)[:30]
+        cand = sorted(info, key=solo, reverse=True)[:40]
         R = self.cfg.risk_pct
-        self.say(f"Je construis la stratégie combinée à partir de {len(cand)} stratégies validées "
+        say(f"Je construis la stratégie combinée à partir de {len(cand)} stratégies validées "
                  f"(tous marchés et timeframes).")
         keys: list[str] = []
         weights: dict = {}
@@ -305,7 +351,7 @@ class Director:
                     weights[pick] = pick_w
                     best = pick_res
                     improved = True
-                    self.say(f"+ composant {len(keys)} : {info[pick]['symbole']} {info[pick]['timeframe']} | "
+                    say(f"+ composant {len(keys)} : {info[pick]['symbole']} {info[pick]['timeframe']} | "
                              f"{info[pick]['strategie']} à {pick_w:g} %/trade -> réussite {best['ftmo_pass']:.1f} %, "
                              f"+{self.cfg.ftmo.target1:g} % en ~{_fmt(best['ftmo_jours_p1'], '{:.0f}')} jours")
             if not keys:
@@ -336,12 +382,12 @@ class Director:
                     keys.remove(k)
                     weights.pop(k, None)
                     best = res
-                    self.say(f"- je retire {info[k]['strategie']} ({info[k]['symbole']} {info[k]['timeframe']}) : "
+                    say(f"- je retire {info[k]['strategie']} ({info[k]['symbole']} {info[k]['timeframe']}) : "
                              f"elle n'apportait plus rien")
             if best is before:
                 break
             ds_txt = "aucun" if rules["day_stop"] is None else f"-{rules['day_stop']:g} %"
-            self.say(f"Réglages après le tour {rnd + 1} : arrêt journalier {ds_txt}, "
+            say(f"Réglages après le tour {rnd + 1} : arrêt journalier {ds_txt}, "
                      f"max positions {rules['max_open'] or 'illimité'} -> réussite {best['ftmo_pass']:.1f} %, "
                      f"~{_fmt(best['ftmo_jours_p1'], '{:.0f}')} jours")
         if not keys:
@@ -349,17 +395,83 @@ class Director:
         final = self._eval(keys, weights, rules["day_stop"], rules["max_open"], trades, windows, n=5000)
         comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": weights[k],
-                  "reussite_seule": info[k]["seule_ftmo"]} for k in keys]
+                  "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False)}
+                 for k in keys]
         rules = {**rules, "day_budget": self.cfg.day_budget}
-        self.combined = {"nom": "Stratégie combinée du Directeur", "ftmo_regles": self.cfg.ftmo.label(),
-                         "risque_max_par_trade": R, "regles": rules, "resultat": final, "composants": comps,
-                         "cree_le": time.strftime("%Y-%m-%d %H:%M")}
-        (self.cfg.out / "strategie_combinee.json").write_text(
-            json.dumps(self.combined, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-        self.say(f"STRATÉGIE COMBINÉE : {len(keys)} composants, réussite {final['ftmo_pass']:.1f} %, "
+        self._last_setup = (list(keys), dict(weights), dict(rules))
+        combined = {"nom": "Stratégie combinée du Directeur", "ftmo_regles": self.cfg.ftmo.label(),
+                    "risque_max_par_trade": R, "regles": rules, "resultat": final, "composants": comps,
+                    "cree_le": time.strftime("%Y-%m-%d %H:%M")}
+        say(f"STRATÉGIE COMBINÉE : {len(keys)} composants, réussite {final['ftmo_pass']:.1f} %, "
                  f"+{self.cfg.ftmo.target1:g} % en ~{_fmt(final['ftmo_jours_p1'], '{:.0f}')} jours de bourse, "
                  f"échec {_fmt(final['ftmo_echec_p1'])} %, pire journée {final['pire_jour']:.2f} %")
-        return self.combined
+        return combined
+
+    def scenarios(self, allr: pd.DataFrame) -> dict:
+        """Une stratégie combinée par scénario de perte max par jour ; on garde celle qui passe le plus vite."""
+        pool = self._pool(allr)
+        if not pool[0]:
+            self.say("Pas encore de stratégie validée avec des trades : impossible de construire la stratégie combinée.")
+            return {}
+        cap = self.cfg.day_budget
+        budgets = sorted({b for b in self.cfg.day_budgets if b <= cap} | {cap})
+        self.scenario_rows = []
+        best, best_b = None, None
+        setups = []  # meilleures combinaisons trouvées pour chaque budget : réessayées dans tous les scénarios
+        for b in budgets:
+            self.cfg.day_budget = b
+            comb = self.build_combined(allr, pool, quiet=True)
+            if comb:
+                setups.append(self._last_setup)
+        for b in budgets:
+            self.cfg.day_budget = b
+            comb, res = None, None
+            for keys, weights, rules in setups:
+                lv = self.levels()
+                if not lv:
+                    continue
+                w = {k: min(v, lv[-1]) for k, v in weights.items()}  # chaque risque doit tenir dans le budget
+                r = self._eval(keys, w, rules.get("day_stop"), rules.get("max_open"), *pool[:2], n=5000)
+                if r is not None and self._better(r, res):
+                    res, comb = r, (keys, w, rules)
+            if comb is None:
+                continue
+            keys, w, rules = comb
+            trades, windows, info = pool
+            comb = {"nom": "Stratégie combinée du Directeur", "ftmo_regles": self.cfg.ftmo.label(),
+                    "risque_max_par_trade": self.cfg.risk_pct, "regles": {**rules, "day_budget": b}, "resultat": res,
+                    "composants": [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"],
+                                    "candidate": info[k]["candidate"], "strategie": info[k]["strategie"],
+                                    "risque_config": info[k]["risque"], "risk_pct": w[k],
+                                    "reussite_seule": info[k]["seule_ftmo"],
+                                    "variante_rr": info[k].get("variante", False)} for k in keys],
+                    "cree_le": time.strftime("%Y-%m-%d %H:%M")}
+            self.scenario_rows.append({"budget": b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
+                                       "echec": res["ftmo_echec_p1"], "pire_jour": res["pire_jour"],
+                                       "composants": len(comb["composants"]),
+                                       "risques": ", ".join(f"{c['risk_pct']:g}" for c in comb["composants"]),
+                                       "rr": ", ".join(RiskConfig(**c["candidate"]["risk"]).label().split("|")[1].strip()
+                                                       for c in comb["composants"])})
+            self.say(f"Scénario perte max {b:g} %/jour : réussite {res['ftmo_pass']:.1f} %, +{self.cfg.ftmo.target1:g} % "
+                     f"en ~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours, échec {_fmt(res['ftmo_echec_p1'])} %, "
+                     f"pire journée {res['pire_jour']:.2f} %, {len(comb['composants'])} composants")
+            if self._better(res, best["resultat"] if best else None):
+                best, best_b = comb, b
+        self.cfg.day_budget = cap
+        if not best:
+            return {}
+        best["scenarios"] = self.scenario_rows
+        best["scenario_choisi"] = best_b
+        self.combined = best
+        (self.cfg.out / "strategie_combinee.json").write_text(
+            json.dumps(best, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        res = best["resultat"]
+        self.say(f"MEILLEUR SCÉNARIO : perte max {best_b:g} %/jour -> réussite {res['ftmo_pass']:.1f} %, "
+                 f"+{self.cfg.ftmo.target1:g} % en ~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours de bourse")
+        for i, c in enumerate(best["composants"], 1):
+            self.say(f"  {i}. {c['symbole']} {c['timeframe']} | {c['strategie']} | {c['risque_config']} | "
+                     f"{c['risk_pct']:g} %/trade" + (" (variante R:R)" if c.get("variante_rr") else ""))
+        return best
 
     # --------------------------------------------------------------------------- 5. test multi-timeframes
     def multi_tf_test(self):
@@ -394,7 +506,7 @@ class Director:
             self.pass2(allr)
             allr = self.review()
         if len(allr):
-            self.build_combined(allr)
+            self.scenarios(allr)
             if self.combined:
                 self.multi_tf_test()
         self.say(f"Campagne terminée en {(time.time() - t0) / 60:.0f} min. Rapport : {self.cfg.out / 'directeur.html'}")
@@ -437,7 +549,8 @@ def write_report(d: Director):
             ("Positions ouvertes max", str(rules.get("max_open") or "illimité"))])
     comp_rows = "".join(
         f"<tr><td>{i}</td><td>{esc(x['symbole'])}</td><td>{esc(x['timeframe'])}</td><td>{esc(x['strategie'])}</td>"
-        f"<td>{esc(x['risque_config'])}</td><td><b>{x['risk_pct']:g} %</b></td><td>{_fmt(x['reussite_seule'])} %</td></tr>"
+        f"<td>{esc(x['risque_config'])}{' <i>(variante R:R)</i>' if x.get('variante_rr') else ''}</td>"
+        f"<td><b>{x['risk_pct']:g} %</b></td><td>{_fmt(x['reussite_seule'])} %</td></tr>"
         for i, x in enumerate(c.get("composants", []) if c else [], 1))
     tfs = d.cfg.timeframes
     mtf = "".join(
@@ -446,6 +559,16 @@ def write_report(d: Director):
                        + (esc(v['erreur'][:30]) if 'erreur' in v else f"{v['avg_r']:+.2f}R<br><span class='mut'>{v['trades']} trades</span>")
                        + "</td>")(r["tfs"].get(tf, {"erreur": "—"})) for tf in tfs)
         + f"<td><b>{'robuste' if r['robuste'] else 'spécifique'}</b> ({r['positifs']})</td></tr>" for r in d.multi_tf)
+    chosen = c.get("scenario_choisi") if c else None
+    scen_rows = "".join(
+        f"<tr><td class='{'good' if r['budget'] == chosen else ''}'><b>{r['budget']:g} %</b>{' (retenu)' if r['budget'] == chosen else ''}</td>"
+        f"<td>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
+        f"<td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td><td>{esc(r['risques'])}</td><td>{esc(r['rr'])}</td></tr>"
+        for r in d.scenario_rows)
+    scen = ("<div class='scroll'><table><thead><tr><th>Perte max par jour</th><th>Réussite</th>"
+            f"<th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th><th>Pire journée</th><th>Composants</th>"
+            f"<th>Risque par trade (%)</th><th>R:R</th></tr></thead><tbody>{scen_rows}</tbody></table></div>"
+            if scen_rows else "<p class='mut'>—</p>")
     rev = "".join(
         f"<tr><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{r['validees']}</td>"
         f"<td>{_fmt(r['meilleure_ftmo'])} %</td><td>{_fmt(r['meilleur_gain_mois'], '{:+.2f}')} %</td>"
@@ -460,6 +583,10 @@ perte possible max {d.cfg.day_budget:g} % par jour · {len(d.cfg.symbols)} march
 {('<div class="cards">' + cards + '</div>') if c else '<p class="mut">Pas encore de stratégie combinée : aucune stratégie validée.</p>'}
 {('<p class="mut">Composants tradés ENSEMBLE sur un seul compte. Période commune testée : ' + esc(' → '.join(res.get('fenetre', ('', '')))) + ', ' + str(res.get('trades', '')) + ' trades.</p>') if c else ''}
 {('<div class="scroll"><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque par trade</th><th>Réussite seule</th></tr></thead><tbody>' + comp_rows + '</tbody></table></div>') if c else ''}
+<h2>Scénarios de perte max par jour</h2>
+<p class="mut">Pour chaque scénario, le Directeur construit la meilleure stratégie combinée (composants, R:R, risque par trade).
+Le scénario retenu est celui qui passe le challenge le plus souvent, puis le plus vite.</p>
+{scen}
 <h2>Test sur tous les timeframes</h2>
 <p class="mut">Chaque composant rejoué sans aucune réoptimisation sur les 35 % les plus récents de chaque timeframe de son marché (R moyen par trade).</p>
 {('<div class="scroll"><table><thead><tr><th>Composant</th>' + ''.join(f'<th>{t}</th>' for t in tfs) + '<th>Verdict</th></tr></thead><tbody>' + mtf + '</tbody></table></div>') if mtf else '<p class="mut">—</p>'}

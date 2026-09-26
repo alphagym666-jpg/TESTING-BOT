@@ -227,3 +227,29 @@ def test_exploration_includes_exact_validated_and_portfolio(tmp_path):
     slots = load_exploration_slots(tmp_path, ["EURUSD"], ["H1"])
     exact = [s for s in slots if s.candidate == cand]
     assert len(exact) == 1 and exact[0].verdict == "portefeuille FTMO n°4"
+
+
+def test_combined_strategy_shares_one_account_and_respects_daily_budget(setup):
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    mk, tmp = setup
+    mk_cand = lambda rr: {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+                          "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": rr, "management": "none",
+                                   "max_hold": 200, "direction": "both"}}
+    slots = [Slot(f"c{i}", "EURUSD", "H1", mk_cand(rr), group="combo", risk_pct=0.9) for i, rr in enumerate((2.0, 3.0))]
+    conn = MT5Connector().connect(verbose=False)
+    eng = PaperEngine(conn, slots, tmp / "paper", risk_pct=0.5,
+                      groups={"combo": {"capital": 100_000, "day_budget": 1.0, "max_open": None, "day_stop": None}})
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    g = eng.groups["combo"]
+    opened = [s for s in eng.slots.values() if s.position]
+    assert len(opened) == 1 and g.skipped == 1           # le 2e trade dépasserait 1 % de perte possible
+    assert opened[0].position.risk_money == pytest.approx(900, rel=0.02)   # 0,9 % du compte partagé
+    mk.push_ticks([opened[0].position.tp + 0.0001])
+    eng.step()
+    assert g.trades == 1 and g.balance == pytest.approx(100_000 + 2 * 900, rel=0.03)
+    snap = eng.snapshot()
+    assert snap["groupes"][0]["composants"] and snap["groupes"][0]["ftmo"] == "en cours"
+    assert mk.sent == []

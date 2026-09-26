@@ -83,6 +83,8 @@ class Slot:
     day_start: float = 100_000.0
     worst_day_pct: float = 0.0
     trade_days: list = field(default_factory=list)
+    group: str = ""                  # composant d'une stratégie combinée (compte partagé)
+    risk_pct: float | None = None    # risque propre à ce composant (sinon le risque général)
 
     @property
     def cfg(self) -> RiskConfig:
@@ -90,7 +92,36 @@ class Slot:
 
 
 SAVED = [f.name for f in fields(Slot) if f.name not in ("id", "symbol", "timeframe", "candidate", "verdict",
-                                                          "expected_avg_r", "expected_wr", "capital", "position")]
+                                                          "expected_avg_r", "expected_wr", "capital", "position",
+                                                          "group", "risk_pct")]
+
+
+@dataclass
+class Group:
+    """Compte UNIQUE partagé par les composants d'une stratégie combinée, suivi comme un challenge FTMO."""
+    name: str
+    capital: float = 100_000.0
+    day_budget: float | None = None   # perte possible max par jour, en % (réalisé + ouvert + nouveau trade)
+    day_stop: float | None = None     # plus de nouveau trade après -X % réalisés dans la journée
+    max_open: int | None = None       # positions ouvertes max en même temps
+    balance: float = 100_000.0
+    peak: float = 100_000.0
+    max_dd_pct: float = 0.0
+    trades: int = 0
+    wins: int = 0
+    pnl: float = 0.0
+    sum_r: float = 0.0
+    ftmo_status: str = "en cours"
+    ftmo_when: str = ""
+    day: str = ""
+    day_start: float = 100_000.0
+    worst_day_pct: float = 0.0
+    trade_days: list = field(default_factory=list)
+    day_realized: float = 0.0
+    skipped: int = 0                  # signaux refusés par les règles de risque
+
+
+GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -138,6 +169,28 @@ def load_portfolio_slots(results_dir: Path, capital=100_000.0) -> list[Slot]:
     slots = [_slot_from_row(r["symbole"], r["timeframe"], r, capital) for _, r in board.iterrows()]
     print(f"[paper] portefeuille du Chef FTMO : {len(slots)} stratégies")
     return slots
+
+
+def load_combined_slots(results_dir: Path, capital=100_000.0) -> tuple[list[Slot], dict]:
+    """La stratégie combinée du Directeur (results/strategie_combinee.json) : un seul compte partagé."""
+    path = Path(results_dir) / "strategie_combinee.json"
+    if not path.exists():
+        return [], {}
+    d = json.loads(path.read_text(encoding="utf-8"))
+    rules = d.get("regles", {})
+    name = "Stratégie combinée"
+    slots = []
+    for i, c in enumerate(d.get("composants", []), 1):
+        cand = c["candidate"]
+        s = Slot(slot_id(c["symbole"], c["timeframe"], cand) + f"_comb{i}", c["symbole"], c["timeframe"], cand,
+                 f"combinée n°{i}", capital=capital, balance=capital, peak=capital, day_start=capital,
+                 group=name, risk_pct=float(c["risk_pct"]))
+        slots.append(s)
+    groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
+                     "max_open": rules.get("max_open")}}
+    print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
+          f"(perte possible max {rules.get('day_budget')} %/jour)")
+    return slots, groups
 
 
 def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, capital=100_000.0) -> list[Slot]:
@@ -216,7 +269,7 @@ def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_0
 class PaperEngine:
     def __init__(self, conn, slots: list[Slot], out_dir: Path, risk_pct: float = 1.0,
                  commission_per_lot: float | dict = 0.0, bars: int = 1000, ftmo: FtmoRules | None = None,
-                 quiet: bool | None = None, save_every: float = 20.0):
+                 quiet: bool | None = None, save_every: float = 20.0, groups: dict | None = None):
         self.c = conn
         self.mt5 = conn.mt5
         self.out = Path(out_dir)
@@ -231,6 +284,11 @@ class PaperEngine:
         self.slots = {s.id: s for s in slots}
         for s in self.slots.values():
             s.symbol = conn.resolve(s.symbol)
+        self.groups: dict[str, Group] = {}
+        for name, g in (groups or {}).items():
+            cap = g.get("capital", 100_000.0)
+            self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
+                                      balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -265,6 +323,11 @@ class PaperEngine:
                 s.position = Position(**d["position"]) if d.get("position") else None
         self.last_bar.update(st.get("last_bar", {}))
         self.last_msc.update({k: int(v) for k, v in st.get("last_msc", {}).items()})
+        for name, d in st.get("groups", {}).items():
+            if name in self.groups:
+                for k in GROUP_SAVED:
+                    if k in d:
+                        setattr(self.groups[name], k, d[k])
         self.recent = st.get("recent", [])
         self.events.extend(st.get("events", []))
         self.started = st.get("started", self.started)
@@ -275,6 +338,7 @@ class PaperEngine:
         active = {sid: s for sid, s in self.slots.items() if s.trades or s.position or s.ftmo_status != "en cours"}
         st = {"started": self.started, "last_bar": self.last_bar, "last_msc": self.last_msc,
               "recent": self.recent[-1000:], "events": list(self.events),
+              "groups": {n: {k: getattr(g, k) for k in GROUP_SAVED} for n, g in self.groups.items()},
               "slots": {sid: {**{k: getattr(s, k) for k in SAVED},
                               "position": asdict(s.position) if s.position else None}
                         for sid, s in active.items()}}
@@ -311,8 +375,38 @@ class PaperEngine:
         return round(lots, 8) if lots >= info.volume_min else 0.0
 
     def risk_budget(self, s: Slot) -> float:
-        """Perte max autorisée par trade : risk_pct du capital de départ (ou du solde s'il a baissé)."""
-        return min(s.balance, s.capital) * self.risk_pct / 100
+        """Perte max autorisée par trade : risk_pct du capital de départ (ou du solde s'il a baissé).
+
+        Pour un composant de stratégie combinée : son propre risque, calculé sur le compte partagé."""
+        pct = s.risk_pct if s.risk_pct is not None else self.risk_pct
+        if s.group and s.group in self.groups:
+            g = self.groups[s.group]
+            return min(g.balance, g.capital) * pct / 100
+        return min(s.balance, s.capital) * pct / 100
+
+    def group_allows(self, s: Slot, when: str) -> bool:
+        """Règles de risque de la stratégie combinée, vérifiées avant chaque nouveau trade."""
+        g = self.groups.get(s.group)
+        if g is None:
+            return True
+        if g.ftmo_status != "en cours":
+            return False
+        if when[:10] != g.day:
+            self._roll_day(g, g.balance, when)
+        members = [x for x in self.slots.values() if x.group == g.name and x.position]
+        ok = True
+        if g.max_open is not None and len(members) >= g.max_open:
+            ok = False
+        elif g.day_stop is not None and g.day_realized <= -g.day_stop * g.capital / 100:
+            ok = False
+        elif g.day_budget is not None:
+            open_risk = sum(x.position.risk_money for x in members) * 1.1
+            new_risk = self.risk_budget(s) * 1.1
+            if (max(0.0, -g.day_realized) + open_risk + new_risk) / g.capital * 100 > g.day_budget + 1e-9:
+                ok = False
+        if not ok:
+            g.skipped += 1
+        return ok
 
     def pips(self, symbol: str, move: float) -> float:
         info = self.c.symbol_info(symbol)
@@ -320,24 +414,48 @@ class PaperEngine:
         return move / pip
 
     # ------------------------------------------------------------------ challenge FTMO
-    def update_ftmo(self, s: Slot, equity: float, when: str):
-        day = when[:10]
-        if day != s.day:
-            s.day, s.day_start = day, (equity if s.day else s.capital)
-        if s.ftmo_status != "en cours":
-            return
+    def _roll_day(self, acc, equity: float, when: str):
+        if when[:10] != acc.day:
+            acc.day, acc.day_start = when[:10], (equity if acc.day else acc.capital)
+            if isinstance(acc, Group):
+                acc.day_realized = 0.0
+
+    def _ftmo_check(self, acc, equity: float, when: str, flat: bool) -> bool:
+        """Met à jour le suivi FTMO d'un compte (stratégie seule ou combinée). True si le statut vient de changer."""
+        self._roll_day(acc, equity, when)
+        if acc.ftmo_status != "en cours":
+            return False
         R = self.ftmo
-        daily = (equity - s.day_start) / s.capital * 100
-        s.worst_day_pct = min(s.worst_day_pct, daily)
+        daily = (equity - acc.day_start) / acc.capital * 100
+        acc.worst_day_pct = min(acc.worst_day_pct, daily)
         if daily <= -R.max_daily:
-            s.ftmo_status, s.ftmo_when = f"ÉCHOUÉ (perte du jour {daily:.2f} %)", when
-        elif (equity - s.capital) / s.capital * 100 <= -R.max_total:
-            s.ftmo_status, s.ftmo_when = "ÉCHOUÉ (perte max totale)", when
-        elif s.position is None and (s.balance - s.capital) / s.capital * 100 >= R.target1 \
-                and len(s.trade_days) >= R.min_days:
-            s.ftmo_status, s.ftmo_when = "RÉUSSI", when
-        if s.ftmo_status != "en cours":
+            acc.ftmo_status, acc.ftmo_when = f"ÉCHOUÉ (perte du jour {daily:.2f} %)", when
+        elif (equity - acc.capital) / acc.capital * 100 <= -R.max_total:
+            acc.ftmo_status, acc.ftmo_when = "ÉCHOUÉ (perte max totale)", when
+        elif flat and (acc.balance - acc.capital) / acc.capital * 100 >= R.target1 and len(acc.trade_days) >= R.min_days:
+            acc.ftmo_status, acc.ftmo_when = "RÉUSSI", when
+        return acc.ftmo_status != "en cours"
+
+    def update_ftmo(self, s: Slot, equity: float, when: str):
+        if self._ftmo_check(s, equity, when, s.position is None):
             self.event(when, "FTMO", s, f"challenge {s.ftmo_status} : {describe(s.candidate)} [{s.cfg.label()}]")
+
+    def update_groups(self):
+        """Suivi FTMO des stratégies combinées, positions ouvertes comprises."""
+        for g in self.groups.values():
+            members = [x for x in self.slots.values() if x.group == g.name]
+            if not members:
+                continue
+            fl, when = 0.0, None
+            for x in members:
+                t = self.mt5.symbol_info_tick(x.symbol)
+                if t is not None:
+                    fl += self.floating(x, t)
+                    when = when or _now(t)
+            if when and self._ftmo_check(g, g.balance + fl, when, not any(x.position for x in members)):
+                self.events.append({"t": when, "type": "FTMO", "symbole": "COMBINÉE", "tf": "",
+                                    "texte": f"stratégie combinée « {g.name} » : challenge {g.ftmo_status}"})
+                self._dirty = True
 
     def floating(self, s: Slot, tick) -> float:
         p = s.position
@@ -354,16 +472,21 @@ class PaperEngine:
         dist = _stop_distance(closed, s.cfg, atr_arr, len(closed) - 1, side, price)
         if not np.isfinite(dist) or dist <= 0:
             return
+        when = _now(tick)
+        if s.group and not self.group_allows(s, when):
+            return
         lots = self._lots(s.symbol, self.risk_budget(s), dist)
         if lots <= 0:
             return
         tp = price + side * s.cfg.rr * dist if s.cfg.rr else None
-        when = _now(tick)
         s.position = Position(side, price, price - side * dist, tp, dist, lots,
                               self._money(s.symbol, dist, lots), when, (tick.ask - tick.bid) / info.point,
                               opened_msc=int(getattr(tick, "time_msc", 0)))
         if when[:10] not in s.trade_days:
             s.trade_days.append(when[:10])
+        g = self.groups.get(s.group)
+        if g is not None and when[:10] not in g.trade_days:
+            g.trade_days.append(when[:10])
         d = info.digits
         self.event(when, "OUVERTURE", s, f"{'ACHAT' if side > 0 else 'VENTE'} {lots} lots @ {price:.{d}f} | "
                                          f"SL {s.position.sl:.{d}f} | TP {'signal' if tp is None else f'{tp:.{d}f}'} | "
@@ -405,6 +528,17 @@ class PaperEngine:
         self.recent.append(row)
         if len(self.recent) > 3000:
             self.recent = self.recent[-2000:]
+        g = self.groups.get(s.group)
+        if g is not None:  # le compte partagé de la stratégie combinée encaisse aussi le trade
+            self._roll_day(g, g.balance, when)
+            g.balance += pnl
+            g.pnl += pnl
+            g.trades += 1
+            g.wins += pnl > 0
+            g.sum_r += r
+            g.day_realized += pnl
+            g.peak = max(g.peak, g.balance)
+            g.max_dd_pct = max(g.max_dd_pct, (g.peak - g.balance) / g.peak * 100 if g.peak > 0 else 0)
         s.position = None
         self.event(when, "FERMETURE", s, f"{row['sens']} {reason} @ {price} -> {r:+.2f}R | {pnl:+.2f} | "
                                          f"solde {s.balance:,.2f}")
@@ -490,7 +624,7 @@ class PaperEngine:
                     dist = cfg.sl_value * atr_last if cfg.sl_mode == "atr" else p.risk
                     trail = close - p.side * dist
                     p.sl = max(p.sl, trail) if p.side > 0 else min(p.sl, trail)
-            if s.position is None and sig != 0 and s.ftmo_status == "en cours":
+            if s.position is None and sig != 0 and (s.group or s.ftmo_status == "en cours"):
                 self._open(s, sig, closed, tick, atr_arr)
 
     def step(self):
@@ -509,6 +643,8 @@ class PaperEngine:
                 continue
             df = self.c.rates(sym, tf, self.bars)
             self.on_bar(sym, tf, df.iloc[:-1])
+        if self.groups:
+            self.update_groups()
         if self._dirty or time.time() - self._last_save >= self.save_every:
             self.save()  # sauvegarde dès qu'un trade s'ouvre / se ferme (reprise sans perte après un arrêt)
 
@@ -546,6 +682,26 @@ class PaperEngine:
                     "ftmo": s.ftmo_status, "ftmo_quand": s.ftmo_when, "en_position": bool(p),
                     "attendu_r": s.expected_avg_r})
         slot_rows.sort(key=lambda r: r["r_total"], reverse=True)
+        group_rows = []
+        for g in self.groups.values():
+            members = [x for x in self.slots.values() if x.group == g.name]
+            fl = sum(self.floating(x, ticks.get(x.symbol)) for x in members)
+            eq = g.balance + fl
+            open_risk = sum(x.position.risk_money for x in members if x.position)
+            group_rows.append({
+                "nom": g.name, "capital": g.capital, "solde": round(g.balance, 2), "equite": round(eq, 2),
+                "latent": round(fl, 2), "profit_pct": round((eq - g.capital) / g.capital * 100, 2),
+                "jour_pct": round((eq - g.day_start) / g.capital * 100, 2),
+                "jour_realise_pct": round(g.day_realized / g.capital * 100, 2),
+                "risque_ouvert_pct": round(open_risk / g.capital * 100, 2),
+                "pire_jour_pct": round(g.worst_day_pct, 2), "dd_max": round(g.max_dd_pct, 2), "trades": g.trades,
+                "gagnants": g.wins, "r_total": round(g.sum_r, 2), "pnl": round(g.pnl, 2), "ftmo": g.ftmo_status,
+                "ftmo_quand": g.ftmo_when, "jours_trades": len(g.trade_days), "refuses": g.skipped,
+                "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open},
+                "composants": [{"symbole": x.symbol, "tf": x.timeframe, "strategie": describe(x.candidate),
+                                "risque": x.cfg.label(), "risque_pct": x.risk_pct, "trades": x.trades,
+                                "gagnants": x.wins, "r_total": round(x.sum_r, 2), "en_position": bool(x.position)}
+                               for x in members]})
         acc = self.mt5.account_info()
         prices = {}
         for sym, t in ticks.items():
@@ -560,7 +716,7 @@ class PaperEngine:
             "risque_pct": self.risk_pct, "ftmo": asdict(self.ftmo), "ftmo_label": self.ftmo.label(),
             "n_comptes": len(self.slots), "n_actifs": len(slot_rows),
             "n_marches": len({(s.symbol, s.timeframe) for s in self.slots.values()}),
-            "comptes": slot_rows[:max_slots], "positions": open_rows,
+            "comptes": slot_rows[:max_slots], "positions": open_rows, "groupes": group_rows,
             "trades": self.recent[-max_trades:][::-1], "evenements": list(self.events)[::-1][:200],
         }
 

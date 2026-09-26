@@ -18,6 +18,9 @@ rem Commission aller-retour par lot, par symbole (verifiez les montants de votre
 set COMMISSION=EURUSD=5 XAUUSD=5 NASDAQ=0
 rem Regles du challenge FTMO : objectif, perte max par jour, perte max totale (en %%)
 set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10
+rem Le Directeur : risque MAX par trade, et perte possible max par jour (il teste tous les scenarios jusqu'a ce plafond)
+set DIR_RISQUE_MAX=1.0
+set DIR_PERTE_JOUR=1.7
 rem Nombre de bougies par marche et timeframe
 set BARS=30000
 rem =====================================================================================
@@ -34,6 +37,11 @@ echo   FTMO : %FTMO%
 echo.
 echo   1. Tester la connexion a MT5
 echo   2. Changer marches / timeframes
+echo.
+echo   --- LE DIRECTEUR (pousse les chefs et les agents, construit la strategie combinee) ---
+echo   D. Lancer le DIRECTEUR : strategie combinee pour passer FTMO le plus vite possible
+echo   R. Ouvrir le rapport du Directeur
+echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24)
 echo.
 echo   --- RECHERCHE (les agents testent et inventent des strategies) ---
 echo   3. Recherche complete : tous les marches x tous les timeframes
@@ -63,6 +71,9 @@ if "%CHOIX%"=="6" goto explore
 if "%CHOIX%"=="7" goto paper
 if "%CHOIX%"=="8" goto paperok
 if "%CHOIX%"=="9" goto platform
+if /i "%CHOIX%"=="D" goto directeur
+if /i "%CHOIX%"=="R" goto rapportdir
+if /i "%CHOIX%"=="C" goto papercomb
 if /i "%CHOIX%"=="A" goto autostart
 if /i "%CHOIX%"=="B" goto noautostart
 if "%CHOIX%"=="0" exit /b 0
@@ -92,6 +103,24 @@ pause & goto menu
 :compare
 python run.py compare --capital %CAPITAL% --risk %RISK% %FTMO%
 if exist "results\comparaison.html" (start "" "results\comparaison.html") else (echo Lancez d'abord une recherche.)
+pause & goto menu
+
+:directeur
+echo Le Directeur reprend le travail deja fait, relance les cases faibles en mode intensif,
+echo puis construit la strategie combinee. Comptez de quelques minutes a plusieurs heures. Laissez MT5 ouvert.
+python run.py directeur --symbols %SYMS% --timeframes %TFS% --bars %BARS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --commission %COMMISSION% %FTMO%
+if exist "results\directeur.html" start "" "results\directeur.html"
+pause & goto menu
+
+:rapportdir
+if exist "results\directeur.html" (start "" "results\directeur.html") else (echo Lancez d'abord le Directeur : option D.)
+pause & goto menu
+
+:papercomb
+start "Paper trading - strategie combinee" "%~dp0paper_24h.bat" --source combinee --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_combinee --port 8768
+echo.
+echo La strategie combinee demarre dans une NOUVELLE fenetre (reduisez-la, ne la fermez pas).
+echo Plateforme : http://localhost:8768 - onglet "Strategie combinee".
 pause & goto menu
 
 :explore
@@ -132,5 +161,5 @@ pause & goto menu
 :platform
 start "" "http://localhost:8765"
 echo Si la page ne s'affiche pas : lancez d'abord le paper trading (option 6) et attendez 30 secondes.
-echo Options 7 et 8 : http://localhost:8766 et http://localhost:8767
+echo Options 7 et 8 : http://localhost:8766 et http://localhost:8767 - Strategie combinee (C) : http://localhost:8768
 pause & goto menu

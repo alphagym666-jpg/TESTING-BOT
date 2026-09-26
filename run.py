@@ -61,6 +61,31 @@ def add_ftmo_args(p):
     g.add_argument("--ftmo-min-days", type=int, default=4, help="jours de trading minimum (défaut 4)")
 
 
+def cmd_directeur(a):
+    from mt5lab.manager import Director, DirectorConfig
+
+    cfg = DirectorConfig(a.symbols, a.timeframes, out=Path(a.out), capital=a.capital, risk_pct=a.risk_max,
+                         day_budget=a.perte_max_jour, lab_risk_pct=a.risk, ftmo=ftmo_rules(a), rounds=a.rounds,
+                         budget=a.budget, invent_generations=a.invent_generations, reuse=not a.refaire,
+                         second_pass=not a.sans_deuxieme_passe)
+    if a.demo:
+        from mt5lab.data import synthetic
+        freq = {"M1": "min", "M5": "5min", "M15": "15min", "M30": "30min", "H1": "h", "H4": "4h", "D1": "D"}
+
+        def get_data(sym, tf):
+            import zlib
+            return synthetic(a.bars or 6000, seed=zlib.crc32(f"{sym}{tf}".encode()) % 1000, freq=freq.get(tf, "h")), 0.00012
+        Director(cfg, get_data).run()
+        return
+    from mt5lab.data import MT5Connector
+    comm = parse_commission(a.commission)
+    with MT5Connector() as conn:
+        def get_data(sym, tf):
+            df = conn.rates(sym, tf, a.bars or 30000)
+            return df, conn.cost_in_price(sym, a.commission_points, commission_for(comm, sym))
+        Director(cfg, get_data).run()
+
+
 def cmd_compare(a):
     from mt5lab.compare import build_comparison
     build_comparison(Path(a.out), a.capital, ftmo_rules(a), a.risk)
@@ -125,8 +150,8 @@ def cmd_live(a):
 
 def cmd_paper(a):
     from mt5lab.data import MT5Connector
-    from mt5lab.paper import (PaperEngine, load_best_slots, load_exploration_slots, load_portfolio_slots,
-                              load_slots, write_dashboard)
+    from mt5lab.paper import (PaperEngine, load_best_slots, load_combined_slots, load_exploration_slots,
+                              load_portfolio_slots, load_slots, write_dashboard)
 
     if a.port:  # déjà en marche ? (deux copies écriraient dans les mêmes fichiers)
         import socket
@@ -135,7 +160,11 @@ def cmd_paper(a):
             if sock.connect_ex(("127.0.0.1", a.port)) == 0:
                 print(f"[paper] Ce paper trading tourne déjà : http://localhost:{a.port}")
                 raise SystemExit(3)
-    slots = []
+    slots, groups = [], {}
+    if a.source == "combinee":
+        slots, groups = load_combined_slots(Path(a.results), a.capital)
+        if not slots:
+            raise SystemExit("Pas encore de stratégie combinée : lancez d'abord le Directeur (python run.py directeur).")
     if a.source == "portefeuille":
         slots = load_portfolio_slots(Path(a.results), a.capital)
         if not slots:
@@ -154,7 +183,7 @@ def cmd_paper(a):
     with MT5Connector() as conn:
         comm = parse_commission(a.commission)
         eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots},
-                          ftmo=ftmo_rules(a))
+                          ftmo=ftmo_rules(a), groups=groups)
         write_dashboard(eng)
         eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
 
@@ -214,8 +243,9 @@ def main():
     paper = sub.add_parser("paper", help="trades FICTIFS sur les prix réels de MT5 (aucun ordre envoyé)")
     paper.add_argument("--symbols", nargs="+", default=["EURUSD"])
     paper.add_argument("--timeframes", nargs="+", default=["H1"], help="un ou plusieurs timeframes (ou ALL)")
-    paper.add_argument("--source", choices=["exploration", "meilleures", "portefeuille", "tous", "approuvees"], default="tous",
+    paper.add_argument("--source", choices=["exploration", "combinee", "meilleures", "portefeuille", "tous", "approuvees"], default="tous",
                        help="exploration = TOUTES les stratégies + inventions × TOUS les R:R ; "
+                            "combinee = la stratégie combinée du Directeur (un seul compte) ; "
                             "portefeuille = les stratégies choisies ensemble par le Chef FTMO ; "
                             "meilleures = top N global de la comparaison (tous marchés et timeframes) ; "
                             "tous = top N finalistes par marché/timeframe ; approuvees = seulement les validées")
@@ -232,6 +262,27 @@ def main():
     paper.add_argument("--out", default="results/paper")
     add_ftmo_args(paper)
     paper.set_defaults(func=cmd_paper)
+
+    di = sub.add_parser("directeur", help="le Directeur : pousse chefs et agents et construit la stratégie combinée")
+    di.add_argument("--symbols", nargs="+", default=["NASDAQ", "XAUUSD", "EURUSD"])
+    di.add_argument("--timeframes", nargs="+", default=["ALL"])
+    di.add_argument("--bars", type=int, default=None)
+    di.add_argument("--capital", type=float, default=100_000)
+    di.add_argument("--risk-max", type=float, default=1.0, help="risque MAX par trade essayé par le Directeur (%%)")
+    di.add_argument("--perte-max-jour", type=float, default=1.7,
+                    help="perte possible max par jour : le Directeur teste tous les scénarios jusqu'à ce plafond (%%)")
+    di.add_argument("--risk", type=float, default=0.5, help="risque utilisé par les chefs pour noter les stratégies (%%)")
+    di.add_argument("--commission", nargs="+", default=None)
+    di.add_argument("--commission-points", type=float, default=0.0)
+    di.add_argument("--rounds", type=int, default=3)
+    di.add_argument("--budget", type=int, default=1000)
+    di.add_argument("--invent-generations", type=int, default=8)
+    di.add_argument("--refaire", action="store_true", help="refaire aussi les cases déjà recherchées")
+    di.add_argument("--sans-deuxieme-passe", action="store_true")
+    di.add_argument("--demo", action="store_true", help="données synthétiques (sans MT5)")
+    di.add_argument("--out", default="results")
+    add_ftmo_args(di)
+    di.set_defaults(func=cmd_directeur)
 
     comp = sub.add_parser("compare", help="comparer tous les marchés × timeframes déjà testés")
     comp.add_argument("--out", default="results")
