@@ -87,7 +87,8 @@ def cmd_directeur(a):
                          day_budget=a.perte_max_jour, lab_risk_pct=a.risk, ftmo=ftmo_rules(a), rounds=a.rounds,
                          budget=a.budget, invent_generations=a.invent_generations, reuse=not a.refaire,
                          second_pass=not a.sans_deuxieme_passe, years=a.annees, total_budget=a.perte_max_totale,
-                         max_fail=a.echec_max, catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques)
+                         max_fail=a.echec_max, catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques,
+                         server_offset=a.decalage_horaire)
     if a.demo:
         from mt5lab.data import synthetic
         freq = {"M1": "min", "M5": "5min", "M15": "15min", "M30": "30min", "H1": "h", "H4": "4h", "D1": "D"}
@@ -189,7 +190,7 @@ def cmd_paper(a):
                 raise SystemExit(3)
     slots, groups = [], {}
     if a.source == "combinee":
-        slots, groups = load_combined_slots(Path(a.results), a.capital)
+        slots, groups = load_combined_slots(Path(a.results), a.capital, a.horaire)
         if not slots:
             raise SystemExit("Pas encore de stratégie combinée : lancez d'abord le Directeur (python run.py directeur).")
     if a.source == "portefeuille":
@@ -223,7 +224,7 @@ def cmd_paper(a):
 
 def cmd_bot(a):
     from mt5lab.pont import generate_bot
-    out = generate_bot(Path(a.results), a.capital, ftmo_rules(a))
+    out = generate_bot(Path(a.results), a.capital, ftmo_rules(a), horaire=a.horaire)
     print(f"Bot prêt : {out / 'LaboBot.mq5'}")
     print(f"Mode d'emploi : {out / 'LISEZMOI_BOT.txt'}")
 
@@ -307,6 +308,8 @@ def main():
     paper.add_argument("--out", default="results/paper")
     add_ftmo_args(paper)
     news_args(paper)
+    paper.add_argument("--horaire", default=None, choices=["24h24", "8h-17h", "8h-13h"],
+                       help="stratégie combinée : prendre la meilleure de cet horaire (défaut : la meilleure de toutes)")
     paper.add_argument("--sans-bot", action="store_true",
                        help="ne pas écrire les signaux pour le bot MT5 LaboBot (stratégie combinée)")
     paper.set_defaults(func=cmd_paper)
@@ -326,6 +329,8 @@ def main():
                     help="%% maximum de challenges ratés toléré pour retenir un scénario")
     di.add_argument("--sans-catalogue", action="store_true", help="ne pas optimiser les 99 stratégies du catalogue")
     di.add_argument("--sans-equipes-banques", action="store_true", help="sans les équipes C et D")
+    di.add_argument("--decalage-horaire", type=float, default=7.0,
+                    help="heure du serveur MT5 moins votre heure locale (FTMO vs Québec : 7)")
     di.add_argument("--risk", type=float, default=0.5, help="risque utilisé par les chefs pour noter les stratégies (%%)")
     di.add_argument("--commission", nargs="+", default=None)
     di.add_argument("--commission-points", type=float, default=0.0)
@@ -343,6 +348,8 @@ def main():
     bot = sub.add_parser("bot", help="générer le bot MT5 (LaboBot.mq5) de la stratégie combinée")
     bot.add_argument("--results", default="results")
     bot.add_argument("--capital", type=float, default=100_000)
+    bot.add_argument("--horaire", default=None, choices=["24h24", "8h-17h", "8h-13h"],
+                     help="prendre la stratégie combinée de cet horaire (défaut : la meilleure)")
     add_ftmo_args(bot)
     bot.set_defaults(func=cmd_bot)
 

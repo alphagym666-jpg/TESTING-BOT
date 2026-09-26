@@ -237,8 +237,31 @@ pire journée, drawdown et statut du challenge.
 9. **Contrôleur de qualité** : il lit `controle_qualite.json` du paper trading et écarte de la stratégie combinée
    les stratégies mises en pause parce qu'elles font nettement moins bien en direct que prévu.
 
+10. **Horaires : 24h/24 ou seulement le jour ?** Tout est refait pour 3 horaires d'entrée, en heure du Québec :
+    **24h/24**, **8h-17h** et **8h-13h** (le serveur FTMO a 7 h d'avance : `--decalage-horaire` pour changer).
+    Le rapport compare les trois (réussite, jours, échecs, challenges réussis/ratés) et garde le meilleur. Chaque
+    horaire a sa stratégie combinée (`strategie_combinee_24h24.json`, `_8h-17h.json`, `_8h-13h.json`) : réglez
+    `HORAIRE` en haut de `lancer.bat` pour la suivre en paper trading et dans le bot. Les positions ouvertes gardent
+    leur SL et TP chez le courtier après la fin de l'horaire.
+
 Réglages en haut de `lancer.bat` : `DIR_RISQUE_MAX` (risque max par trade, 1 %), `DIR_PERTE_JOUR` (perte max
 par jour, 2,5 %) et `DIR_PERTE_TOTALE` (perte totale max, 10 %).
+
+## Le bot MT5 (LaboBot)
+
+Option **E** du menu (`python run.py bot`) : prépare `results/bot/LaboBot.mq5`, déjà réglé pour votre stratégie
+combinée, et `results/bot/LISEZMOI_BOT.txt` (installation pas à pas).
+
+- **Le cerveau reste en Python** : le paper trading de la stratégie combinée (option C) décide des trades avec
+  exactement le code qui a été testé, et écrit chaque décision (ouvrir, déplacer le stop, break-even, fermer) dans
+  le dossier commun de MT5 (`labo_signaux.csv`). Le bot, posé sur UN graphique, les exécute chaque seconde.
+  Le PC (ou un VPS Windows) doit donc rester allumé avec MT5 et l'option C.
+- Le lot est calculé pour perdre au maximum le risque prévu au stop ; SL et TP sont posés chez le courtier dès
+  l'ouverture (protégés même si le PC s'éteint).
+- **Garde-fous du bot**, indépendants de Python : compte réel refusé sauf `InpAutoriserReel = true`, risque max par
+  trade, tout fermé au-delà de 2,8 % de perte du jour (reprise le lendemain) et arrêt définitif à 9,5 % de perte
+  totale, plus de nouveau trade une fois l'objectif atteint, signal de plus de 90 s ignoré.
+- Testez-le plusieurs semaines sur un compte **démo** avant un challenge.
 
 ## Les agents inventent leurs propres stratégies
 

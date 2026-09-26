@@ -65,6 +65,9 @@ class DirectorConfig:
     second_pass: bool = True           # relancer les cases faibles en mode intensif
     max_components: int = 8
     min_window_days: int = 45
+    # horaires testés (heure LOCALE de l'utilisateur, entrées seulement) : (nom, début, fin) ; None = 24h/24
+    sessions: tuple = (("24h/24", None, None), ("8h-17h", 8, 17), ("8h-13h", 8, 13))
+    server_offset: float = 7.0         # heure du serveur MT5 - heure locale (FTMO vs Québec/New York : 7 h)
     seed: int = 7
 
 
@@ -113,6 +116,7 @@ class Director:
         self.directives: list[str] = []
         self.combined: dict = {}
         self.scenario_rows: list[dict] = []
+        self.session_rows: list[dict] = []
         self.allr = pd.DataFrame()
         self.card_ids: dict = {}
         self.multi_tf: list[dict] = []
@@ -403,6 +407,9 @@ class Director:
             return {}
         t = pd.concat(parts, ignore_index=True)
         t = t[(to_dt(t["entry_time"]) >= lo) & (to_dt(t["exit_time"]) <= hi)]
+        sess = comb.get("horaire") or {}
+        if sess.get("debut") is not None:
+            t = t[self.in_session(t["entry_time"], sess["debut"], sess["fin"])]
         rules = comb["regles"]
         t = apply_risk_rules(t, rules.get("day_stop"), rules.get("max_open"), self.cfg.risk_pct,
                              day_budget=rules.get("day_budget"), max_corr=rules.get("max_correles"))
@@ -534,15 +541,89 @@ class Director:
                  f"échec {_fmt(final['ftmo_echec_p1'])} %, pire journée {final['pire_jour']:.2f} %")
         return combined
 
+    def in_session(self, times, start, end) -> np.ndarray:
+        """Vrai pour les heures (serveur MT5) qui tombent dans l'horaire [début, fin[ en heure LOCALE."""
+        t = to_dt(times) - pd.Timedelta(hours=self.cfg.server_offset)
+        if start is None:
+            return np.ones(len(t), dtype=bool)
+        h = t.hour + t.minute / 60.0
+        return np.asarray((h >= start) & (h < end))
+
+    def _session_pool(self, pool, start, end):
+        trades, windows, info = pool
+        if start is None:
+            return pool
+        kept = {k: t[self.in_session(t["entry_time"], start, end)].reset_index(drop=True) for k, t in trades.items()}
+        kept = {k: t for k, t in kept.items() if len(t) >= 5}
+        return kept, windows, {k: v for k, v in info.items() if k in kept}
+
     def scenarios(self, allr: pd.DataFrame) -> dict:
-        """Une stratégie combinée par scénario de perte max par jour ; on garde celle qui passe le plus vite."""
-        pool = self._pool(allr)
-        if not pool[0]:
+        """Pour chaque horaire (24h/24, 8h-17h, 8h-13h...) : une stratégie combinée par scénario de perte max par
+        jour. On garde, pour chaque horaire, celle qui passe le plus vite, puis la meilleure de tous les horaires."""
+        pool0 = self._pool(allr)
+        if not pool0[0]:
             self.say("Pas encore de stratégie validée avec des trades : impossible de construire la stratégie combinée.")
             return {}
+        self.session_rows, all_rows, overall = [], [], None
+        for name, start, end in self.cfg.sessions:
+            pool = self._session_pool(pool0, start, end)
+            if not pool[0]:
+                self.say(f"Horaire {name} : aucune stratégie validée n'a assez de trades dans cet horaire.")
+                continue
+            self.say(f"===== Horaire {name} (entrées seulement {'24h/24' if start is None else f'de {start}h à {end}h'}, "
+                     "heure locale) =====")
+            best, best_b, rows = self._budget_scenarios(allr, pool)
+            for r in rows:
+                r["horaire"] = name
+            all_rows += rows
+            if not best:
+                continue
+            best["horaire"] = {"nom": name, "debut": start, "fin": end, "decalage_serveur": self.cfg.server_offset}
+            best["scenario_choisi"] = best_b
+            best["scenarios"] = rows
+            hist = self.history_challenges(best)
+            if hist:
+                best["challenges_historique"] = hist
+            res = best["resultat"]
+            self.session_rows.append({
+                "horaire": name, "budget": best_b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
+                "echec": res["ftmo_echec_p1"], "trades": res.get("trades"), "pire_jour": res["pire_jour"],
+                "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
+                "rates_oos": res.get("challenges_oos", {}).get("rates"),
+                "reussis_hist": hist.get("reussis") if hist else None, "rates_hist": hist.get("rates") if hist else None,
+                "composants": len(best["composants"]), "fichier": f"strategie_combinee_{_slug(name)}.json"})
+            (self.cfg.out / f"strategie_combinee_{_slug(name)}.json").write_text(
+                json.dumps(best, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+            self.say(f"Horaire {name} : réussite {res['ftmo_pass']:.1f} %, +{self.cfg.ftmo.target1:g} % en "
+                     f"~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours, échec {_fmt(res['ftmo_echec_p1'])} %"
+                     + (f", sur tout l'historique {hist['reussis']} challenges réussis / {hist['rates']} ratés" if hist else ""))
+            if self._better(res, overall["resultat"] if overall else None):
+                overall = best
+        self.scenario_rows = all_rows
+        if not overall:
+            return {}
+        overall["scenarios"] = all_rows
+        overall["horaires"] = self.session_rows
+        self.combined = overall
+        (self.cfg.out / "strategie_combinee.json").write_text(
+            json.dumps(overall, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        res = overall["resultat"]
+        self.say(f"MEILLEUR CHOIX : horaire {overall['horaire']['nom']}, perte max {overall['scenario_choisi']:g} %/jour "
+                 f"-> réussite {res['ftmo_pass']:.1f} %, +{self.cfg.ftmo.target1:g} % en "
+                 f"~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours de bourse")
+        if len(self.session_rows) > 1:
+            self.say("Comparaison des horaires : " + " | ".join(
+                f"{r['horaire']} : {_fmt(r['reussite'])} % en ~{_fmt(r['jours'], '{:.0f}')} j" for r in self.session_rows))
+        for i, c in enumerate(overall["composants"], 1):
+            self.say(f"  {i}. {c['symbole']} {c['timeframe']} | {c['strategie']} | {c['risque_config']} | "
+                     f"{c['risk_pct']:g} %/trade" + (" (variante R:R)" if c.get("variante_rr") else ""))
+        return overall
+
+    def _budget_scenarios(self, allr: pd.DataFrame, pool) -> tuple:
+        """Une stratégie combinée par scénario de perte max par jour ; renvoie (meilleure, budget, lignes)."""
         cap = self.cfg.day_budget
         budgets = sorted({b for b in self.cfg.day_budgets if b <= cap} | {cap})
-        self.scenario_rows = []
+        rows = []
         best, best_b = None, None
         setups = []  # meilleures combinaisons trouvées pour chaque budget : réessayées dans tous les scénarios
         for b in budgets:
@@ -577,7 +658,7 @@ class Director:
                                     "r_moyen_attendu": info[k].get("attendu_r"),
                                     "wr_attendu": info[k].get("attendu_wr")} for k in keys],
                     "cree_le": time.strftime("%Y-%m-%d %H:%M")}
-            self.scenario_rows.append({"budget": b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
+            rows.append({"budget": b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
                                        "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
                                        "rates_oos": res.get("challenges_oos", {}).get("rates"),
                                        "echec": res["ftmo_echec_p1"], "pire_jour": res["pire_jour"],
@@ -591,26 +672,7 @@ class Director:
             if self._better(res, best["resultat"] if best else None):
                 best, best_b = comb, b
         self.cfg.day_budget = cap
-        if not best:
-            return {}
-        best["scenarios"] = self.scenario_rows
-        best["scenario_choisi"] = best_b
-        hist = self.history_challenges(best)
-        if hist:
-            best["challenges_historique"] = hist
-            self.say(f"Sur tout l'historique ({hist['periode']}) en enchaînant les challenges : {hist['reussis']} réussis, "
-                     f"{hist['rates']} ratés, {_fmt(hist['jours_moyens'], '{:.0f}')} jours de bourse en moyenne "
-                     "(la partie avant l'OOS a servi à choisir les stratégies : chiffre optimiste)")
-        self.combined = best
-        (self.cfg.out / "strategie_combinee.json").write_text(
-            json.dumps(best, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-        res = best["resultat"]
-        self.say(f"MEILLEUR SCÉNARIO : perte max {best_b:g} %/jour -> réussite {res['ftmo_pass']:.1f} %, "
-                 f"+{self.cfg.ftmo.target1:g} % en ~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours de bourse")
-        for i, c in enumerate(best["composants"], 1):
-            self.say(f"  {i}. {c['symbole']} {c['timeframe']} | {c['strategie']} | {c['risque_config']} | "
-                     f"{c['risk_pct']:g} %/trade" + (" (variante R:R)" if c.get("variante_rr") else ""))
-        return best
+        return best, best_b, rows
 
     # --------------------------------------------------------------------------- 5. test multi-timeframes
     def multi_tf_test(self):
@@ -765,6 +827,10 @@ pre{white-space:pre-wrap;font-size:12px;background:var(--card);border:1px solid 
 """
 
 
+def _slug(name: str) -> str:
+    return name.replace("/", "").replace(" ", "").replace("h24h", "h") or "x"
+
+
 def _with_corr(symbol: str, t: pd.DataFrame) -> pd.DataFrame:
     """Ajoute le groupe de corrélation et l'exposition (sens du trade x sens du marché) aux trades."""
     from .data import correlation_of
@@ -813,16 +879,32 @@ def write_report(d: Director):
                        + "</td>")(r["tfs"].get(tf, {"erreur": "—"})) for tf in tfs)
         + f"<td><b>{'robuste' if r['robuste'] else 'spécifique'}</b> ({r['positifs']})</td></tr>" for r in d.multi_tf)
     chosen = c.get("scenario_choisi") if c else None
+    chosen_h = (c.get("horaire") or {}).get("nom", "24h/24") if c else None
+    is_chosen = lambda r: r["budget"] == chosen and r.get("horaire", "24h/24") == chosen_h
     scen_rows = "".join(
-        f"<tr><td class='{'good' if r['budget'] == chosen else ''}'><b>{r['budget']:g} %</b>{' (retenu)' if r['budget'] == chosen else ''}</td>"
+        f"<tr><td>{esc(r.get('horaire', '24h/24'))}</td>"
+        f"<td class='{'good' if is_chosen(r) else ''}'><b>{r['budget']:g} %</b>{' (retenu)' if is_chosen(r) else ''}</td>"
         f"<td>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
         f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
         f"<td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td><td>{esc(r['risques'])}</td><td>{esc(r['rr'])}</td></tr>"
         for r in d.scenario_rows)
-    scen = ("<div class='scroll'><table><thead><tr><th>Perte max par jour</th><th>Réussite</th>"
+    scen = ("<div class='scroll'><table><thead><tr><th>Horaire</th><th>Perte max par jour</th><th>Réussite</th>"
             f"<th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th><th>Challenges réussis / ratés (OOS)</th><th>Pire journée</th><th>Composants</th>"
             f"<th>Risque par trade (%)</th><th>R:R</th></tr></thead><tbody>{scen_rows}</tbody></table></div>"
             if scen_rows else "<p class='mut'>—</p>")
+    sess_rows = "".join(
+        f"<tr><td class='{'good' if r['horaire'] == chosen_h else ''}'><b>{esc(r['horaire'])}</b>"
+        f"{' (retenu)' if r['horaire'] == chosen_h else ''}</td><td>{r['budget']:g} %</td>"
+        f"<td class='pos'>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
+        f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
+        f"<td>{_fmt(r.get('reussis_hist'), '{:.0f}')} / {_fmt(r.get('rates_hist'), '{:.0f}')}</td>"
+        f"<td>{_fmt(r.get('trades'), '{:.0f}')}</td><td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td></tr>"
+        for r in d.session_rows)
+    sess = ("<div class='scroll'><table><thead><tr><th>Horaire (heure locale)</th><th>Meilleure perte max / jour</th>"
+            f"<th>Réussite</th><th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th>"
+            "<th>Challenges réussis / ratés (OOS)</th><th>Réussis / ratés (tout l'historique)</th><th>Trades</th>"
+            f"<th>Pire journée</th><th>Composants</th></tr></thead><tbody>{sess_rows}</tbody></table></div>"
+            if sess_rows else "<p class='mut'>—</p>")
     rev = "".join(
         f"<tr><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{r['validees']}</td>"
         f"<td>{_fmt(r['meilleure_ftmo'])} %</td><td>{_fmt(r['meilleur_gain_mois'], '{:+.2f}')} %</td>"
@@ -886,6 +968,11 @@ perte possible max {d.cfg.day_budget:g} % par jour · {len(d.cfg.symbols)} march
 {('<div class="cards">' + cards + '</div>') if c else '<p class="mut">Pas encore de stratégie combinée : aucune stratégie validée.</p>'}
 {('<p class="mut">Composants tradés ENSEMBLE sur un seul compte. Période commune testée : ' + esc(' → '.join(res.get('fenetre', ('', '')))) + ', ' + str(res.get('trades', '')) + ' trades.</p>') if c else ''}
 {('<div class="scroll"><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque par trade</th><th>Réussite seule</th></tr></thead><tbody>' + comp_rows + '</tbody></table></div>') if c else ''}
+<h2>Horaires : 24h/24 ou seulement le jour ?</h2>
+<p class="mut">Même travail refait avec des entrées permises seulement dans l'horaire (heure locale, serveur MT5 moins
+{d.cfg.server_offset:g} h). Les positions ouvertes gardent leur SL et TP chez le courtier après la fin de l'horaire.
+Chaque horaire a son fichier (strategie_combinee_*.json) pour le paper trading et le bot.</p>
+{sess}
 <h2>Scénarios de perte max par jour</h2>
 <p class="mut">Pour chaque scénario, le Directeur construit la meilleure stratégie combinée (composants, R:R, risque par trade).
 Le scénario retenu est celui qui passe le challenge le plus souvent, puis le plus vite.</p>

@@ -23,6 +23,9 @@ rem Le Directeur : risque MAX par trade, et perte possible max par jour (il test
 set DIR_RISQUE_MAX=1.0
 set DIR_PERTE_JOUR=2.5
 set DIR_PERTE_TOTALE=10
+rem Horaire de la strategie combinee pour le paper trading (C) et le bot (E) :
+rem   vide = la meilleure trouvee par le Directeur ; sinon 24h24, 8h-17h ou 8h-13h (heure du Quebec)
+set HORAIRE=
 rem Historique teste : 2 ans en M1 et M5, 5 ans en M15, M30, H1, H4 et D1 (automatique)
 rem =====================================================================================
 
@@ -144,12 +147,16 @@ if exist "results\fiches_strategies.html" (start "" "results\fiches_strategies.h
 pause & goto menu
 
 :bot
-python run.py bot --capital %CAPITAL% %FTMO%
+set HOR=
+if not "%HORAIRE%"=="" set HOR=--horaire %HORAIRE%
+python run.py bot --capital %CAPITAL% %FTMO% %HOR%
 if exist "results\bot\LaboBot.mq5" (start "" "results\bot" & start "" notepad "results\bot\LISEZMOI_BOT.txt")
 pause & goto menu
 
 :papercomb
-start "Paper trading - strategie combinee" "%~dp0paper_24h.bat" --source combinee --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_combinee --port 8768
+set HOR=
+if not "%HORAIRE%"=="" set HOR=--horaire %HORAIRE%
+start "Paper trading - strategie combinee" "%~dp0paper_24h.bat" --source combinee %HOR% --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_combinee --port 8768
 echo.
 echo La strategie combinee demarre dans une NOUVELLE fenetre (reduisez-la, ne la fermez pas).
 echo Plateforme : http://localhost:8768 - onglet "Strategie combinee".

@@ -87,11 +87,11 @@ class SignalBridge:
 
 
 def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None, template: str | Path | None = None,
-                 out_dir: str | Path | None = None) -> Path:
+                 out_dir: str | Path | None = None, horaire: str | None = None) -> Path:
     """Prépare results/bot/ : LaboBot.mq5 réglé pour VOTRE stratégie combinée + LISEZMOI_BOT.txt."""
     import json
     results_dir = Path(results_dir)
-    comb_path = results_dir / "strategie_combinee.json"
+    comb_path = results_dir / (f"strategie_combinee_{horaire}.json" if horaire else "strategie_combinee.json")
     if not comb_path.exists():
         raise SystemExit("Pas encore de stratégie combinée : lancez d'abord le Directeur (option D).")
     comb = json.loads(comb_path.read_text(encoding="utf-8"))
@@ -112,6 +112,7 @@ def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None,
              f"//| Stratégie combinée du Directeur ({comb.get('cree_le', '')})",
              f"//| Règles : perte possible max {rules.get('day_budget')} %/jour, perte totale max "
              f"{rules.get('total_budget')} %, positions max {rules.get('max_open') or 'illimité'}",
+             f"//| Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure locale)",
              "//| Composants :"]
     for i, c in enumerate(comb.get("composants", []), 1):
         lines.append(f"//|  {i}. {c['symbole']} {c['timeframe']} | {c['strategie'][:90]} | {c['risque_config']} | "
@@ -132,6 +133,8 @@ le code qui a été testé. Elle écrit chaque décision dans le dossier commun 
 Le bot LaboBot, posé sur un graphique, lit ces décisions chaque seconde et passe les VRAIS ordres sur le compte.
 => Le PC (ou un VPS Windows) doit rester allumé avec MT5 ET l'option C du menu en marche.
 
+Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure locale ; c'est la plateforme Python
+qui applique l'horaire, le bot garde ses SL/TP en dehors).
 Stratégie combinée : {len(comb.get('composants', []))} composants, réussite estimée {res.get('ftmo_pass')} %,
 ~{res.get('ftmo_jours_p1')} jours de bourse pour l'objectif (estimation sur le passé, rien n'est garanti).
 

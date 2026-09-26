@@ -398,3 +398,13 @@ def test_generate_bot_fills_inputs(tmp_path):
     assert "InpPerteJourMax    = 2.8;" in src and "XAUUSD H1" in src
     assert "OnTimer" in src and "ACCOUNT_TRADE_MODE_REAL" in src
     assert (out / "LISEZMOI_BOT.txt").exists()
+
+
+def test_session_hours_local_time():
+    from mt5lab.paper import in_session
+    # serveur FTMO = Québec + 7 h : 15:00 serveur = 8:00 au Québec
+    assert in_session("2024-03-05 15:00:00", (8, 13, 7))
+    assert in_session("2024-03-05 19:59:00", (8, 13, 7))
+    assert not in_session("2024-03-05 20:00:00", (8, 13, 7))
+    assert not in_session("2024-03-05 14:59:00", (8, 17, 7))
+    assert in_session("2024-03-05 23:30:00", (8, 17, 7))

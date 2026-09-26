@@ -109,6 +109,7 @@ class Group:
     max_open: int | None = None       # positions ouvertes max en même temps
     total_budget: float | None = None # perte totale max depuis le départ, en % (jamais dépassée par un nouveau trade)
     max_corr: int | None = None       # positions max sur des marchés corrélés dans le même sens (NASDAQ + US30...)
+    session: tuple | None = None      # (début, fin, décalage serveur) : entrées seulement dans cet horaire local
     balance: float = 100_000.0
     peak: float = 100_000.0
     max_dd_pct: float = 0.0
@@ -127,7 +128,7 @@ class Group:
 
 
 GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
-                                                                "total_budget", "max_corr")]
+                                                                "total_budget", "max_corr", "session")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -177,9 +178,10 @@ def load_portfolio_slots(results_dir: Path, capital=100_000.0) -> list[Slot]:
     return slots
 
 
-def load_combined_slots(results_dir: Path, capital=100_000.0) -> tuple[list[Slot], dict]:
-    """La stratégie combinée du Directeur (results/strategie_combinee.json) : un seul compte partagé."""
-    path = Path(results_dir) / "strategie_combinee.json"
+def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | None = None) -> tuple[list[Slot], dict]:
+    """La stratégie combinée du Directeur (results/strategie_combinee.json) : un seul compte partagé.
+    horaire = "24h24", "8h-17h", "8h-13h"... pour prendre la meilleure combinée de cet horaire."""
+    path = Path(results_dir) / (f"strategie_combinee_{horaire}.json" if horaire else "strategie_combinee.json")
     if not path.exists():
         return [], {}
     d = json.loads(path.read_text(encoding="utf-8"))
@@ -195,10 +197,17 @@ def load_combined_slots(results_dir: Path, capital=100_000.0) -> tuple[list[Slot
         slots.append(s)
     groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0),
-                     "max_corr": rules.get("max_correles")}}
+                     "max_corr": rules.get("max_correles"), "session": _session_of(d)}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
           f"(perte possible max {rules.get('day_budget')} %/jour)")
     return slots, groups
+
+
+def _session_of(d: dict):
+    h = d.get("horaire") or {}
+    if h.get("debut") is None:
+        return None
+    return (float(h["debut"]), float(h["fin"]), float(h.get("decalage_serveur", 7.0)))
 
 
 def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, capital=100_000.0) -> list[Slot]:
@@ -311,7 +320,8 @@ class PaperEngine:
         for name, g in (groups or {}).items():
             cap = g.get("capital", 100_000.0)
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
-                                      g.get("total_budget"), g.get("max_corr"), balance=cap, peak=cap, day_start=cap)
+                                      g.get("total_budget"), g.get("max_corr"), g.get("session"),
+                                      balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -416,6 +426,8 @@ class PaperEngine:
         g = self.groups.get(s.group)
         if g is None:
             return True
+        if g.session and not in_session(when, g.session):
+            return False  # hors de l'horaire choisi : pas de nouvelle entrée (les positions ouvertes continuent)
         if g.ftmo_status != "en cours" and self.bridge is None:
             return False  # avec le bot, le compte réel a ses propres garde-fous : on continue à donner les signaux
         if when[:10] != g.day:
@@ -829,7 +841,8 @@ class PaperEngine:
                 "gagnants": g.wins, "r_total": round(g.sum_r, 2), "pnl": round(g.pnl, 2), "ftmo": g.ftmo_status,
                 "ftmo_quand": g.ftmo_when, "jours_trades": len(g.trade_days), "refuses": g.skipped,
                 "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open,
-                           "budget_total": g.total_budget, "max_correles": g.max_corr},
+                           "budget_total": g.total_budget, "max_correles": g.max_corr,
+                           "horaire": None if not g.session else f"{g.session[0]:g}h-{g.session[1]:g}h"},
                 "composants": [{"symbole": x.symbol, "tf": x.timeframe, "strategie": describe(x.candidate),
                                 "risque": x.cfg.label(), "risque_pct": x.risk_pct, "trades": x.trades,
                                 "gagnants": x.wins, "r_total": round(x.sum_r, 2), "en_position": bool(x.position),
@@ -941,6 +954,14 @@ def _base_name(cand: dict) -> str:
 
 def _msc(v) -> str:
     return datetime.fromtimestamp(int(v) / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def in_session(when: str, session) -> bool:
+    """when = heure du serveur MT5 ; session = (début, fin, décalage) en heure locale."""
+    start, end, offset = session
+    t = pd.Timestamp(when) - pd.Timedelta(hours=offset)
+    h = t.hour + t.minute / 60.0
+    return start <= h < end
 
 
 def _now(tick) -> str:

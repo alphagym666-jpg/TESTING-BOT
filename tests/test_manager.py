@@ -27,3 +27,8 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
         assert row["pire_jour"] >= -row["budget"] * 1.05  # la pire journée respecte le plafond (à 5 % près : frais)
     assert "reussis" in saved["challenges_historique"] and "rates" in saved["challenges_historique"]
     assert "reussis_oos" in saved["scenarios"][0]
+    assert {r["horaire"] for r in saved["scenarios"]} <= {"24h/24", "8h-17h", "8h-13h"}
+    assert saved["horaire"]["nom"] in ("24h/24", "8h-17h", "8h-13h")
+    assert len(saved["horaires"]) >= 1
+    assert (tmp_path / f"strategie_combinee_{saved['horaires'][0]['fichier'].split('_')[-1]}").exists()
+    assert "24h/24 ou seulement le jour" in (tmp_path / "directeur.html").read_text(encoding="utf-8")
