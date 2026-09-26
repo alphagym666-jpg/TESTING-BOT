@@ -106,7 +106,7 @@ def cmd_directeur(a):
             df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
             c = commission_for(comm, sym)
             df = conn.enrich(df, sym, a.commission_points, c, news, a.fenetre_nouvelles)
-            return df, conn.cost_in_price(sym, a.commission_points, c)
+            return df, conn.typical_cost(df, sym, a.commission_points, c)
         Director(cfg, get_data).run()
 
 
@@ -147,10 +147,12 @@ def cmd_lab(a):
                     if len(df) < 1000:
                         print(f"[lab] {sym} {tf} ignoré : seulement {len(df)} bougies (minimum 1000)")
                         continue
-                    cost = a.cost if a.cost is not None else \
-                        conn.cost_in_price(sym, a.commission_points, commission_for(comm, sym))
                     df = conn.enrich(df, sym, a.commission_points, commission_for(comm, sym), news,
                                      a.fenetre_nouvelles)
+                    if a.cost is not None:  # coût imposé à la main : il remplace le spread historique
+                        df, cost = df.drop(columns=["cost"], errors="ignore"), a.cost
+                    else:
+                        cost = conn.typical_cost(df, sym, a.commission_points, commission_for(comm, sym))
                     jobs.append((f"{sym}_{tf}", df, cost))
     for n, (label, df, cost) in enumerate(jobs, 1):
         print(f"\n########## [{n}/{len(jobs)}] {label} ##########")
@@ -160,6 +162,12 @@ def cmd_lab(a):
         if len(ok):
             print(ok[["strategie", "risque", "trades_oos", "wr_oos", "avgR_oos", "pf_oos", "ret_oos_pct",
                       "dd_oos_pct"]].head(15).to_string(index=False))
+        elif len(board) and board["trades_oos"].notna().any():
+            near = board[board["trades_oos"].notna()].sort_values("avgR_oos", ascending=False).head(5)
+            print("Les plus proches (non retenues, et pourquoi) :")
+            for _, r in near.iterrows():
+                print(f"  {r['avgR_oos']:+.2f}R/trade OOS sur {int(r['trades_oos'])} trades | {r['strategie'][:70]} "
+                      f"| {r['verdict']}")
         print(f"Rapport : {out_root / label / 'rapport.html'}")
     if len(jobs) > 1 or not (a.demo or a.csv):
         from mt5lab.compare import build_comparison

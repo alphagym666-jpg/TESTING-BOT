@@ -82,3 +82,27 @@ def test_correlation_groups_and_risk_rule():
     kept = apply_risk_rules(t, max_corr=1)
     assert len(kept) == 2 and list(kept["expo"]) == [1, -1]   # 2e achat d'indice refusé, la vente passe
     assert len(apply_risk_rules(t, max_corr=None, max_open=None, day_stop=None)) == 3
+
+
+def test_weekend_spread_not_applied_to_history():
+    """Le samedi, MT5 affiche un spread énorme : il ne doit pas pénaliser les trades historiques."""
+    df = synthetic(3000, seed=3)
+    sig = pd.Series(np.where(np.arange(len(df)) % 7 == 0, 1, 0), index=df.index)
+    cfg = RiskConfig("atr", 1.5, 2.0, "none", 200, "both")
+    d = df.assign(cost=0.0001)
+    normal = run_backtest(d, sig, cfg, cost=0.0001)
+    weekend = run_backtest(d, sig, cfg, cost=0.01)          # spread « du moment » 100x plus large
+    assert weekend.avg_r == normal.avg_r
+    assert run_backtest(d, sig, cfg, cost_mult=2.0).avg_r < normal.avg_r
+
+
+def test_enrich_uses_at_least_median_spread():
+    conn = MT5Connector.__new__(MT5Connector)
+    info = SimpleNamespace(point=1e-5, trade_tick_value=1.0, trade_tick_size=1e-5, swap_mode=0, visible=True,
+                           currency_base="EUR", currency_profit="USD")
+    conn.symbol_info = lambda s: info
+    idx = pd.date_range("2024-01-01", periods=5, freq="h")
+    df = pd.DataFrame({"open": 1.1, "high": 1.1, "low": 1.1, "close": 1.1, "volume": 1,
+                       "spread": [2, 10, 10, 10, 40]}, index=idx)
+    out = conn.enrich(df, "EURUSD")
+    assert np.allclose(out["cost"], np.array([10, 10, 10, 10, 40]) * 1e-5)

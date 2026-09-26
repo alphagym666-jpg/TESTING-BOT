@@ -36,7 +36,7 @@ from .compare import build_comparison
 from .data import DEFAULT_YEARS
 from .evaluator import candidate_key, compute_signal, describe
 from .ftmo import FtmoRules, apply_risk_rules, count_challenges, daily_table, simulate, to_dt
-from .lab import LabConfig, run_lab
+from .lab import LAB_VERSION, LabConfig, run_lab
 from .strategies import REGISTRY, apply_filter
 
 
@@ -153,6 +153,14 @@ class Director:
         return run_lab(df, cost, lab_cfg, f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}")
 
     @staticmethod
+    def _version(path: Path) -> int:
+        try:
+            b = pd.read_csv(path, usecols=["version_calcul"], nrows=1)
+            return int(b["version_calcul"].iloc[0])
+        except Exception:
+            return 0
+
+    @staticmethod
     def _covered_years(path: Path) -> float | None:
         try:
             b = pd.read_csv(path, usecols=["donnees_debut", "donnees_fin"], nrows=1)
@@ -173,12 +181,16 @@ class Director:
                 if path.exists() and self.cfg.reuse:
                     need = self.cfg.years or DEFAULT_YEARS.get(tf, 5)
                     got = self._covered_years(path)
-                    if got is not None and got >= need * 0.9:
+                    if self._version(path) < LAB_VERSION:
+                        self.say(f"{sym} {tf} : ancienne recherche faite avec l'ancienne méthode de calcul des coûts, "
+                                 "je la fais refaire")
+                    elif got is not None and got >= need * 0.9:
                         self.say(f"{sym} {tf} : je reprends le travail déjà fait par les chefs ({got:.1f} ans testés)")
                         continue
-                    self.say(f"{sym} {tf} : l'ancienne recherche ne couvrait que "
-                             f"{'une période inconnue' if got is None else f'{got:.1f} ans'} ; j'exige {need:g} ans, "
-                             f"je la fais refaire")
+                    else:
+                        self.say(f"{sym} {tf} : l'ancienne recherche ne couvrait que "
+                                 f"{'une période inconnue' if got is None else f'{got:.1f} ans'} ; "
+                                 f"j'exige {need:g} ans, je la fais refaire")
                 self.run_cell(sym, tf, self.lab_cfg(), "je confie la case aux 2 chefs et à leurs 10 agents")
 
     # --------------------------------------------------------------------------- 2. revue

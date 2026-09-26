@@ -228,6 +228,19 @@ class MT5Connector:
         print(msg)
         return df
 
+    def typical_cost(self, df: pd.DataFrame, symbol: str, commission_points: float = 0.0,
+                     commission_per_lot: float = 0.0) -> float:
+        """Coût aller-retour typique (spread médian de l'historique + commission). Prévient si le spread du
+        moment est anormalement large (week-end, nuit) : il n'est pas utilisé pour les tests."""
+        now = self.cost_in_price(symbol, commission_points, commission_per_lot)
+        if "cost" not in df.columns:
+            return now
+        typ = float(df["cost"].median())
+        if now > 2 * typ:
+            print(f"[MT5] {symbol} : spread du moment {now / typ:.1f}x plus large que d'habitude (marché fermé ou "
+                  "nuit) -> ignoré, les tests utilisent le spread historique de chaque bougie")
+        return typ
+
     def cost_in_price(self, symbol: str, commission_points: float = 0.0, commission_per_lot: float = 0.0) -> float:
         """Coût aller-retour approximatif en unités de prix : spread courant + commission.
 
@@ -275,7 +288,11 @@ class MT5Connector:
         if commission_per_lot and tick_value > 0:
             comm += commission_per_lot / tick_value * tick_size
         if "spread" in df.columns:
-            df["cost"] = df["spread"].astype(float) * info.point + comm
+            # le spread enregistré dans une bougie MT5 est souvent le plus bas de la bougie : on prend au moins
+            # le spread médian de l'historique (jamais le spread du moment, faussé le week-end)
+            sp = df["spread"].astype(float)
+            med = float(sp[sp > 0].median()) if (sp > 0).any() else 0.0
+            df["cost"] = np.maximum(sp, med) * info.point + comm
         sl, ss = self.swap_in_price(symbol, float(df["close"].iloc[-1]))
         if sl or ss:
             df["swap_long"], df["swap_short"] = sl, ss

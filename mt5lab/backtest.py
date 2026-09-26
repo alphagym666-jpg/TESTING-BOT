@@ -77,11 +77,14 @@ def run_backtest(
     cost: float = 0.0,
     risk_pct: float = 1.0,
     return_trades: bool = False,
+    cost_mult: float = 1.0,
 ):
     """Backtest un vecteur de signaux avec une config de risque.
 
-    cost = coût aller-retour en prix (spread + commission). Si les données contiennent une colonne « cost »
-    (spread réel de chaque bougie + commission), c'est le plus grand des deux qui est retenu.
+    cost = coût aller-retour en prix (spread + commission), utilisé seulement si les données n'ont pas de colonne
+    « cost » (spread historique de chaque bougie + commission, préparée par MT5Connector.enrich). Le spread
+    « du moment » n'est PAS appliqué à l'historique : le samedi, MT5 affiche le spread très large de la fermeture
+    du vendredi, ce qui aurait pénalisé tous les trades. cost_mult = 2 pour le test « coûts doublés ».
     Colonnes « swap_long » / « swap_short » (prix par nuit) : swaps comptés pour chaque nuit passée en position.
     Colonne « news_block » : aucune entrée sur une bougie qui s'ouvre près d'une annonce économique importante.
     """
@@ -151,7 +154,7 @@ def run_backtest(
                 sl = max(sl, trail) if side > 0 else min(sl, trail)
         if exit_px is None:
             exit_px, exit_bar = c[last], last
-        trade_cost = max(cost, bar_cost[e]) if bar_cost is not None and np.isfinite(bar_cost[e]) else cost
+        trade_cost = (bar_cost[e] if bar_cost is not None and np.isfinite(bar_cost[e]) else cost) * cost_mult
         swap = 0.0
         if has_swap:  # swap positif = crédit, négatif = frais (convention MT5), une fois par nuit passée
             nights = int(day_num[exit_bar] - day_num[e])

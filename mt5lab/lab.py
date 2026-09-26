@@ -37,13 +37,18 @@ class LabConfig:
     invent_bias: list = field(default_factory=list)  # indicateurs que le Directeur demande aux inventeurs d'explorer
 
 
+# version de la méthode de calcul : le Directeur refait les recherches faites avec une version plus ancienne
+# (3 = coûts historiques bougie par bougie, spread du moment ignoré, walk-forward, challenges enchaînés)
+LAB_VERSION = 3
+
+
 def stress_test(df: pd.DataFrame, oos_start: int, f: Finding, cost: float, risk_pct: float, wf_parts: int = 5) -> dict:
     """Contre-expertise : coûts doublés + stabilité sur les 2 moitiés de l'OOS + walk-forward sur tout l'historique
     (la stratégie, sans rien changer, doit gagner sur au moins 4 des 5 périodes successives)."""
     sig = apply_filter(df, compute_signal(df, f.candidate["signal"]), f.candidate["filter"])
     cfg = RiskConfig(**f.candidate["risk"])
     oos, oos_sig = df.iloc[oos_start:], sig.iloc[oos_start:]
-    double = run_backtest(oos, oos_sig, cfg, cost=cost * 2 + 1e-12, risk_pct=risk_pct)
+    double = run_backtest(oos, oos_sig, cfg, cost=cost + 1e-12, risk_pct=risk_pct, cost_mult=2.0)
     seg_pos, seg_n = 0, 0
     for part in np.array_split(np.arange(len(oos)), 2):
         r = run_backtest(oos.iloc[part], oos_sig.iloc[part], cfg, cost=cost, risk_pct=risk_pct)
@@ -425,6 +430,7 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                ("ftmo_pass", "ftmo_p1", "ftmo_p2", "ftmo_jours_p1", "ftmo_jours_p2", "ftmo_echec_p1")},
             **counts.get(f.key, {}),
             "candidate": json.dumps(f.candidate),
+            "version_calcul": LAB_VERSION,
         })
     board = pd.DataFrame(rows)
     if len(board):
