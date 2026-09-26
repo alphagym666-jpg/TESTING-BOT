@@ -7,15 +7,16 @@ if not exist .venv\Scripts\activate.bat (
 call .venv\Scripts\activate.bat
 
 rem ===================== REGLAGES (modifiables avec le Bloc-notes) =====================
-rem Marches : NASDAQ et GOLD sont reconnus automatiquement (US100.cash, XAUUSD...)
-set SYMS=NASDAQ XAUUSD EURUSD
+rem Marches : NASDAQ, GOLD, GER40, US30 sont reconnus automatiquement (US100.cash, XAUUSD, GER40.cash, US30.cash...)
+rem Plus de marches = recherche plus longue (7 marches x 7 timeframes = 49 cases)
+set SYMS=NASDAQ XAUUSD EURUSD GER40 US30 GBPUSD USDJPY
 rem Timeframes : ALL = M1 M5 M15 M30 H1 H4 D1
 set TFS=ALL
 rem Capital fictif de chaque strategie et perte max par trade (en %% du capital)
 set CAPITAL=100000
 set RISK=0.5
 rem Commission aller-retour par lot, par symbole (verifiez les montants de votre compte FTMO)
-set COMMISSION=EURUSD=5 XAUUSD=5 NASDAQ=0
+set COMMISSION=EURUSD=5 GBPUSD=5 USDJPY=5 XAUUSD=5 NASDAQ=0 GER40=0 US30=0
 rem Regles du challenge FTMO : objectif, perte max par jour, perte max totale (en %%)
 set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10
 rem Le Directeur : risque MAX par trade, et perte possible max par jour (il teste tous les scenarios jusqu'a ce plafond)
@@ -37,6 +38,7 @@ echo   FTMO : %FTMO%
 echo.
 echo   1. Tester la connexion a MT5
 echo   2. Changer marches / timeframes
+echo   N. Activer le filtre des NOUVELLES economiques (explications)
 echo.
 echo   --- LE DIRECTEUR (4 chefs, 20 agents : pousse tout le monde, construit la strategie combinee) ---
 echo   D. Lancer le DIRECTEUR : strategie combinee pour passer FTMO le plus vite possible
@@ -73,6 +75,7 @@ if "%CHOIX%"=="7" goto paper
 if "%CHOIX%"=="8" goto paperok
 if "%CHOIX%"=="9" goto platform
 if /i "%CHOIX%"=="D" goto directeur
+if /i "%CHOIX%"=="N" goto nouvelles
 if /i "%CHOIX%"=="R" goto rapportdir
 if /i "%CHOIX%"=="F" goto fiches
 if /i "%CHOIX%"=="C" goto papercomb
@@ -81,12 +84,28 @@ if /i "%CHOIX%"=="B" goto noautostart
 if "%CHOIX%"=="0" exit /b 0
 goto menu
 
+:nouvelles
+cls
+echo Filtre des nouvelles : aucune entree 30 min avant / apres une annonce a fort impact (NFP, CPI, FOMC, BCE...)
+echo.
+echo  1. Dans MT5 : Fichier ^> Ouvrir le dossier des donnees ^> MQL5 ^> Scripts
+echo  2. Copiez-y le fichier mql5\ExportNews.mq5 de ce dossier
+echo  3. Dans MT5 : clic droit sur "Scripts" dans le Navigateur ^> Actualiser
+echo  4. Double-cliquez ExportNews.mq5 (MetaEditor s'ouvre) et appuyez sur F7 pour compiler
+echo  5. Glissez le script ExportNews sur n'importe quel graphique ^> OK
+echo.
+echo  Le calendrier est ecrit dans le dossier commun de MT5 et la plateforme le trouve toute seule.
+echo  Refaites l'etape 5 une fois par mois pour garder les annonces a venir a jour.
+echo.
+pause
+goto menu
+
 :check
 python run.py check --symbols %SYMS%
 pause & goto menu
 
 :params
-set /p SYMS=Marches separes par des espaces (ex: NASDAQ XAUUSD EURUSD) : 
+set /p SYMS=Marches separes par des espaces (ex: NASDAQ XAUUSD EURUSD GER40 US30 GBPUSD USDJPY) : 
 set /p TFS=Timeframes (ex: M15 H1 H4, ou ALL pour tous) : 
 goto menu
 

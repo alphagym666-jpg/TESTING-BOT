@@ -292,7 +292,8 @@ class Director:
             t = pd.read_csv(path)
             t["entry_time"], t["exit_time"] = to_dt(t["entry_time"]), to_dt(t["exit_time"])
             for k, g in t.groupby("key"):
-                trades[f"{label}|{k}"] = g[["entry_time", "exit_time", "r"]].reset_index(drop=True)
+                trades[f"{label}|{k}"] = g[[c for c in ("entry_time", "exit_time", "r", "side") if c in g.columns]
+                                           ].reset_index(drop=True)
         seen_rules = set()
         for r in ok.itertuples():
             cand = json.loads(r.candidate)
@@ -345,7 +346,7 @@ class Director:
                     k2 = f"{base['symbole']}_{base['timeframe']}|{candidate_key(v)}"
                     if k2 in info:
                         continue
-                    trades[k2] = tr[["entry_time", "exit_time", "r"]].reset_index(drop=True)
+                    trades[k2] = tr[["entry_time", "exit_time", "r", "side"]].reset_index(drop=True)
                     windows[k2] = (lo, hi)
                     solo = simulate(daily_table(trades[k2], self.cfg.lab_risk_pct, lo, hi), self.cfg.ftmo, 1500, seed=0)
                     info[k2] = {**base, "candidate": v, "risque": RiskConfig(**v["risk"]).label(),
@@ -359,19 +360,19 @@ class Director:
         """Niveaux de risque autorisés : <= risque max, et un seul stop (+10 % de frais) doit tenir dans le budget du jour."""
         return sorted(l for l in self.cfg.risk_levels if l <= self.cfg.risk_pct and l * 1.1 <= self.cfg.day_budget + 1e-9)
 
-    def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500):
+    def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500, max_corr=None):
         lo = max(windows[k][0] for k in keys)
         hi = min(windows[k][1] for k in keys)
         if (hi - lo).days < self.cfg.min_window_days:
             return None
         parts = []
         for k in keys:
-            t = trades[k].assign(w=weights[k])
+            t = _with_corr(k.split("|")[0].rsplit("_", 1)[0], trades[k].assign(w=weights[k]))
             e = pd.to_datetime(t["entry_time"].astype(str), format="mixed")
             x = pd.to_datetime(t["exit_time"].astype(str), format="mixed")
             parts.append(t[(e >= lo) & (x <= hi)])
         merged = apply_risk_rules(pd.concat(parts, ignore_index=True), day_stop, max_open, self.cfg.risk_pct,
-                                  day_budget=self.cfg.day_budget)
+                                  day_budget=self.cfg.day_budget, max_corr=max_corr)
         daily = daily_table(merged, self.cfg.risk_pct, lo, hi)
         res = simulate(daily, self.cfg.ftmo, n, seed=0)
         res["fenetre"] = (str(lo.date()), str(hi.date()))
@@ -397,14 +398,14 @@ class Director:
             lo = df.index[0] if lo is None else max(lo, df.index[0])
             hi = df.index[-1] if hi is None else min(hi, df.index[-1])
             if len(tr):
-                parts.append(tr[["entry_time", "exit_time", "r"]].assign(w=c["risk_pct"]))
+                parts.append(_with_corr(c["symbole"], tr[["entry_time", "exit_time", "r", "side"]].assign(w=c["risk_pct"])))
         if not parts or lo is None or hi <= lo:
             return {}
         t = pd.concat(parts, ignore_index=True)
         t = t[(to_dt(t["entry_time"]) >= lo) & (to_dt(t["exit_time"]) <= hi)]
         rules = comb["regles"]
         t = apply_risk_rules(t, rules.get("day_stop"), rules.get("max_open"), self.cfg.risk_pct,
-                             day_budget=rules.get("day_budget"))
+                             day_budget=rules.get("day_budget"), max_corr=rules.get("max_correles"))
         c = count_challenges(daily_table(t, self.cfg.risk_pct, lo, hi), self.cfg.ftmo)
         c["periode"] = f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}"
         return c
@@ -445,7 +446,7 @@ class Director:
                  f"(tous marchés et timeframes).")
         keys: list[str] = []
         weights: dict = {}
-        rules = {"day_stop": None, "max_open": None}
+        rules = {"day_stop": None, "max_open": None, "max_correles": None}
         best = None
         day_stops = [None] + [x for x in (0.5, 0.75) if x < self.cfg.day_budget]
         for rnd in range(3):
@@ -461,7 +462,8 @@ class Director:
                     top = self.levels()[-1] if self.levels() else R
                     for lvl in sorted({min(0.5, top), top}):  # prudent, puis au risque max autorisé
                         w = {**weights, k: lvl}
-                        res = self._eval(keys + [k], w, rules["day_stop"], rules["max_open"], trades, windows)
+                        res = self._eval(keys + [k], w, rules["day_stop"], rules["max_open"], trades, windows,
+                                     max_corr=rules.get("max_correles"))
                         if self._better(res, best) and (pick_res is None or self._better(res, pick_res)):
                             pick, pick_res, pick_w = k, res, lvl
                 if pick:
@@ -480,14 +482,17 @@ class Director:
                 for mo in (None, 2, 3, 4, 6):
                     if mo is not None and mo >= len(keys) + 1:
                         continue
-                    res = self._eval(keys, weights, ds, mo, trades, windows)
-                    if self._better(res, best):
-                        best, rules = res, {"day_stop": ds, "max_open": mo}
+                    # marchés corrélés (NASDAQ/US30/GER40, EURUSD/GBPUSD/USDJPY) : combien de positions dans le même sens ?
+                    for mc in (None, 1, 2):
+                        res = self._eval(keys, weights, ds, mo, trades, windows, max_corr=mc)
+                        if self._better(res, best):
+                            best, rules = res, {"day_stop": ds, "max_open": mo, "max_correles": mc}
             # c) régler le risque de chaque composant (jamais au-dessus du risque max)
             for k in list(keys):
                 for w in sorted(self.levels(), reverse=True):
                     trial = {**weights, k: round(w, 4)}
-                    res = self._eval(keys, trial, rules["day_stop"], rules["max_open"], trades, windows)
+                    res = self._eval(keys, trial, rules["day_stop"], rules["max_open"], trades, windows,
+                                     max_corr=rules.get("max_correles"))
                     if self._better(res, best):
                         best, weights = res, trial
             # d) retirer ce qui ne sert plus
@@ -495,7 +500,8 @@ class Director:
                 if len(keys) <= 1:
                     break
                 rest = [x for x in keys if x != k]
-                res = self._eval(rest, weights, rules["day_stop"], rules["max_open"], trades, windows)
+                res = self._eval(rest, weights, rules["day_stop"], rules["max_open"], trades, windows,
+                                     max_corr=rules.get("max_correles"))
                 if res and not self._better(best, res):
                     keys.remove(k)
                     weights.pop(k, None)
@@ -506,11 +512,13 @@ class Director:
                 break
             ds_txt = "aucun" if rules["day_stop"] is None else f"-{rules['day_stop']:g} %"
             say(f"Réglages après le tour {rnd + 1} : arrêt journalier {ds_txt}, "
-                     f"max positions {rules['max_open'] or 'illimité'} -> réussite {best['ftmo_pass']:.1f} %, "
+                     f"max positions {rules['max_open'] or 'illimité'}, max marchés corrélés dans le même sens "
+                     f"{rules.get('max_correles') or 'illimité'} -> réussite {best['ftmo_pass']:.1f} %, "
                      f"~{_fmt(best['ftmo_jours_p1'], '{:.0f}')} jours")
         if not keys:
             return {}
-        final = self._eval(keys, weights, rules["day_stop"], rules["max_open"], trades, windows, n=5000)
+        final = self._eval(keys, weights, rules["day_stop"], rules["max_open"], trades, windows, n=5000,
+                           max_corr=rules.get("max_correles"))
         comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": weights[k],
                   "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False),
@@ -550,7 +558,8 @@ class Director:
                 if not lv:
                     continue
                 w = {k: min(v, lv[-1]) for k, v in weights.items()}  # chaque risque doit tenir dans le budget
-                r = self._eval(keys, w, rules.get("day_stop"), rules.get("max_open"), *pool[:2], n=5000)
+                r = self._eval(keys, w, rules.get("day_stop"), rules.get("max_open"), *pool[:2], n=5000,
+                               max_corr=rules.get("max_correles"))
                 if r is not None and self._better(r, res):
                     res, comb = r, (keys, w, rules)
             if comb is None:
@@ -683,6 +692,7 @@ class Director:
             rg = self.combined.get("regles", {})
             rules = {"Perte possible max par jour (%)": rg.get("day_budget"),
                      "Perte totale max (%)": rg.get("total_budget"), "Positions ouvertes max": rg.get("max_open"),
+                     "Positions max sur marchés corrélés (même sens)": rg.get("max_correles"),
                      "Arrêt après perte réalisée du jour (%)": rg.get("day_stop")}
             for i, comp in enumerate(self.combined.get("composants", []), 1):
                 add(comp["candidate"], comp["symbole"], comp["timeframe"], f"stratégie combinée n°{i}",
@@ -755,6 +765,14 @@ pre{white-space:pre-wrap;font-size:12px;background:var(--card);border:1px solid 
 """
 
 
+def _with_corr(symbol: str, t: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute le groupe de corrélation et l'exposition (sens du trade x sens du marché) aux trades."""
+    from .data import correlation_of
+    cl, sign = correlation_of(symbol)
+    expo = (t["side"].fillna(0).astype(int) * sign) if "side" in t.columns else 0
+    return t.assign(cluster=cl, expo=expo)
+
+
 def _pair(r, suffix: str) -> str | None:
     """« 7 réussis / 2 ratés » à partir des colonnes ftmo_reussis_<suffix> / ftmo_rates_<suffix>."""
     a, b = r.get(f"ftmo_reussis_{suffix}"), r.get(f"ftmo_rates_{suffix}")
@@ -780,7 +798,8 @@ def write_report(d: Director):
             ("Pire journée (positions ouvertes au stop)", f"{res.get('pire_jour', 0):.2f} %"),
             ("Perte possible max par jour", f"{rules.get('day_budget', d.cfg.day_budget):g} %"),
             ("Arrêt journalier", "aucun" if rules.get("day_stop") is None else f"après -{rules['day_stop']:g} %"),
-            ("Positions ouvertes max", str(rules.get("max_open") or "illimité"))])
+            ("Positions ouvertes max", str(rules.get("max_open") or "illimité")),
+            ("Marchés corrélés dans le même sens (max)", str(rules.get("max_correles") or "illimité"))])
     comp_rows = "".join(
         f"<tr><td>{i}</td><td>{esc(x['symbole'])}</td><td>{esc(x['timeframe'])}</td><td>{esc(x['strategie'])}</td>"
         f"<td>{esc(x['risque_config'])}{' <i>(variante R:R)</i>' if x.get('variante_rr') else ''}</td>"

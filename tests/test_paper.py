@@ -333,3 +333,22 @@ def test_quality_controller_pauses_and_excludes_from_combined(setup):
     eng.quality_check(s, "2024-02-01 10:00:00")
     assert not s.paused
     assert mk.sent == []
+
+
+def test_combined_correlated_markets_cap(setup):
+    """Deux achats sur le même groupe de marchés corrélés : le 2e est refusé si max 1 dans le même sens."""
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    mk, tmp = setup
+    mk_cand = lambda rr: {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+                          "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": rr, "management": "none",
+                                   "max_hold": 200, "direction": "both"}}
+    slots = [Slot(f"c{i}", "EURUSD", "H1", mk_cand(rr), group="combo", risk_pct=0.5) for i, rr in enumerate((2.0, 3.0))]
+    conn = MT5Connector().connect(verbose=False)
+    eng = PaperEngine(conn, slots, tmp / "paper", risk_pct=0.5,
+                      groups={"combo": {"capital": 100_000, "day_budget": 2.5, "max_corr": 1}})
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    assert sum(1 for s in eng.slots.values() if s.position) == 1 and eng.groups["combo"].skipped == 1
+    assert eng.snapshot()["groupes"][0]["regles"]["max_correles"] == 1

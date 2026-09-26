@@ -373,7 +373,7 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                              risk_pct=cfg.risk_pct, return_trades=True)
         if not len(tr):
             continue
-        tr = tr[["entry_time", "exit_time", "r"]].assign(key=candidate_key(f.candidate))
+        tr = tr[["entry_time", "exit_time", "r", "side"]].assign(key=candidate_key(f.candidate))
         oos_trades.append(tr)
         d_oos = daily_table(tr, cfg.risk_pct, df_oos.index[0], df_oos.index[-1])
         ftmo_res[f.key] = simulate(d_oos, rules, n=3000, seed=0)

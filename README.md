@@ -227,6 +227,16 @@ mêmes règles de risque. Elle est visible dans l'onglet « Stratégie combinée
 (http://localhost:8768) : équité, progression vers l'objectif, perte du jour par rapport au plafond, risque ouvert,
 pire journée, drawdown et statut du challenge.
 
+7. **Marchés corrélés** : NASDAQ, US30 et GER40 bougent ensemble ; EURUSD, GBPUSD et USDJPY (inversé) aussi,
+   à travers le dollar. Le Directeur teste une limite de **positions ouvertes dans le même sens sur des marchés
+   corrélés** (aucune, 1 ou 2) : acheter NASDAQ + US30 + GER40 en même temps, c'est trois fois le même pari.
+8. **Challenges enchaînés sur l'historique réel** : en plus du Monte Carlo, le Directeur rejoue la stratégie
+   combinée jour après jour sur tout l'historique commun de ses composants, comme si vous achetiez un challenge,
+   puis un autre dès qu'il est réussi ou raté : « **X réussis / Y ratés** ». Le même chiffre est donné pour chaque
+   scénario sur la période hors-échantillon (le plus fiable : la partie d'avant a servi à choisir les stratégies).
+9. **Contrôleur de qualité** : il lit `controle_qualite.json` du paper trading et écarte de la stratégie combinée
+   les stratégies mises en pause parce qu'elles font nettement moins bien en direct que prévu.
+
 Réglages en haut de `lancer.bat` : `DIR_RISQUE_MAX` (risque max par trade, 1 %), `DIR_PERTE_JOUR` (perte max
 par jour, 2,5 %) et `DIR_PERTE_TOTALE` (perte totale max, 10 %).
 
@@ -254,6 +264,10 @@ Toute la recherche est notée selon votre challenge. Par défaut (phase 1) : **+
 - Pour chaque stratégie, un **simulateur Monte Carlo** rejoue des milliers de challenges à partir de ses journées
   réelles hors-échantillon. Les positions ouvertes sont comptées à leur stop dans la perte du jour. Il en sort la
   **probabilité de réussite**, le **nombre de jours** pour atteindre +10 % et le **taux d'échec**.
+- **Challenges réussis / ratés** : chaque stratégie validée est aussi rejouée sur **tout** l'historique, jour après
+  jour, en enchaînant les challenges (un nouveau dès que le précédent est réussi ou raté). Le classement, la
+  comparaison et les fiches affichent « X réussis / Y ratés » sur tout l'historique et sur la seule période
+  hors-échantillon.
 - Le **Chef FTMO** combine ensuite les stratégies validées de tous les marchés et timeframes pour trouver le
   **portefeuille** qui passe le challenge le plus souvent et le plus vite (`results/portefeuille_ftmo.csv`).
 - `comparaison.html` affiche le portefeuille, le classement FTMO et le classement par gain mensuel.
@@ -261,13 +275,15 @@ Toute la recherche est notée selon votre challenge. Par défaut (phase 1) : **+
 ## Tous les marchés × tous les timeframes
 
 ```bash
-# NASDAQ, or et EURUSD sur M1, M5, M15, M30, H1, H4 et D1, avec les commissions par symbole
-python run.py lab --symbols NASDAQ XAUUSD EURUSD --timeframes ALL --commission EURUSD=5 XAUUSD=5 NASDAQ=0
+# 7 marchés sur M1, M5, M15, M30, H1, H4 et D1, avec les commissions par symbole
+python run.py lab --symbols NASDAQ XAUUSD EURUSD GER40 US30 GBPUSD USDJPY --timeframes ALL \
+    --commission EURUSD=5 GBPUSD=5 USDJPY=5 XAUUSD=5 NASDAQ=0 GER40=0 US30=0
 ```
 
-- `NASDAQ` et `GOLD` sont reconnus automatiquement sous le nom de votre courtier (FTMO : `US100.cash`, `XAUUSD`…).
-- Chaque couple marché × timeframe passe par les 10 agents et les 2 chefs. Comptez 2 à 3 minutes par couple
-  sur un PC 4 cœurs, soit environ 1 h pour 3 marchés × 7 timeframes.
+- `NASDAQ`, `GOLD`, `GER40` (ou `DAX`) et `US30` (ou `DOW`) sont reconnus automatiquement sous le nom de votre
+  courtier (FTMO : `US100.cash`, `XAUUSD`, `GER40.cash`, `US30.cash`…).
+- Chaque couple marché × timeframe passe par toutes les équipes. Avec 7 marchés × 7 timeframes (49 cases), la
+  recherche complète prend plusieurs heures : lancez-la le soir, ou réduisez `SYMS` dans `lancer.bat`.
 - À la fin, `results/comparaison.html` répond à « quelle stratégie rapporte le plus ? » :
   - une **carte marché × timeframe** avec la meilleure stratégie validée de chaque case ;
   - le **classement par gain mensuel** (% et $ sur le capital), calculé sur la période hors-échantillon et ramené
@@ -352,6 +368,25 @@ prochaine clôture de bougie avant de prendre un trade.
 
 > Le module `live` (envoi de vrais ordres) existe toujours dans le code pour plus tard. Il n'est **pas** dans le
 > menu et ne fait rien sans l'option `--execute`.
+
+## Filtres et validations supplémentaires
+
+- **Tendance du timeframe supérieur** : les agents peuvent exiger que le trade aille dans le sens de la tendance
+  H1, H4 ou D1 (EMA 50/200, structure SMC, Supertrend), calculée uniquement sur les bougies supérieures déjà
+  terminées. Les inventeurs peuvent aussi l'utiliser dans leurs règles.
+- **Walk-forward** : l'historique est coupé en 5 périodes ; une stratégie doit gagner sur au moins 4 d'entre
+  elles, sinon elle est rejetée (« instable dans le temps »). Le détail par période est dans chaque fiche.
+- **Coûts réels** : le spread de **chaque bougie** (historique MT5) + la commission, et les **swaps** pour chaque
+  nuit passée en position (réglages du symbole chez votre courtier), en recherche comme en paper trading.
+- **Filtre des nouvelles** : aucune entrée 30 minutes avant / après une annonce à fort impact (NFP, CPI, FOMC,
+  BCE…) sur une devise du marché (jusqu'au H1). Le calendrier vient de MT5 : copiez `mql5/ExportNews.mq5` dans
+  `MQL5\Scripts`, compilez-le (F7) et glissez-le sur un graphique (option **N** du menu). Refaites-le une fois
+  par mois. Sans ce fichier, le filtre est simplement désactivé (message au démarrage). `--sans-nouvelles` le
+  coupe, `--fenetre-nouvelles 15` change la fenêtre.
+- **Contrôleur de qualité (paper trading)** : après 20 trades, une stratégie dont le R moyen en direct est négatif
+  et nettement sous celui attendu (écart statistique z < -2) est **mise en pause** : dans la stratégie combinée,
+  elle continue à être suivie « à blanc » mais ne touche plus le compte. Elle est réactivée si ses 20 derniers
+  trades redeviennent bons. Colonne « Contrôle » dans la plateforme ; le Directeur en tient compte.
 
 ## Hypothèses du backtest
 

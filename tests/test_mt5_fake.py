@@ -142,3 +142,18 @@ def test_rates_years_by_duration_and_coverage_warning(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert len(df) > 0 and "ans)" in out
     assert "ATTENTION" in out   # les données de test ne couvrent pas 5 ans
+
+
+def test_new_markets_resolve_to_ftmo_names():
+    import types
+    from types import SimpleNamespace
+    from mt5lab.data import MT5Connector
+    names = ["US100.cash", "GER40.cash", "US30.cash", "GBPUSD", "USDJPY", "XAUUSD", "EURUSD"]
+    m = types.SimpleNamespace(symbol_info=lambda s: SimpleNamespace(visible=True) if s in names else None,
+                              symbols_get=lambda group="*": [SimpleNamespace(name=n) for n in names])
+    conn = MT5Connector.__new__(MT5Connector)
+    conn.mt5, conn._resolved = m, {}
+    conn.symbols = lambda pattern="*": [n for n in names if pattern.strip("*").upper() in n.upper()]
+    assert conn.resolve("GER40") == "GER40.cash" and conn.resolve("US30") == "US30.cash"
+    assert conn.resolve("NASDAQ") == "US100.cash" and conn.resolve("DAX") == "GER40.cash"
+    assert conn.resolve("GBPUSD") == "GBPUSD" and conn.resolve("USDJPY") == "USDJPY"

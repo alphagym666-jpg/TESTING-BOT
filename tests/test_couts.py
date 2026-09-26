@@ -67,3 +67,18 @@ def test_count_challenges_chains_real_history():
     c = count_challenges(daily, FtmoRules())
     assert c["reussis"] == 2 and c["rates"] == 1 and c["jours_moyens"] == 4
     assert c["liste"][1]["resultat"] == "raté"
+
+
+def test_correlation_groups_and_risk_rule():
+    from mt5lab.data import correlation_of
+    from mt5lab.ftmo import apply_risk_rules
+    assert correlation_of("US100.cash") == ("INDICES", 1) == correlation_of("GER40.cash") == correlation_of("US30.cash")
+    assert correlation_of("EURUSD")[0] == correlation_of("USDJPY")[0] == "DOLLAR"
+    assert correlation_of("EURUSD")[1] == -correlation_of("USDJPY")[1]
+    assert correlation_of("XAUUSD") == ("", 0)
+    t = pd.DataFrame({"entry_time": pd.to_datetime(["2024-01-02 10:00", "2024-01-02 10:05", "2024-01-02 10:10"]),
+                      "exit_time": pd.to_datetime(["2024-01-02 12:00"] * 3), "r": [1.0, 1.0, 1.0], "w": 0.5,
+                      "cluster": ["INDICES", "INDICES", "INDICES"], "expo": [1, 1, -1]})
+    kept = apply_risk_rules(t, max_corr=1)
+    assert len(kept) == 2 and list(kept["expo"]) == [1, -1]   # 2e achat d'indice refusé, la vente passe
+    assert len(apply_risk_rules(t, max_corr=None, max_open=None, day_stop=None)) == 3

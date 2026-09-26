@@ -75,7 +75,8 @@ def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> 
 
 
 def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_open: int | None = None,
-                     default_w: float = 0.5, day_budget: float | None = None, safety: float = 1.1) -> pd.DataFrame:
+                     default_w: float = 0.5, day_budget: float | None = None, safety: float = 1.1,
+                     max_corr: int | None = None) -> pd.DataFrame:
     """Règles de risque du Directeur, appliquées dans l'ordre chronologique des entrées :
 
     - day_budget : un trade n'est pris que si  perte déjà réalisée aujourd'hui + risque des positions ouvertes
@@ -84,8 +85,11 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
                    `safety` (+10 %) pour couvrir spread, commission et glissement au stop.
     - day_stop   : plus de nouveau trade dans la journée une fois la perte réalisée du jour <= -day_stop %
     - max_open   : pas plus de max_open positions ouvertes en même temps
+    - max_corr   : pas plus de max_corr positions ouvertes sur des marchés corrélés dans le même sens
+                   (colonnes « cluster » et « expo » = sens du trade x sens du marché dans son groupe)
     """
-    if trades is None or not len(trades) or (day_stop is None and max_open is None and day_budget is None):
+    if trades is None or not len(trades) or (day_stop is None and max_open is None and day_budget is None
+                                              and max_corr is None):
         return trades
     import heapq
     t = trades.copy()
@@ -94,23 +98,28 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
     t["e_dt"], t["x_dt"] = to_dt(t["entry_time"]), to_dt(t["exit_time"])
     t = t.sort_values("e_dt").reset_index(drop=True)
     keep = np.zeros(len(t), dtype=bool)
-    open_heap: list[tuple] = []          # (heure de sortie, P&L en %, risque en %)
+    open_heap: list[tuple] = []          # (heure de sortie, P&L en %, risque en %, groupe corrélé, exposition)
+    has_corr = max_corr is not None and "cluster" in t.columns and "expo" in t.columns
     realized: dict = {}                  # jour -> P&L réalisé %
     for i, row in enumerate(t.itertuples()):
         while open_heap and open_heap[0][0] <= row.e_dt:
-            x, p, _w = heapq.heappop(open_heap)
+            x, p, _w, _c, _e = heapq.heappop(open_heap)
             realized[x.normalize()] = realized.get(x.normalize(), 0.0) + p
         today = realized.get(row.e_dt.normalize(), 0.0)
         if day_stop is not None and today <= -day_stop:
             continue
         if max_open is not None and len(open_heap) >= max_open:
             continue
+        if has_corr and row.cluster and row.expo and \
+                sum(1 for o in open_heap if o[3] == row.cluster and o[4] == row.expo) >= max_corr:
+            continue
         if day_budget is not None:
             open_risk = sum(o[2] for o in open_heap) * safety
             if max(0.0, -today) + open_risk + row.w * safety > day_budget + 1e-9:
                 continue
         keep[i] = True
-        heapq.heappush(open_heap, (row.x_dt, row.r * row.w, row.w))
+        heapq.heappush(open_heap, (row.x_dt, row.r * row.w, row.w,
+                                   row.cluster if has_corr else "", row.expo if has_corr else 0))
     return t.loc[keep].drop(columns=["e_dt", "x_dt"]).reset_index(drop=True)
 
 

@@ -221,7 +221,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
   const r=g.regles||{};
   return `<h3 style="margin:6px 0 8px;font-size:16px">${esc(g.nom)} ${st}</h3>
   <p class="note">Un seul compte de ${fmt(g.capital,0)} $ partagé par ${g.composants.length} composants · perte possible max
-  ${r.budget_jour==null?"—":fmt(r.budget_jour,1)+" %"} par jour · positions max ${r.max_positions??"illimité"} ·
+  ${r.budget_jour==null?"—":fmt(r.budget_jour,1)+" %"} par jour · positions max ${r.max_positions??"illimité"} · marchés corrélés dans le même sens max ${r.max_correles??"illimité"} ·
   ${g.refuses} signaux refusés par les règles de risque</p>
   <div class="tiles">
    <div class="tile"><div class="mut">Équité</div><div class="v">${fmt(g.equite,2)} $</div><div class="mut" style="font-size:12px">solde ${fmt(g.solde,2)} · latent ${fmt(g.latent,2,true)}</div></div>

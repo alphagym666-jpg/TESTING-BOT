@@ -297,7 +297,7 @@ def main():
     paper.set_defaults(func=cmd_paper)
 
     di = sub.add_parser("directeur", help="le Directeur : pousse chefs et agents et construit la stratégie combinée")
-    di.add_argument("--symbols", nargs="+", default=["NASDAQ", "XAUUSD", "EURUSD"])
+    di.add_argument("--symbols", nargs="+", default=["NASDAQ", "XAUUSD", "EURUSD", "GER40", "US30", "GBPUSD", "USDJPY"])
     di.add_argument("--timeframes", nargs="+", default=["ALL"])
     di.add_argument("--bars", type=int, default=None, help="nombre de bougies (sinon : durée en années)")
     di.add_argument("--annees", type=float, default=None,

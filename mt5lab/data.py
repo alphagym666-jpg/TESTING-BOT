@@ -27,7 +27,28 @@ SYMBOL_ALIASES = {
     "SP500": ["US500", "SPX500", "US500.cash"],
     "DOW": ["US30", "DJ30", "WS30"],
     "DAX": ["GER40", "DE40", "GER30"],
+    "GER40": ["DE40", "GER30", "DAX40"],
+    "US30": ["DJ30", "WS30", "DJI30"],
 }
+
+# marchés qui bougent ensemble : (groupe, sens). Deux positions du même groupe et de même « exposition »
+# (sens du trade x sens du marché) s'additionnent : ACHAT NASDAQ + ACHAT US30 = double pari sur les actions US ;
+# ACHAT EURUSD + VENTE USDJPY = double pari contre le dollar.
+CORRELATION_GROUPS = {
+    "INDICES": (["NASDAQ", "NAS100", "US100", "USTEC", "US30", "DOW", "DJ30", "WS30", "SP500", "US500", "SPX500",
+                 "GER40", "DE40", "DAX", "GER30"], 1),
+    "DOLLAR": (["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"], -1),
+    "DOLLAR+": (["USDJPY", "USDCHF", "USDCAD"], 1),
+}
+
+
+def correlation_of(symbol: str) -> tuple[str, int]:
+    """(groupe de corrélation, sens) d'un symbole ; ("", 0) si indépendant (ex. or)."""
+    up = symbol.upper()
+    for name, (members, sign) in CORRELATION_GROUPS.items():
+        if any(up.startswith(m) for m in members):
+            return ("DOLLAR" if name.startswith("DOLLAR") else name), sign
+    return "", 0
 
 
 def load_env(path: str | Path = ".env") -> None:
