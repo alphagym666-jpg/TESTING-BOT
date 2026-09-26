@@ -40,7 +40,8 @@ def collect(results_dir: Path) -> pd.DataFrame:
     out = out[~out.apply(rule_key, axis=1).duplicated()].reset_index(drop=True)
     for col in ("gain_mois_pct", "trades_mois", "oos_jours", "oos_debut", "oos_fin", "ftmo_pass", "ftmo_p1",
                 "ftmo_jours_p1", "ftmo_echec_p1", "donnees_debut", "donnees_fin", "walk_forward", "par_periode",
-                "equipe", "invention", "meilleure_version_de"):
+                "equipe", "invention", "meilleure_version_de", "ftmo_reussis_total", "ftmo_rates_total",
+                "ftmo_jours_moy_total", "ftmo_reussis_oos", "ftmo_rates_oos", "ftmo_jours_moy_oos"):
         if col not in out.columns:  # résultats d'une ancienne version
             out[col] = float("nan")
     return out
@@ -109,7 +110,8 @@ def build_comparison(results_dir: Path, capital: float = 100_000, rules: FtmoRul
     allr = allr.sort_values(["_ok", "gain_mois_pct"], ascending=[False, False])
     cols = ["verdict", "symbole", "timeframe", "strategie", "risque", "gain_mois_pct", "gain_mois_usd", "trades_mois",
             "wr_oos", "avgR_oos", "pf_oos", "dd_oos_pct", "trades_oos", "oos_jours", "ftmo_pass", "ftmo_jours_p1",
-            "ftmo_echec_p1", "candidate"]
+            "ftmo_echec_p1", "ftmo_reussis_total", "ftmo_rates_total", "ftmo_reussis_oos", "ftmo_rates_oos",
+            "candidate"]
     port, port_res = portfolio(results_dir, allr, rules, risk_pct)
     allr[cols].to_csv(results_dir / "comparaison.csv", index=False)
     _write_html(results_dir / "comparaison.html", allr, capital, rules, port, port_res)
@@ -164,10 +166,13 @@ def _ftmo_table(df, esc):
         rows += (f"<tr><td>{i}</td><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{esc(r['strategie'])}</td>"
                  f"<td>{esc(r['risque'])}</td><td class='pos'>{_fmt(r['ftmo_pass'], '{:.0f}')} %</td>"
                  f"<td>{_fmt(r['ftmo_jours_p1'], '{:.0f}')}</td><td>{_fmt(r['ftmo_echec_p1'], '{:.0f}')} %</td>"
+                 f"<td>{_fmt(r['ftmo_reussis_total'], '{:.0f}')} / {_fmt(r['ftmo_rates_total'], '{:.0f}')}</td>"
+                 f"<td>{_fmt(r['ftmo_reussis_oos'], '{:.0f}')} / {_fmt(r['ftmo_rates_oos'], '{:.0f}')}</td>"
                  f"<td>{_fmt(r['gain_mois_pct'])} %</td><td>{_fmt(r['trades_mois'], '{:.1f}')}</td>"
                  f"<td>{_fmt(r['dd_oos_pct'], '{:.1f}')} %</td></tr>")
     head = ("<tr><th>#</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th><th>Réussite challenge</th>"
-            "<th>Jours de bourse (médiane)</th><th>Échec</th><th>Gain / mois</th><th>Trades / mois</th><th>DD max</th></tr>")
+            "<th>Jours de bourse (médiane)</th><th>Échec</th><th>Challenges réussis / ratés (tout l'historique)</th>"
+            "<th>Réussis / ratés (hors-échantillon)</th><th>Gain / mois</th><th>Trades / mois</th><th>DD max</th></tr>")
     return f"<div class='scroll'><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>"
 
 

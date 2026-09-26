@@ -56,3 +56,14 @@ def test_enrich_adds_cost_swap_and_news():
     assert np.isclose(out["swap_long"].iloc[0], -7e-5) and np.isclose(out["swap_short"].iloc[0], 2e-5)
     assert out["news_block"].any() and not out["news_block"].all()
     assert conn.currencies("XAUUSD") == {"EUR", "USD"}
+
+
+def test_count_challenges_chains_real_history():
+    from mt5lab.ftmo import FtmoRules, count_challenges
+    days = pd.bdate_range("2020-01-01", periods=30)
+    # +3 %/jour : réussi en 4 jours (min 4 jours), puis une journée à -4 % = raté, puis réussi encore...
+    pnl = [3, 3, 3, 3, -4, 3, 3, 3, 3] + [0] * 21
+    daily = pd.DataFrame({"pnl": pnl, "worst": np.minimum(pnl, 0), "traded": [p != 0 for p in pnl]}, index=days)
+    c = count_challenges(daily, FtmoRules())
+    assert c["reussis"] == 2 and c["rates"] == 1 and c["jours_moyens"] == 4
+    assert c["liste"][1]["resultat"] == "raté"

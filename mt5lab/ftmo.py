@@ -158,6 +158,60 @@ def simulate(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), n: int = 3000,
             "ftmo_echec_p1": round(p1["fail"] * 100, 1), "ftmo_jours_hist": int(len(daily))}
 
 
+def count_challenges(daily: pd.DataFrame, rules: FtmoRules = FtmoRules()) -> dict:
+    """Rejoue l'historique RÉEL jour après jour, comme si on avait acheté un challenge le premier jour :
+    dès qu'il est réussi (phase 1, puis phase 2 si activée) ou raté, on en recommence un le lendemain.
+    Renvoie le nombre de challenges réussis / ratés sur toute la période et leur durée (jours de bourse)."""
+    out = {"reussis": 0, "rates": 0, "en_cours": 0, "jours_moyens": float("nan"), "jours_min": float("nan"),
+           "liste": []}
+    if daily is None or not len(daily):
+        return out
+    pnl = daily["pnl"].to_numpy(float)
+    worst = daily["worst"].to_numpy(float)
+    traded = daily["traded"].to_numpy(bool)
+    days = daily.index
+    phases = [rules.target1] + ([rules.target2] if rules.target2 > 0 else [])
+    i, n, durations = 0, len(pnl), []
+    while i < n:
+        start, result = i, None
+        for target in phases:
+            cum, tdays = 0.0, 0
+            while i < n:
+                fail = worst[i] <= -rules.max_daily or cum + worst[i] <= -rules.max_total
+                cum += pnl[i]
+                tdays += traded[i]
+                i += 1
+                if fail:
+                    result = "raté"
+                    break
+                if cum >= target and tdays >= rules.min_days:
+                    result = "phase ok"
+                    break
+            if result != "phase ok":
+                break
+        if result == "phase ok":
+            out["reussis"] += 1
+            durations.append(i - start)
+            out["liste"].append({"debut": str(days[start].date()), "fin": str(days[i - 1].date()), "resultat": "réussi",
+                                 "jours": i - start})
+        elif result == "raté":
+            out["rates"] += 1
+            out["liste"].append({"debut": str(days[start].date()), "fin": str(days[i - 1].date()), "resultat": "raté",
+                                 "jours": i - start})
+        else:
+            out["en_cours"] += 1
+    if durations:
+        out["jours_moyens"] = round(float(np.mean(durations)), 1)
+        out["jours_min"] = int(np.min(durations))
+    return out
+
+
+def challenge_columns(prefix: str, c: dict) -> dict:
+    """Colonnes du classement : ftmo_reussis_<prefix>, ftmo_rates_<prefix>, ftmo_jours_moy_<prefix>."""
+    return {f"ftmo_reussis_{prefix}": c["reussis"], f"ftmo_rates_{prefix}": c["rates"],
+            f"ftmo_jours_moy_{prefix}": c["jours_moyens"]}
+
+
 def build_portfolio(trades_by_key: dict[str, pd.DataFrame], windows: dict[str, tuple], risk_pct: float,
                     candidates: list[str], rules: FtmoRules = FtmoRules(), max_size: int = 6,
                     min_window_days: int = 45, n: int = 3000, log=print,

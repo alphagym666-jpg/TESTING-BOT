@@ -360,9 +360,11 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
     journal.log("Plateforme", f"{n_evals} backtests uniques exécutés en {time.time() - t0:.0f}s")
 
     # simulation du challenge FTMO sur les trades hors-échantillon de chaque finaliste testé
-    from .ftmo import FtmoRules, daily_table, simulate
+    from .ftmo import FtmoRules, challenge_columns, count_challenges, daily_table, simulate
+    rules = cfg.ftmo or FtmoRules()
     oos_trades = []
     ftmo_res: dict[str, dict] = {}
+    counts: dict[str, dict] = {}
     for f in everything:
         if not f.oos_res or not f.oos_res.get("trades"):
             continue
@@ -373,8 +375,15 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             continue
         tr = tr[["entry_time", "exit_time", "r"]].assign(key=candidate_key(f.candidate))
         oos_trades.append(tr)
-        ftmo_res[f.key] = simulate(daily_table(tr, cfg.risk_pct, df_oos.index[0], df_oos.index[-1]),
-                                   cfg.ftmo or FtmoRules(), n=3000, seed=0)
+        d_oos = daily_table(tr, cfg.risk_pct, df_oos.index[0], df_oos.index[-1])
+        ftmo_res[f.key] = simulate(d_oos, rules, n=3000, seed=0)
+        # combien de challenges auraient été réussis / ratés en enchaînant sur l'historique réel
+        _, tr_all = run_backtest(df, sig, RiskConfig(**f.candidate["risk"]), cost=cost, risk_pct=cfg.risk_pct,
+                                 return_trades=True)
+        c_all = count_challenges(daily_table(tr_all, cfg.risk_pct, df.index[0], df.index[-1]), rules) \
+            if len(tr_all) else count_challenges(None, rules)
+        counts[f.key] = {**challenge_columns("total", c_all), **challenge_columns("oos", count_challenges(d_oos, rules)),
+                         "ftmo_challenges": json.dumps(c_all["liste"][:60])}
     if oos_trades:
         pd.concat(oos_trades, ignore_index=True).to_csv(out_dir / "trades_oos.csv", index=False)
     ok_ftmo = [ftmo_res[f.key]["ftmo_pass"] for f in final if f.key in ftmo_res]
@@ -414,6 +423,7 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             "par_periode": json.dumps(st.get("periodes", [])) if st else None,
             **{k: ftmo_res.get(f.key, {}).get(k) for k in
                ("ftmo_pass", "ftmo_p1", "ftmo_p2", "ftmo_jours_p1", "ftmo_jours_p2", "ftmo_echec_p1")},
+            **counts.get(f.key, {}),
             "candidate": json.dumps(f.candidate),
         })
     board = pd.DataFrame(rows)

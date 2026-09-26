@@ -35,7 +35,7 @@ from .backtest import RR_LEVELS, RiskConfig, run_backtest
 from .compare import build_comparison
 from .data import DEFAULT_YEARS
 from .evaluator import candidate_key, compute_signal, describe
-from .ftmo import FtmoRules, apply_risk_rules, daily_table, simulate, to_dt
+from .ftmo import FtmoRules, apply_risk_rules, count_challenges, daily_table, simulate, to_dt
 from .lab import LabConfig, run_lab
 from .strategies import REGISTRY, apply_filter
 
@@ -345,7 +345,37 @@ class Director:
         res["fenetre"] = (str(lo.date()), str(hi.date()))
         res["trades"] = int(len(merged))
         res["pire_jour"] = float(daily["worst"].min()) if len(daily) else 0.0
+        c = count_challenges(daily, self.cfg.ftmo)
+        res["challenges_oos"] = {k: c[k] for k in ("reussis", "rates", "jours_moyens")}
         return res
+
+    def history_challenges(self, comb: dict) -> dict:
+        """Combien de challenges la stratégie combinée aurait réussis / ratés en les enchaînant sur TOUT l'historique
+        commun à ses composants (mêmes règles de risque que le paper trading)."""
+        parts, lo, hi = [], None, None
+        for c in comb["composants"]:
+            try:
+                df, cost = self.data(c["symbole"], c["timeframe"])
+            except Exception:
+                continue
+            cand = c["candidate"]
+            sig = apply_filter(df, compute_signal(df, cand["signal"]), cand["filter"])
+            _, tr = run_backtest(df, sig, RiskConfig(**cand["risk"]), cost=cost, risk_pct=c["risk_pct"],
+                                 return_trades=True)
+            lo = df.index[0] if lo is None else max(lo, df.index[0])
+            hi = df.index[-1] if hi is None else min(hi, df.index[-1])
+            if len(tr):
+                parts.append(tr[["entry_time", "exit_time", "r"]].assign(w=c["risk_pct"]))
+        if not parts or lo is None or hi <= lo:
+            return {}
+        t = pd.concat(parts, ignore_index=True)
+        t = t[(to_dt(t["entry_time"]) >= lo) & (to_dt(t["exit_time"]) <= hi)]
+        rules = comb["regles"]
+        t = apply_risk_rules(t, rules.get("day_stop"), rules.get("max_open"), self.cfg.risk_pct,
+                             day_budget=rules.get("day_budget"))
+        c = count_challenges(daily_table(t, self.cfg.risk_pct, lo, hi), self.cfg.ftmo)
+        c["periode"] = f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}"
+        return c
 
     def _better(self, a, b) -> bool:
         """Échecs sous le seuil toléré d'abord ; puis plus de réussite ; à réussite égale (±0,5 pt), plus rapide ;
@@ -504,6 +534,8 @@ class Director:
                                     "variante_rr": info[k].get("variante", False)} for k in keys],
                     "cree_le": time.strftime("%Y-%m-%d %H:%M")}
             self.scenario_rows.append({"budget": b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
+                                       "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
+                                       "rates_oos": res.get("challenges_oos", {}).get("rates"),
                                        "echec": res["ftmo_echec_p1"], "pire_jour": res["pire_jour"],
                                        "composants": len(comb["composants"]),
                                        "risques": ", ".join(f"{c['risk_pct']:g}" for c in comb["composants"]),
@@ -519,6 +551,12 @@ class Director:
             return {}
         best["scenarios"] = self.scenario_rows
         best["scenario_choisi"] = best_b
+        hist = self.history_challenges(best)
+        if hist:
+            best["challenges_historique"] = hist
+            self.say(f"Sur tout l'historique ({hist['periode']}) en enchaînant les challenges : {hist['reussis']} réussis, "
+                     f"{hist['rates']} ratés, {_fmt(hist['jours_moyens'], '{:.0f}')} jours de bourse en moyenne "
+                     "(la partie avant l'OOS a servi à choisir les stratégies : chiffre optimiste)")
         self.combined = best
         (self.cfg.out / "strategie_combinee.json").write_text(
             json.dumps(best, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
@@ -574,6 +612,8 @@ class Director:
                     "R moyen OOS": r.get("avgR_oos"), "Profit factor OOS": r.get("pf_oos"),
                     "Gain par mois (%)": r.get("gain_mois_pct"), "Drawdown max OOS (%)": r.get("dd_oos_pct"),
                     "Réussite FTMO seule (%)": r.get("ftmo_pass"),
+                    "Challenges réussis / ratés (tout l'historique)": _pair(r, "total"),
+                    "Challenges réussis / ratés (hors-échantillon)": _pair(r, "oos"),
                     "Jours pour l'objectif": None if pd.isna(r.get("ftmo_jours_p1")) else int(r.get("ftmo_jours_p1"))}
 
         def row_for(sym, tf, cand):
@@ -680,6 +720,14 @@ pre{white-space:pre-wrap;font-size:12px;background:var(--card);border:1px solid 
 """
 
 
+def _pair(r, suffix: str) -> str | None:
+    """« 7 réussis / 2 ratés » à partir des colonnes ftmo_reussis_<suffix> / ftmo_rates_<suffix>."""
+    a, b = r.get(f"ftmo_reussis_{suffix}"), r.get(f"ftmo_rates_{suffix}")
+    if a is None or b is None or (isinstance(a, float) and math.isnan(a)):
+        return None
+    return f"{int(a)} réussis / {int(b)} ratés"
+
+
 def write_report(d: Director):
     esc = html.escape
     c = d.combined
@@ -691,6 +739,8 @@ def write_report(d: Director):
             ("Réussite du challenge", f"{_fmt(res.get('ftmo_pass'))} %"),
             (f"Jours de bourse pour +{d.cfg.ftmo.target1:g} % (médiane)", _fmt(res.get("ftmo_jours_p1"), "{:.0f}")),
             ("Échec (limite de perte touchée)", f"{_fmt(res.get('ftmo_echec_p1'))} %"),
+            ("Challenges enchaînés hors-échantillon", (lambda h: f"{h.get('reussis', '—')} réussis / {h.get('rates', '—')} ratés")(res.get("challenges_oos", {}))),
+            ("Challenges enchaînés sur tout l'historique", (lambda h: f"{h['reussis']} réussis / {h['rates']} ratés" if h else "—")(c.get("challenges_historique"))),
             ("Composants", str(len(c["composants"]))),
             ("Pire journée (positions ouvertes au stop)", f"{res.get('pire_jour', 0):.2f} %"),
             ("Perte possible max par jour", f"{rules.get('day_budget', d.cfg.day_budget):g} %"),
@@ -712,10 +762,11 @@ def write_report(d: Director):
     scen_rows = "".join(
         f"<tr><td class='{'good' if r['budget'] == chosen else ''}'><b>{r['budget']:g} %</b>{' (retenu)' if r['budget'] == chosen else ''}</td>"
         f"<td>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
+        f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
         f"<td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td><td>{esc(r['risques'])}</td><td>{esc(r['rr'])}</td></tr>"
         for r in d.scenario_rows)
     scen = ("<div class='scroll'><table><thead><tr><th>Perte max par jour</th><th>Réussite</th>"
-            f"<th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th><th>Pire journée</th><th>Composants</th>"
+            f"<th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th><th>Challenges réussis / ratés (OOS)</th><th>Pire journée</th><th>Composants</th>"
             f"<th>Risque par trade (%)</th><th>R:R</th></tr></thead><tbody>{scen_rows}</tbody></table></div>"
             if scen_rows else "<p class='mut'>—</p>")
     rev = "".join(
@@ -736,11 +787,14 @@ def write_report(d: Director):
             best_rows += (f"<tr><td><b>{i}</b></td><td>{fiche(r['symbole'], r['timeframe'], json.loads(r['candidate']), r['strategie'][:110])}</td>"
                           f"<td>{esc(kind(r))}</td><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td>"
                           f"<td>{esc(str(r['risque']))}</td><td class='pos'>{_fmt(r['ftmo_pass'])} %</td>"
-                          f"<td>{_fmt(r['ftmo_jours_p1'], '{:.0f}')}</td><td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
+                          f"<td>{_fmt(r['ftmo_jours_p1'], '{:.0f}')}</td>"
+                          f"<td>{esc(_pair(r, 'total') or '—')}</td><td>{esc(_pair(r, 'oos') or '—')}</td>"
+                          f"<td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
                           f"<td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td><td>{_fmt(r['wr_oos'], '{:.0f}')} %</td>"
                           f"<td>{_fmt(r['trades_mois'])}</td><td>{_fmt(r['dd_oos_pct'])} %</td></tr>")
     best_tbl = ("<div class='scroll'><table><thead><tr><th>#</th><th>Stratégie (lien vers la fiche)</th><th>Type</th>"
                 "<th>Marché</th><th>TF</th><th>Réglage</th><th>Réussite FTMO seule</th><th>Jours pour l'objectif</th>"
+                "<th>Challenges réussis / ratés (tout l'historique)</th><th>Challenges réussis / ratés (hors-échantillon)</th>"
                 "<th>Gain / mois</th><th>R moyen</th><th>Réussite</th><th>Trades / mois</th><th>DD max</th></tr></thead>"
                 f"<tbody>{best_rows}</tbody></table></div>") if best_rows else \
         "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"

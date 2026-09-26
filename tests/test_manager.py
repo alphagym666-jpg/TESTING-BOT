@@ -25,3 +25,5 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     assert all(c["risk_pct"] <= 1.0 for c in saved["composants"])
     for row in saved["scenarios"]:
         assert row["pire_jour"] >= -row["budget"] * 1.05  # la pire journée respecte le plafond (à 5 % près : frais)
+    assert "reussis" in saved["challenges_historique"] and "rates" in saved["challenges_historique"]
+    assert "reussis_oos" in saved["scenarios"][0]
