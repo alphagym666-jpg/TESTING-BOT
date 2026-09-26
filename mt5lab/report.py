@@ -57,7 +57,7 @@ def write_report(path, label, board: pd.DataFrame, journal, agents, cfg, n_evals
         return (f'<div class="card"><b style="font-size:16px">{esc(title)}</b>'
                 f'<table><tr><th>Agent</th><th>Spécialité</th><th>Tests</th></tr>{rows}</table></div>')
 
-    teams_html = team("Chef A — Exploration", agents[:5]) + team("Chef B — Optimisation", agents[5:])
+    teams_html = "".join(team(title, ags) for title, ags in agents)
 
     # courbes des 6 meilleures sur tout l'historique
     curves = ""

@@ -241,8 +241,10 @@ class GeneticAgent(Agent):
         spec = copy.deepcopy(spec)
         cond = self.rng.choice([spec["trigger"]] + spec.get("filters", []))
         if cond["op"] == "between":
-            a = max(0, min(22, cond["v"][0] + self.rng.choice([-1, 1])))
-            cond["v"] = [a, min(24, a + max(1, cond["v"][1] - cond["v"][0]))]
+            from .inventions import BETWEEN
+            lo, hi = BETWEEN.get(cond["f"], (0, 24))[:2]
+            a = max(lo, min(hi - 2, cond["v"][0] + self.rng.choice([-1, 1])))
+            cond["v"] = [a, min(hi, a + max(1, cond["v"][1] - cond["v"][0]))]
         elif self.rng.random() < 0.7:
             v = cond["v"]
             cond["v"] = float(f"{v * self.rng.choice([0.8, 0.9, 1.1, 1.2]) if v else self.rng.choice([-0.1, 0.1]):.3g}")

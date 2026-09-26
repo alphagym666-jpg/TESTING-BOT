@@ -140,6 +140,107 @@ def f_hour(df, n):
     return pd.Series(np.nan, index=df.index)
 
 
+# ---------------------------------------------------- empreintes des algorithmes institutionnels (équipe C)
+def _dt(df):
+    return isinstance(df.index, pd.DatetimeIndex)
+
+
+def _nan(df):
+    return pd.Series(np.nan, index=df.index)
+
+
+@feature("dow", False, [0], "jour de la semaine (0 = lundi)")
+def f_dow(df, n):
+    return pd.Series(df.index.dayofweek, index=df.index, dtype=float) if _dt(df) else _nan(df)
+
+
+@feature("minute", False, [0], "minute de l'heure")
+def f_minute(df, n):
+    return pd.Series(df.index.minute, index=df.index, dtype=float) if _dt(df) else _nan(df)
+
+
+@feature("month_end", False, [0], "jours avant la fin du mois")
+def f_month_end(df, n):
+    if not _dt(df):
+        return _nan(df)
+    return pd.Series((df.index + pd.offsets.MonthEnd(0) - df.index.normalize()).days, index=df.index, dtype=float)
+
+
+@feature("round_dist", True, [1], "écart au niveau rond le plus proche, en ATR")
+def f_round(df, n):
+    c = df["close"]
+    step = 10.0 ** np.round(np.log10((c * 0.002).clip(lower=1e-12)))
+    return (c - np.round(c / step) * step) / _atr(df)
+
+
+def _prev_day(df):
+    day = df.index.normalize()
+    d = df.groupby(day).agg(high=("high", "max"), low=("low", "min")).shift(1)
+    return d["high"].reindex(day).to_numpy(), d["low"].reindex(day).to_numpy()
+
+
+@feature("prev_day_pos", True, [1], "position dans le range de la veille (-0.5 = plus bas, +0.5 = plus haut)")
+def f_prev_day(df, n):
+    if not _dt(df):
+        return _nan(df)
+    hi, lo = _prev_day(df)
+    return pd.Series((df["close"].to_numpy() - lo) / np.where(hi - lo > 0, hi - lo, np.nan) - 0.5, index=df.index)
+
+
+@feature("sweep", True, [3, 6, 12], "chasse aux stops récente sur {n} bougies (+1 = sous un plus bas, -1 = au-dessus d'un plus haut)")
+def f_sweep(df, n):
+    from .strategies_smc import structure
+    st = structure(df, 3)
+    lo, hi = st["last_sl"], st["last_sh"]
+    l, h, c = df["low"].to_numpy(), df["high"].to_numpy(), df["close"].to_numpy()
+    up = pd.Series(((l < lo) & (c > lo)).astype(float), index=df.index).rolling(n, min_periods=1).max()
+    dn = pd.Series(((h > hi) & (c < hi)).astype(float), index=df.index).rolling(n, min_periods=1).max()
+    return up - dn
+
+
+@feature("session_move", True, [0, 7, 13], "mouvement depuis l'ouverture de la session de {n}h, en ATR")
+def f_session(df, n):
+    if not _dt(df):
+        return _nan(df)
+    day = df.index.normalize()
+    started = df.index.hour >= n
+    first_open = df["open"].where(started).groupby(day).transform("first")
+    return (df["close"] - first_open).where(started) / _atr(df)
+
+
+@feature("vwap_dist", True, [1], "écart au VWAP du jour, en ATR")
+def f_vwap(df, n):
+    if not _dt(df):
+        return _nan(df)
+    day = df.index.normalize()
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    vol = df["volume"].replace(0, 1)
+    vwap = (tp * vol).groupby(day).cumsum() / vol.groupby(day).cumsum()
+    return (df["close"] - vwap) / _atr(df)
+
+
+@feature("vol_spike", False, [20, 50], "volume / volume moyen sur {n} bougies")
+def f_volspike(df, n):
+    v = df["volume"].astype(float)
+    return v / v.rolling(n, min_periods=n).mean().replace(0, np.nan)
+
+
+@feature("asia_pos", True, [7], "position par rapport au range asiatique (0h-{n}h)")
+def f_asia(df, n):
+    if not _dt(df):
+        return _nan(df)
+    day = df.index.normalize()
+    asia = df.index.hour < n
+    hi = df["high"].where(asia).groupby(day).transform("max")
+    lo = df["low"].where(asia).groupby(day).transform("min")
+    return ((df["close"] - lo) / (hi - lo).replace(0, np.nan) - 0.5).where(~asia)
+
+
+# caractéristiques jouées en fenêtres (entre a et b) : bornes et largeurs possibles
+BETWEEN = {"hour": (0, 24, [2, 3, 4, 6, 8], "h"), "dow": (0, 5, [1, 2, 3], " (jour)"), "minute": (0, 60, [5, 10, 15, 30], " min")}
+BANK_FEATURES = ["sweep", "prev_day_pos", "round_dist", "session_move", "vwap_dist", "vol_spike", "asia_pos",
+                 "month_end", "dow", "minute", "hour"]
+
 _CACHE: dict = {}
 
 
@@ -179,7 +280,8 @@ def rule_signal(df: pd.DataFrame, spec: dict) -> pd.Series:
 def _cond_text(c):
     lab = FEATURES[c["f"]][3].format(n=c["n"])
     if c["op"] == "between":
-        return f"{lab} entre {c['v'][0]}h et {c['v'][1]}h"
+        unit = BETWEEN.get(c["f"], (0, 24, [], "h"))[3]
+        return f"{lab} entre {c['v'][0]}{unit} et {c['v'][1]}{unit}"
     return f"{lab} {c['op']} {c['v']:g}"
 
 
@@ -202,6 +304,12 @@ AGENT_POOLS = {
     8: list(FEATURES),
     9: list(FEATURES),
     10: list(FEATURES),
+    # équipe D : inventeurs qui partent des failles trouvées par l'équipe C
+    16: ["sweep", "prev_day_pos", "don_pos", "rsi", "body", "wick"],
+    17: ["session_move", "hour", "dow", "minute", "momentum", "adx"],
+    18: ["round_dist", "prev_day_pos", "stoch", "bb_b", "zscore"],
+    19: ["vwap_dist", "vol_spike", "zscore", "macd_h", "rsi"],
+    20: list(FEATURES),
 }
 
 
@@ -248,15 +356,16 @@ class Inventor:
         return self._q[k]
 
     def random_cond(self, allow_hour=True) -> dict:
-        pool = [f for f in self.pool if allow_hour or f != "hour"]
-        favored = [f for f in self.bias if allow_hour or f != "hour"]
+        pool = [f for f in self.pool if allow_hour or f not in BETWEEN] or ["momentum"]
+        favored = [f for f in self.bias if allow_hour or f not in BETWEEN]
         if favored and self.rng.random() < 0.5:  # une fois sur deux, une piste du Directeur
             pool = favored
         f = self.rng.choice(pool)
         n = self.rng.choice(FEATURES[f][2])
-        if f == "hour":
-            a = self.rng.randrange(0, 22)
-            return {"f": f, "n": 0, "op": "between", "v": [a, min(24, a + self.rng.choice([2, 3, 4, 6, 8]))]}
+        if f in BETWEEN:
+            lo, hi, widths, _ = BETWEEN[f]
+            a = self.rng.randrange(lo, hi - 1)
+            return {"f": f, "n": 0, "op": "between", "v": [a, min(hi, a + self.rng.choice(widths))]}
         return {"f": f, "n": n, "op": self.rng.choice([">", "<"]), "v": self.rng.choice(self._quantiles(f, n))}
 
     def random_spec(self) -> dict:
@@ -271,8 +380,9 @@ class Inventor:
         if r < 0.45:  # ajuste un seuil (quantile voisin)
             c = self.rng.choice(conds)
             if c["op"] == "between":
-                a = max(0, min(22, c["v"][0] + self.rng.choice([-1, 1])))
-                c["v"] = [a, min(24, a + max(1, c["v"][1] - c["v"][0] + self.rng.choice([-1, 0, 1])))]
+                lo, hi = BETWEEN.get(c["f"], (0, 24))[:2]
+                a = max(lo, min(hi - 2, c["v"][0] + self.rng.choice([-1, 1])))
+                c["v"] = [a, min(hi, a + max(1, c["v"][1] - c["v"][0] + self.rng.choice([-1, 0, 1])))]
             else:
                 q = self._quantiles(c["f"], c["n"])
                 i = min(range(len(q)), key=lambda k: abs(q[k] - c["v"]))
