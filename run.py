@@ -209,10 +209,23 @@ def cmd_paper(a):
         raise SystemExit("Aucune stratégie à suivre : lancez d'abord la recherche (python run.py lab ...).")
     with MT5Connector() as conn:
         comm = parse_commission(a.commission)
+        bridge = None
+        if groups and not a.sans_bot:  # stratégie combinée : les décisions sont aussi envoyées au bot LaboBot
+            from mt5lab.pont import SIGNAL_FILE, SignalBridge, common_files_dir
+            bridge = SignalBridge(common_files_dir(conn.mt5) / SIGNAL_FILE)
+            print(f"[bot] signaux pour LaboBot écrits dans {bridge.path} (le bot n'agit que s'il est posé sur un graphique)")
         eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots},
-                          ftmo=ftmo_rules(a), groups=groups, news=load_news_arg(a), news_window=a.fenetre_nouvelles)
+                          ftmo=ftmo_rules(a), groups=groups, news=load_news_arg(a), news_window=a.fenetre_nouvelles,
+                          bridge=bridge)
         write_dashboard(eng)
         eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
+
+
+def cmd_bot(a):
+    from mt5lab.pont import generate_bot
+    out = generate_bot(Path(a.results), a.capital, ftmo_rules(a))
+    print(f"Bot prêt : {out / 'LaboBot.mq5'}")
+    print(f"Mode d'emploi : {out / 'LISEZMOI_BOT.txt'}")
 
 
 def cmd_check(a):
@@ -294,6 +307,8 @@ def main():
     paper.add_argument("--out", default="results/paper")
     add_ftmo_args(paper)
     news_args(paper)
+    paper.add_argument("--sans-bot", action="store_true",
+                       help="ne pas écrire les signaux pour le bot MT5 LaboBot (stratégie combinée)")
     paper.set_defaults(func=cmd_paper)
 
     di = sub.add_parser("directeur", help="le Directeur : pousse chefs et agents et construit la stratégie combinée")
@@ -324,6 +339,12 @@ def main():
     add_ftmo_args(di)
     news_args(di)
     di.set_defaults(func=cmd_directeur)
+
+    bot = sub.add_parser("bot", help="générer le bot MT5 (LaboBot.mq5) de la stratégie combinée")
+    bot.add_argument("--results", default="results")
+    bot.add_argument("--capital", type=float, default=100_000)
+    add_ftmo_args(bot)
+    bot.set_defaults(func=cmd_bot)
 
     comp = sub.add_parser("compare", help="comparer tous les marchés × timeframes déjà testés")
     comp.add_argument("--out", default="results")

@@ -352,3 +352,49 @@ def test_combined_correlated_markets_cap(setup):
     eng.step()
     assert sum(1 for s in eng.slots.values() if s.position) == 1 and eng.groups["combo"].skipped == 1
     assert eng.snapshot()["groupes"][0]["regles"]["max_correles"] == 1
+
+
+def test_bridge_sends_bot_commands_for_combined_only(setup):
+    """Stratégie combinée + pont : OPEN puis CLOSE écrits pour LaboBot ; order_send n'est jamais appelé."""
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    from mt5lab.pont import SignalBridge, slot_key
+    mk, tmp = setup
+    cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+    conn = MT5Connector().connect(verbose=False)
+    bridge = SignalBridge(tmp / "common" / "labo_signaux.csv")
+    eng = PaperEngine(conn, [Slot("c", "EURUSD", "H1", cand, group="g", risk_pct=0.8),
+                             Slot("solo", "EURUSD", "H1", cand)], tmp / "paper", 0.5,
+                      groups={"g": {"capital": 100_000, "day_budget": 2.5}}, bridge=bridge)
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    p = eng.slots["c"].position
+    mk.push_ticks([p.tp + 0.0001])
+    eng.step()
+    rows = [x.split(";") for x in (tmp / "common" / "labo_signaux.csv").read_text().splitlines()[1:]]
+    assert [r[2] for r in rows] == ["OPEN", "CLOSE"]             # le compte « solo » n'envoie rien
+    assert rows[0][3] == slot_key("c") and rows[0][4] == "EURUSD" and rows[0][5] == "1"
+    assert float(rows[0][6]) == pytest.approx(p.risk) and rows[0][7] == "2" and rows[0][8] == "0.8"
+    assert int(rows[1][0]) > int(rows[0][0])
+    assert SignalBridge(tmp / "common" / "labo_signaux.csv").seq >= int(rows[1][0])   # reprise après redémarrage
+    assert mk.sent == []
+
+
+def test_generate_bot_fills_inputs(tmp_path):
+    import json as _json
+    from mt5lab.ftmo import FtmoRules
+    from mt5lab.pont import generate_bot
+    comb = {"cree_le": "2026-09-26", "regles": {"day_budget": 2.5, "total_budget": 10, "max_open": 3},
+            "resultat": {"ftmo_pass": 90.0, "ftmo_jours_p1": 20},
+            "composants": [{"symbole": "XAUUSD", "timeframe": "H1", "strategie": "EMA cross", "risque_config": "SL atr",
+                            "risk_pct": 0.75}]}
+    (tmp_path / "strategie_combinee.json").write_text(_json.dumps(comb), encoding="utf-8")
+    out = generate_bot(tmp_path, 200_000, FtmoRules())
+    src = (out / "LaboBot.mq5").read_text(encoding="utf-8-sig")
+    assert "InpCapital         = 200000;" in src and "InpRisqueMax       = 0.75;" in src
+    assert "InpPerteJourMax    = 2.8;" in src and "XAUUSD H1" in src
+    assert "OnTimer" in src and "ACCOUNT_TRADE_MODE_REAL" in src
+    assert (out / "LISEZMOI_BOT.txt").exists()

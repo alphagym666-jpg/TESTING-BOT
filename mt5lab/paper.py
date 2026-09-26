@@ -288,8 +288,9 @@ class PaperEngine:
     def __init__(self, conn, slots: list[Slot], out_dir: Path, risk_pct: float = 1.0,
                  commission_per_lot: float | dict = 0.0, bars: int = 1000, ftmo: FtmoRules | None = None,
                  quiet: bool | None = None, save_every: float = 20.0, groups: dict | None = None,
-                 news=None, news_window: int = 30):
+                 news=None, news_window: int = 30, bridge=None):
         self.c = conn
+        self.bridge = bridge  # pont vers le bot MT5 (pont.SignalBridge) : seulement pour la stratégie combinée
         self.news, self.news_window = news, news_window  # pas d'entrée autour des annonces importantes
         self._currencies: dict[str, set] = {}
         self._side: int | None = None  # sens du trade en cours d'ouverture (règle des marchés corrélés)
@@ -415,8 +416,8 @@ class PaperEngine:
         g = self.groups.get(s.group)
         if g is None:
             return True
-        if g.ftmo_status != "en cours":
-            return False
+        if g.ftmo_status != "en cours" and self.bridge is None:
+            return False  # avec le bot, le compte réel a ses propres garde-fous : on continue à donner les signaux
         if when[:10] != g.day:
             self._roll_day(g, g.balance, when)
         members = [x for x in self.slots.values() if x.group == g.name and x.position and not x.position.shadow]
@@ -529,10 +530,17 @@ class PaperEngine:
         g = None if shadow else self.groups.get(s.group)
         if g is not None and when[:10] not in g.trade_days:
             g.trade_days.append(when[:10])
+        if self._bot(s):
+            self.bridge.open(s.id, s.symbol, side, dist, s.cfg.rr, s.risk_pct if s.risk_pct is not None else self.risk_pct,
+                             self.commission(s.symbol))
         d = info.digits
         self.event(when, "OUVERTURE", s, f"{'ACHAT' if side > 0 else 'VENTE'} {lots} lots @ {price:.{d}f} | "
                                          f"SL {s.position.sl:.{d}f} | TP {'signal' if tp is None else f'{tp:.{d}f}'} | "
                                          f"{describe(s.candidate)} [{s.cfg.label()}]")
+
+    def _bot(self, s: Slot) -> bool:
+        """Les ordres du bot MT5 ne concernent que les composants actifs de la stratégie combinée."""
+        return self.bridge is not None and bool(s.group) and not (s.position is not None and s.position.shadow)
 
     def _swap(self, symbol: str, p: Position, price: float, when: str) -> float:
         """Swaps (frais ou crédit de nuit) pour chaque nuit passée en position, comme chez le courtier."""
@@ -562,6 +570,8 @@ class PaperEngine:
 
     def _close(self, s: Slot, price: float, when: str, reason: str):
         p = s.position
+        if self._bot(s):
+            self.bridge.close(s.id, s.symbol)
         gross = self._money(s.symbol, (price - p.entry) * p.side, p.lots)
         gross += self._swap(s.symbol, p, price, when)
         pnl = gross - self.commission(s.symbol) * p.lots
@@ -736,10 +746,15 @@ class PaperEngine:
                 elif cfg.management == "breakeven" and not p.be_done and (close - p.entry) * p.side >= p.risk:
                     p.sl, p.be_done = p.entry, True
                     self.event(_now(tick), "SL DÉPLACÉ", s, f"break-even à {p.entry}")
+                    if self._bot(s):
+                        self.bridge.breakeven(s.id, s.symbol)
                 elif cfg.management == "trailing" and np.isfinite(atr_last):
                     dist = cfg.sl_value * atr_last if cfg.sl_mode == "atr" else p.risk
                     trail = close - p.side * dist
-                    p.sl = max(p.sl, trail) if p.side > 0 else min(p.sl, trail)
+                    new_sl = max(p.sl, trail) if p.side > 0 else min(p.sl, trail)
+                    if new_sl != p.sl and self._bot(s):
+                        self.bridge.move_sl(s.id, s.symbol, new_sl)
+                    p.sl = new_sl
             if s.position is None and sig != 0 and (s.group or s.ftmo_status == "en cours"):
                 self._open(s, sig, closed, tick, atr_arr)
 
