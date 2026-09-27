@@ -205,7 +205,8 @@ toute la campagne :
    2,5 % par jour. Un trade n'est pris que si *perte déjà réalisée aujourd'hui + risque des positions ouvertes +
    risque du nouveau trade* (frais compris) reste sous ce plafond. La **perte totale de 10 %** est protégée de la
    même façon : un nouveau trade n'est jamais pris s'il pouvait la faire dépasser. Il garde le scénario qui a
-   moins de 2 % d'échecs puis **passe le challenge le plus souvent, puis le plus vite**.
+   moins de 2 % d'échecs puis donne un **challenge réussi le plus vite** : le moins de jours attendus, reprises
+   comprises (jours médians pour réussir / probabilité de réussite ; 90 % en 8 jours = ~8,9 jours).
 6. **Test sur tous les timeframes** : chaque composant est rejoué, sans réoptimisation, sur les autres timeframes
    de son marché.
 

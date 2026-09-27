@@ -405,6 +405,7 @@ class Director:
         res["trades"] = int(len(merged))
         res["pire_jour"] = float(daily["worst"].min()) if len(daily) else 0.0
         res["rendement_pct"] = float(daily["pnl"].sum()) if len(daily) else 0.0
+        res["jours_attendus"] = expected_days(res)
         c = count_challenges(daily, self.cfg.ftmo)
         res["challenges_oos"] = {k: c[k] for k in ("reussis", "rates", "jours_moyens")}
         return res
@@ -441,8 +442,10 @@ class Director:
         return c
 
     def _better(self, a, b) -> bool:
-        """Échecs sous le seuil toléré d'abord ; puis plus de réussite ; à réussite égale (±0,5 pt), plus rapide ;
-        puis moins d'échecs."""
+        """LE BUT : avoir un challenge RÉUSSI le plus vite possible.
+        1. échecs sous le seuil toléré (limite de perte touchée) ;
+        2. le moins de jours attendus pour réussir, reprises comprises (jours médians / probabilité de réussite) ;
+        3. à vitesse égale (±5 %), plus de réussite, puis moins d'échecs."""
         if a is None or math.isnan(a.get("ftmo_pass", float("nan"))):
             return False
         if b is None:
@@ -451,15 +454,16 @@ class Director:
         b_ok = b.get("ftmo_echec_p1", 100) <= self.cfg.max_fail
         if a_ok != b_ok:
             return a_ok
+        ea, eb = expected_days(a), expected_days(b)
+        if ea < eb * 0.95:
+            return True
+        if ea > eb * 1.05:
+            return False
         if a["ftmo_pass"] > b["ftmo_pass"] + 0.5:
             return True
         if a["ftmo_pass"] < b["ftmo_pass"] - 0.5:
             return False
-        da, db = a.get("ftmo_jours_p1", np.nan), b.get("ftmo_jours_p1", np.nan)
-        if not np.isnan(da) and (np.isnan(db) or da < db * 0.95):
-            return True
-        return (not np.isnan(da) and not np.isnan(db) and da <= db * 1.05
-                and a.get("ftmo_echec_p1", 100) < b.get("ftmo_echec_p1", 100) - 0.5)
+        return a.get("ftmo_echec_p1", 100) < b.get("ftmo_echec_p1", 100) - 0.5
 
     def build_combined(self, allr: pd.DataFrame, pool=None, quiet=False) -> dict:
         trades, windows, info = pool or self._pool(allr)
@@ -612,6 +616,7 @@ class Director:
             res = best["resultat"]
             self.session_rows.append({
                 "horaire": name, "budget": best_b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
+                "attendus": expected_days(res),
                 "echec": res["ftmo_echec_p1"], "trades": res.get("trades"), "pire_jour": res["pire_jour"],
                 "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
                 "rates_oos": res.get("challenges_oos", {}).get("rates"),
@@ -619,7 +624,8 @@ class Director:
                 "composants": len(best["composants"]), "fichier": f"strategie_combinee_{_slug(name)}.json"})
             (self.cfg.out / f"strategie_combinee_{_slug(name)}.json").write_text(
                 json.dumps(best, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-            self.say(f"Horaire {name} : réussite {res['ftmo_pass']:.1f} %, +{self.cfg.ftmo.target1:g} % en "
+            self.say(f"Horaire {name} : challenge réussi en ~{_fmt(expected_days(res), '{:.0f}')} jours attendus, "
+                     f"réussite {res['ftmo_pass']:.1f} %, +{self.cfg.ftmo.target1:g} % en "
                      f"~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours, échec {_fmt(res['ftmo_echec_p1'])} %"
                      + (f", sur tout l'historique {hist['reussis']} challenges réussis / {hist['rates']} ratés" if hist else ""))
             if self._better(res, overall["resultat"] if overall else None):
@@ -636,12 +642,15 @@ class Director:
         (self.cfg.out / "strategie_combinee.json").write_text(
             json.dumps(overall, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
         res = overall["resultat"]
+        self.say(f"OBJECTIF : challenge réussi en ~{_fmt(expected_days(res), '{:.0f}')} jours de bourse attendus "
+                 "(reprises comprises)")
         self.say(f"MEILLEUR CHOIX : horaire {overall['horaire']['nom']}, perte max {overall['scenario_choisi']:g} %/jour "
                  f"-> réussite {res['ftmo_pass']:.1f} %, +{self.cfg.ftmo.target1:g} % en "
                  f"~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours de bourse")
         if len(self.session_rows) > 1:
             self.say("Comparaison des horaires : " + " | ".join(
-                f"{r['horaire']} : {_fmt(r['reussite'])} % en ~{_fmt(r['jours'], '{:.0f}')} j" for r in self.session_rows))
+                f"{r['horaire']} : réussi en ~{_fmt(r['attendus'], '{:.0f}')} j attendus ({_fmt(r['reussite'])} %)"
+                for r in self.session_rows))
         for i, c in enumerate(overall["composants"], 1):
             self.say(f"  {i}. {c['symbole']} {c['timeframe']} | {c['strategie']} | {c['risque_config']} | "
                      f"{c['risk_pct']:g} %/trade" + (" (variante R:R)" if c.get("variante_rr") else ""))
@@ -857,6 +866,15 @@ pre{white-space:pre-wrap;font-size:12px;background:var(--card);border:1px solid 
 """
 
 
+def expected_days(res: dict) -> float:
+    """Jours de bourse attendus pour AVOIR un challenge réussi si on recommence après chaque échec :
+    jours médians pour réussir / probabilité de réussite (90 % en 8 jours -> ~8,9 jours)."""
+    p, d = res.get("ftmo_pass", float("nan")), res.get("ftmo_jours_p1", float("nan"))
+    if p is None or d is None or not p == p or not d == d or p <= 0:
+        return float("inf")
+    return float(d) / (float(p) / 100)
+
+
 def _bh_text(d, c) -> str:
     """Buy & hold moyen (et sa pire baisse) des marchés de la stratégie combinée, sur la période de validation."""
     if not len(d.allr) or "buy_hold_oos_pct" not in d.allr.columns:
@@ -900,6 +918,7 @@ def write_report(d: Director):
     cards = ""
     if c:
         cards = "".join(f"<div class='card'><span class='mut'>{esc(k)}</span><b>{esc(v)}</b></div>" for k, v in [
+            ("CHALLENGE RÉUSSI EN (jours de bourse attendus, reprises comprises)", _fmt(expected_days(res), "{:.0f}")),
             ("Réussite du challenge", f"{_fmt(res.get('ftmo_pass'))} %"),
             (f"Jours de bourse pour +{d.cfg.ftmo.target1:g} % (médiane)", _fmt(res.get("ftmo_jours_p1"), "{:.0f}")),
             ("Échec (limite de perte touchée)", f"{_fmt(res.get('ftmo_echec_p1'))} %"),
@@ -941,13 +960,15 @@ def write_report(d: Director):
             if scen_rows else "<p class='mut'>—</p>")
     sess_rows = "".join(
         f"<tr><td class='{'good' if r['horaire'] == chosen_h else ''}'><b>{esc(r['horaire'])}</b>"
-        f"{' (retenu)' if r['horaire'] == chosen_h else ''}</td><td>{r['budget']:g} %</td>"
+        f"{' (retenu)' if r['horaire'] == chosen_h else ''}</td><td class='pos'><b>{_fmt(r.get('attendus'), '{:.0f}')}</b></td>"
+        f"<td>{r['budget']:g} %</td>"
         f"<td class='pos'>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
         f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
         f"<td>{_fmt(r.get('reussis_hist'), '{:.0f}')} / {_fmt(r.get('rates_hist'), '{:.0f}')}</td>"
         f"<td>{_fmt(r.get('trades'), '{:.0f}')}</td><td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td></tr>"
         for r in d.session_rows)
-    sess = ("<div class='scroll'><table><thead><tr><th>Horaire (heure locale)</th><th>Meilleure perte max / jour</th>"
+    sess = ("<div class='scroll'><table><thead><tr><th>Horaire (heure locale)</th>"
+            "<th>Challenge réussi en (jours attendus, reprises comprises)</th><th>Meilleure perte max / jour</th>"
             f"<th>Réussite</th><th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th>"
             "<th>Challenges réussis / ratés (OOS)</th><th>Réussis / ratés (tout l'historique)</th><th>Trades</th>"
             f"<th>Pire journée</th><th>Composants</th></tr></thead><tbody>{sess_rows}</tbody></table></div>"
@@ -1039,7 +1060,8 @@ Chaque horaire a son fichier (strategie_combinee_*.json) pour le paper trading e
 {sess}
 <h2>Scénarios de perte max par jour</h2>
 <p class="mut">Pour chaque scénario, le Directeur construit la meilleure stratégie combinée (composants, R:R, risque par trade).
-Le scénario retenu est celui qui passe le challenge le plus souvent, puis le plus vite.</p>
+Le scénario retenu est celui qui donne un challenge RÉUSSI le plus vite (jours attendus, reprises comprises),
+en ratant au plus {d.cfg.max_fail:g} % des challenges.</p>
 {scen}
 {trial_banner}
 <h2>Stratégies à l'essai (non validées mais gagnantes hors-échantillon : paper trading seulement)</h2>

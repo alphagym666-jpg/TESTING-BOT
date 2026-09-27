@@ -56,7 +56,8 @@ echo   2. Changer marches / timeframes
 echo   N. Activer le filtre des NOUVELLES economiques (explications)
 echo.
 echo   --- LE DIRECTEUR (4 chefs, 20 agents : pousse tout le monde, construit la strategie combinee) ---
-echo   D. Lancer le DIRECTEUR : strategie combinee pour passer FTMO le plus vite possible
+echo   D. PASSER LE CHALLENGE FTMO LE PLUS VITE : le Directeur fait tout (recherche, melange de
+echo      tous les marches et timeframes, reglages du risque), puis lance le paper trading du resultat
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
 echo   F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
 echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24) + signaux pour le bot
@@ -163,6 +164,7 @@ echo Le Directeur reprend le travail deja fait, relance les cases faibles en mod
 echo puis construit la strategie combinee. Comptez de quelques minutes a plusieurs heures. Laissez MT5 ouvert.
 python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
 if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
+if exist "%RES%\strategie_combinee.json" goto papercomb
 pause & goto menu
 
 :rapportdir
