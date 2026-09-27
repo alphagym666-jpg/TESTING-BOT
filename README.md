@@ -375,7 +375,7 @@ Ce qui rend les chiffres réalistes :
 - **taille de lot, valeur du pip, lot minimum et pas de lot** : ceux de votre courtier ;
 - break-even, trailing stop et sortie sur signal gérés comme dans le backtest ;
 - **chaque stratégie a son compte virtuel** (100 000 par défaut, `--capital`), suivi comme un challenge FTMO ;
-- **perte max par trade** : 0,5 % par défaut (`--risk`), soit **500 sur 100 000**. Le lot est arrondi vers le bas
+- **perte max par trade** : 1 % par défaut (`--risk`), soit **1 000 sur 100 000**. Le lot est arrondi vers le bas
   pour que la perte au stop, commission comprise, ne dépasse jamais ce montant. Le plafond est calculé sur le
   capital de départ (ou sur le solde s'il a baissé), donc il ne grossit pas avec les gains. Si même le lot minimum
   du courtier dépasse ce risque, le trade est ignoré. Seul un gap par-dessus le stop peut faire perdre un peu plus,

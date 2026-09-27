@@ -294,7 +294,7 @@ def main():
     lab.add_argument("--rounds", type=int, default=3)
     lab.add_argument("--budget", type=int, default=1000, help="tests max par agent et par round")
     lab.add_argument("--oos", type=float, default=0.35, help="part des données réservée à la validation")
-    lab.add_argument("--risk", type=float, default=0.5, help="risque par trade en %% pour le calcul du rendement")
+    lab.add_argument("--risk", type=float, default=1.0, help="risque par trade en %% pour le calcul du rendement")
     lab.add_argument("--workers", type=int, default=None)
     lab.add_argument("--seed", type=int, default=int(time.time()) % 10000)
     lab.add_argument("--out", default="results")
@@ -333,8 +333,8 @@ def main():
     paper.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur automatiquement")
     paper.add_argument("--top", type=int, default=20, help="nb max de stratégies suivies par symbole/timeframe")
     paper.add_argument("--capital", type=float, default=100_000, help="capital virtuel de chaque stratégie")
-    paper.add_argument("--risk", type=float, default=0.5,
-                       help="perte max par trade en %% du capital (0.5 %% de 100 000 = 500 max au stop)")
+    paper.add_argument("--risk", type=float, default=1.0,
+                       help="perte max par trade en %% du capital (1 %% de 100 000 = 1 000 max au stop)")
     paper.add_argument("--commission", nargs="+", default=None,
                        help="commission aller-retour par lot : '5' pour tous, ou 'EURUSD=5 XAUUSD=5 NASDAQ=0'")
     paper.add_argument("--poll", type=int, default=5, help="secondes entre deux vérifications")
@@ -365,7 +365,7 @@ def main():
     di.add_argument("--sans-equipes-banques", action="store_true", help="sans les équipes C et D")
     di.add_argument("--decalage-horaire", type=float, default=7.0,
                     help="heure du serveur MT5 moins votre heure locale (FTMO vs Québec : 7)")
-    di.add_argument("--risk", type=float, default=0.5, help="risque utilisé par les chefs pour noter les stratégies (%%)")
+    di.add_argument("--risk", type=float, default=1.0, help="risque utilisé par les chefs pour noter les stratégies (%%)")
     di.add_argument("--commission", nargs="+", default=None)
     di.add_argument("--commission-points", type=float, default=0.0)
     di.add_argument("--rounds", type=int, default=3)
@@ -393,7 +393,7 @@ def main():
     comp = sub.add_parser("compare", help="comparer tous les marchés × timeframes déjà testés")
     comp.add_argument("--out", default="results")
     comp.add_argument("--capital", type=float, default=100_000)
-    comp.add_argument("--risk", type=float, default=0.5, help="risque par trade en %% (pour le portefeuille FTMO)")
+    comp.add_argument("--risk", type=float, default=1.0, help="risque par trade en %% (pour le portefeuille FTMO)")
     add_ftmo_args(comp)
     comp.set_defaults(func=cmd_compare)
 

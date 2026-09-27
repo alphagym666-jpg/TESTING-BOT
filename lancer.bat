@@ -14,10 +14,11 @@ rem Timeframes : ALL = M1 M5 M15 M30 H1 H4 D1
 set TFS=ALL
 rem Capital fictif de chaque strategie et perte max par trade (en %% du capital)
 set CAPITAL=100000
-set RISK=0.5
+set RISK=1
 rem Commission aller-retour par lot, par symbole (verifiez les montants de votre compte FTMO)
 set COMMISSION=EURUSD=5 GBPUSD=5 USDJPY=5 XAUUSD=5 NASDAQ=0 GER40=0 US30=0
-rem Regles du challenge FTMO : objectif, perte max par jour, perte max totale (en %%)
+rem Regles OFFICIELLES du challenge FTMO (objectif, perte max par jour, perte max totale, en %%).
+rem Vos propres limites, plus prudentes (2.5 %% par jour), sont DIR_PERTE_JOUR et DIR_PERTE_TOTALE plus bas.
 set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10
 rem Le Directeur : risque MAX par trade, et perte possible max par jour (il teste tous les scenarios jusqu'a ce plafond)
 set DIR_RISQUE_MAX=1.0
@@ -44,7 +45,7 @@ echo ==================================================
 echo    Labo de strategies MT5 - 10 agents, 2 chefs
 echo ==================================================
 echo   Marches : %SYMS%    Timeframes : %TFS%
-echo   Capital fictif : %CAPITAL%    Perte max par trade : %RISK%%%
+echo   Capital fictif : %CAPITAL%    Risque max par trade : %RISK%%%    Perte max par jour : %DIR_PERTE_JOUR%%%    Perte max totale : %DIR_PERTE_TOTALE%%%
 echo   Commission/lot : %COMMISSION%
 echo   FTMO : %FTMO%
 if not "%DEPUIS%"=="" echo   PERIODE RECENTE : depuis %DEPUIS% (resultats dans %RES%)
@@ -160,7 +161,7 @@ pause & goto menu
 :directeur
 echo Le Directeur reprend le travail deja fait, relance les cases faibles en mode intensif,
 echo puis construit la strategie combinee. Comptez de quelques minutes a plusieurs heures. Laissez MT5 ouvert.
-python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
+python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
 if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
 pause & goto menu
 
