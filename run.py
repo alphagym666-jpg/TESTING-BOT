@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import time
+
+import pandas as pd
 from pathlib import Path
 
 from mt5lab.lab import LabConfig, run_lab
@@ -65,6 +67,21 @@ def news_args(p):
     p.add_argument("--nouvelles", default=None, help="chemin du calendrier news.csv (sinon trouvé automatiquement)")
 
 
+def period_args(p):
+    p.add_argument("--depuis", default=None,
+                   help="ne garder que les données depuis cette date (ex. 2025-01-01) : recherche ET validation "
+                        "sur la période récente")
+    p.add_argument("--battre-buy-hold", action="store_true",
+                   help="une stratégie n'est validée que si elle bat le buy & hold sur la période de validation")
+
+
+def since(df, a):
+    """Mode « période récente » : coupe l'historique à --depuis."""
+    if getattr(a, "depuis", None):
+        df = df[df.index >= pd.Timestamp(a.depuis)]
+    return df
+
+
 def ftmo_rules(a):
     from mt5lab.ftmo import FtmoRules
     return FtmoRules(target1=a.ftmo_target, target2=a.ftmo_phase2, max_daily=a.ftmo_daily, max_total=a.ftmo_total,
@@ -88,7 +105,10 @@ def cmd_directeur(a):
                          budget=a.budget, invent_generations=a.invent_generations, reuse=not a.refaire,
                          second_pass=not a.sans_deuxieme_passe, years=a.annees, total_budget=a.perte_max_totale,
                          max_fail=a.echec_max, catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques,
-                         server_offset=a.decalage_horaire)
+                         server_offset=a.decalage_horaire, beat_bh=a.battre_buy_hold,
+                         min_bars=400 if a.depuis else 1000)
+    if a.depuis:  # la « durée exigée » devient la période récente (sinon le Directeur redemanderait 5 ans)
+        cfg.years = max(0.2, (pd.Timestamp.now() - pd.Timestamp(a.depuis)).days / 365.25)
     if a.demo:
         from mt5lab.data import synthetic
         freq = {"M1": "min", "M5": "5min", "M15": "15min", "M30": "30min", "H1": "h", "H4": "4h", "D1": "D"}
@@ -104,6 +124,7 @@ def cmd_directeur(a):
     with MT5Connector() as conn:
         def get_data(sym, tf):
             df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
+            df = since(df, a)
             c = commission_for(comm, sym)
             df = conn.enrich(df, sym, a.commission_points, c, news, a.fenetre_nouvelles)
             return df, conn.typical_cost(df, sym, a.commission_points, c)
@@ -119,7 +140,7 @@ def cmd_lab(a):
     cfg = LabConfig(rounds=a.rounds, budget=a.budget, oos_fraction=a.oos, risk_pct=a.risk,
                     workers=a.workers, seed=a.seed, ftmo=ftmo_rules(a), invent=not a.no_invent,
                     catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques,
-                    invent_generations=a.invent_generations)
+                    invent_generations=a.invent_generations, beat_bh=a.battre_buy_hold)
     out_root = Path(a.out)
     jobs = []
     if a.demo:
@@ -141,11 +162,13 @@ def cmd_lab(a):
                 for tf in a.timeframes:
                     try:
                         df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
+                        df = since(df, a)
                     except Exception as exc:
                         print(f"[lab] {sym} {tf} ignoré : {exc}")
                         continue
-                    if len(df) < 1000:
-                        print(f"[lab] {sym} {tf} ignoré : seulement {len(df)} bougies (minimum 1000)")
+                    min_bars = 400 if a.depuis else 1000
+                    if len(df) < min_bars:
+                        print(f"[lab] {sym} {tf} ignoré : seulement {len(df)} bougies (minimum {min_bars})")
                         continue
                     df = conn.enrich(df, sym, a.commission_points, commission_for(comm, sym), news,
                                      a.fenetre_nouvelles)
@@ -281,6 +304,7 @@ def main():
     lab.add_argument("--invent-generations", type=int, default=8, help="générations d'évolution par agent inventeur")
     add_ftmo_args(lab)
     news_args(lab)
+    period_args(lab)
     lab.set_defaults(func=cmd_lab)
 
     live = sub.add_parser("live", help="exécuter une stratégie validée sur MT5")
@@ -353,6 +377,7 @@ def main():
     di.add_argument("--out", default="results")
     add_ftmo_args(di)
     news_args(di)
+    period_args(di)
     di.set_defaults(func=cmd_directeur)
 
     bot = sub.add_parser("bot", help="générer le bot MT5 (LaboBot.mq5) de la stratégie combinée")

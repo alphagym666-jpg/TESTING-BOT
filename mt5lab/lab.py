@@ -35,6 +35,8 @@ class LabConfig:
     catalog_budget: int = 45    # essais par stratégie du catalogue (étape 1), + 20 en étape 2
     seeds: list = field(default_factory=list)        # idées du Directeur : stratégies qui marchent ailleurs
     invent_bias: list = field(default_factory=list)  # indicateurs que le Directeur demande aux inventeurs d'explorer
+    beat_bh: bool = False       # exiger de battre le buy & hold (acheter et garder) sur la période de validation
+    bh_risk_pct: float = 1.0    # risque par trade utilisé pour comparer au buy & hold
 
 
 # version de la méthode de calcul : le Directeur refait les recherches faites avec une version plus ancienne
@@ -388,6 +390,11 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
     oos_trades = []
     ftmo_res: dict[str, dict] = {}
     counts: dict[str, dict] = {}
+    # buy & hold : acheter au début de la période de validation et garder jusqu'à la fin
+    c_oos = df_oos["close"].to_numpy(dtype=float)
+    bh_pct = float((c_oos[-1] / c_oos[0] - 1) * 100)
+    bh_dd = float(np.max(1 - c_oos / np.maximum.accumulate(c_oos)) * 100)
+    bh: dict[str, float] = {}
     for f in everything:
         if not f.oos_res or not f.oos_res.get("trades"):
             continue
@@ -396,6 +403,7 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                              risk_pct=cfg.risk_pct, return_trades=True)
         if not len(tr):
             continue
+        bh[f.key] = float((np.prod(1 + np.clip(tr["r"].to_numpy() * cfg.bh_risk_pct / 100, -0.99, None)) - 1) * 100)
         tr = tr[["entry_time", "exit_time", "r", "side"]].assign(key=candidate_key(f.candidate))
         oos_trades.append(tr)
         d_oos = daily_table(tr, cfg.risk_pct, df_oos.index[0], df_oos.index[-1])
@@ -409,6 +417,14 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                          "ftmo_challenges": json.dumps(c_all["liste"][:60])}
     if oos_trades:
         pd.concat(oos_trades, ignore_index=True).to_csv(out_dir / "trades_oos.csv", index=False)
+    if cfg.beat_bh:
+        lost = [f for f in final if bh.get(f.key, -1e9) <= max(bh_pct, 0.0)]
+        for f in lost:
+            f.verdict = (f"rejeté : ne bat pas le buy & hold ({bh.get(f.key, float('nan')):+.1f} % à "
+                         f"{cfg.bh_risk_pct:g} %/trade contre {bh_pct:+.1f} %)")
+        final = [f for f in final if f not in lost]
+        journal.log("Plateforme", f"Buy & hold sur la période de validation : {bh_pct:+.1f} % (baisse max {bh_dd:.1f} %) "
+                                  f"-> {len(final)} stratégies le battent (à {cfg.bh_risk_pct:g} % de risque par trade)")
     ok_ftmo = [ftmo_res[f.key]["ftmo_pass"] for f in final if f.key in ftmo_res]
     if ok_ftmo:
         journal.log("Chef FTMO", f"Meilleure probabilité de réussir le challenge ({(cfg.ftmo or FtmoRules()).label()}) "
@@ -447,6 +463,9 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             **{k: ftmo_res.get(f.key, {}).get(k) for k in
                ("ftmo_pass", "ftmo_p1", "ftmo_p2", "ftmo_jours_p1", "ftmo_jours_p2", "ftmo_echec_p1")},
             **counts.get(f.key, {}),
+            "rendement_oos_pct_risque_bh": round(bh[f.key], 1) if f.key in bh else None,
+            "buy_hold_oos_pct": round(bh_pct, 1), "buy_hold_dd_oos_pct": round(bh_dd, 1),
+            "bat_buy_hold": (bh[f.key] > max(bh_pct, 0.0)) if f.key in bh else None,
             "candidate": json.dumps(f.candidate),
             "version_calcul": LAB_VERSION,
         })

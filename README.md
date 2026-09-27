@@ -421,6 +421,23 @@ trades, R moyen > 0, profit factor >= 1,05) passent « **À L'ESSAI (paper seule
   paper trading ; le bot (option E) la refuse tant qu'elle n'a pas fait ses preuves (`--forcer` pour passer outre).
 - Les recherches déjà faites sont reprises telles quelles : rien à recalculer.
 
+## Période récente (2025-2026) et buy & hold
+
+Par défaut, les agents cherchent sur les années passées et le chef vérifie sur la période la plus récente, que
+personne n'a vue (avec 5 ans d'historique : recherche 2021-2024, vérification 2025-2026). Ça évite de garder des
+stratégies qui ont seulement « appris par cœur » le passé.
+
+Option **P** du menu (ou `--depuis 2025-01-01`) : recherche ET vérification **seulement sur la période récente**
+(recherche sur le début de 2025, vérification sur les derniers mois). Les stratégies sont adaptées au marché
+d'aujourd'hui, mais avec moins de données le hasard pèse plus : le paper trading en direct sert de vraie
+vérification. Les résultats vont dans un dossier à part (`results_depuis_2025-01-01`) ; le paper trading, le
+Directeur et le bot du menu utilisent ce dossier tant que la période est réglée.
+
+**Buy & hold** : chaque stratégie est comparée à « acheter et garder » le marché sur la même période (gain et pire
+baisse), à 1 % de risque par trade. Avec `--battre-buy-hold` (question de l'option P), une stratégie qui ne fait
+pas mieux n'est pas validée. Le rapport du Directeur montre aussi le gain de la stratégie combinée à côté du buy &
+hold de ses marchés.
+
 ## Hypothèses du backtest
 
 - Entrée à l'ouverture de la bougie qui suit le signal (aucun regard dans le futur, vérifié par les tests).

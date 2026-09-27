@@ -26,10 +26,19 @@ set DIR_PERTE_TOTALE=10
 rem Horaire de la strategie combinee pour le paper trading (C) et le bot (E) :
 rem   vide = la meilleure trouvee par le Directeur ; sinon 24h24, 8h-17h ou 8h-13h (heure du Quebec)
 set HORAIRE=
+rem Periode : vide = tout l'historique (2 ans M1/M5, 5 ans ailleurs) ; ou une date, ex. 2025-01-01,
+rem pour chercher ET valider seulement sur la periode recente (resultats dans un dossier a part)
+set DEPUIS=
+rem Exiger que chaque strategie batte le buy ^& hold (1 = oui)
+set BATTRE_BH=0
 rem Historique teste : 2 ans en M1 et M5, 5 ans en M15, M30, H1, H4 et D1 (automatique)
 rem =====================================================================================
 
 :menu
+set RES=results
+set PER=
+if not "%DEPUIS%"=="" (set RES=results_depuis_%DEPUIS%& set PER=--depuis %DEPUIS%)
+if "%BATTRE_BH%"=="1" set PER=%PER% --battre-buy-hold
 cls
 echo ==================================================
 echo    Labo de strategies MT5 - 10 agents, 2 chefs
@@ -38,6 +47,8 @@ echo   Marches : %SYMS%    Timeframes : %TFS%
 echo   Capital fictif : %CAPITAL%    Perte max par trade : %RISK%%%
 echo   Commission/lot : %COMMISSION%
 echo   FTMO : %FTMO%
+if not "%DEPUIS%"=="" echo   PERIODE RECENTE : depuis %DEPUIS% (resultats dans %RES%)
+echo   P. Changer la periode (tout l'historique / depuis 2025...) et le buy ^& hold
 echo.
 echo   1. Tester la connexion a MT5
 echo   2. Changer marches / timeframes
@@ -72,6 +83,7 @@ set CHOIX=
 set /p CHOIX=Votre choix : 
 if "%CHOIX%"=="1" goto check
 if "%CHOIX%"=="2" goto params
+if /i "%CHOIX%"=="P" goto periode
 if "%CHOIX%"=="3" goto lab
 if "%CHOIX%"=="4" goto labxl
 if "%CHOIX%"=="5" goto compare
@@ -89,6 +101,18 @@ if /i "%CHOIX%"=="E" goto bot
 if /i "%CHOIX%"=="A" goto autostart
 if /i "%CHOIX%"=="B" goto noautostart
 if "%CHOIX%"=="0" exit /b 0
+goto menu
+
+:periode
+echo.
+echo Periode actuelle : %DEPUIS% (vide = tout l'historique)
+echo  - Tout l'historique : les strategies sont cherchees sur les annees passees et verifiees sur les plus recentes.
+echo  - Depuis 2025-01-01 : cherchees ET verifiees seulement sur 2025-2026 (le marche d'aujourd'hui), moins de
+echo    donnees donc plus de risque de hasard : le paper trading en direct sert de vraie verification.
+set DEPUIS=
+set /p DEPUIS=Date de debut (ex: 2025-01-01, ou Entree seul pour tout l'historique) : 
+set BATTRE_BH=0
+set /p BATTRE_BH=Exiger de battre le buy and hold ? (1 = oui, 0 = non) : 
 goto menu
 
 :nouvelles
@@ -118,66 +142,66 @@ goto menu
 
 :lab
 echo Recherche sur 2 ans (M1, M5) et 5 ans (M15 a D1) : comptez plusieurs heures pour tout. Laissez MT5 ouvert.
-python run.py lab --symbols %SYMS% --timeframes %TFS% --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
-if exist "results\comparaison.html" start "" "results\comparaison.html"
+python run.py lab --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
+if exist "%RES%\comparaison.html" start "" "%RES%\comparaison.html"
 pause & goto menu
 
 :labxl
 echo Recherche intensive : 6 rounds, 3000 tests par agent et par round, 15 generations d'inventions.
-python run.py lab --symbols %SYMS% --timeframes %TFS% --rounds 6 --budget 3000 --invent-generations 15 --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
-if exist "results\comparaison.html" start "" "results\comparaison.html"
+python run.py lab --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --rounds 6 --budget 3000 --invent-generations 15 --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
+if exist "%RES%\comparaison.html" start "" "%RES%\comparaison.html"
 pause & goto menu
 
 :compare
-python run.py compare --capital %CAPITAL% --risk %RISK% %FTMO%
-if exist "results\comparaison.html" (start "" "results\comparaison.html") else (echo Lancez d'abord une recherche.)
+python run.py compare --out %RES% --capital %CAPITAL% --risk %RISK% %FTMO%
+if exist "%RES%\comparaison.html" (start "" "%RES%\comparaison.html") else (echo Lancez d'abord une recherche.)
 pause & goto menu
 
 :directeur
 echo Le Directeur reprend le travail deja fait, relance les cases faibles en mode intensif,
 echo puis construit la strategie combinee. Comptez de quelques minutes a plusieurs heures. Laissez MT5 ouvert.
-python run.py directeur --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
-if exist "results\directeur.html" start "" "results\directeur.html"
+python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
+if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
 pause & goto menu
 
 :rapportdir
-if exist "results\directeur.html" (start "" "results\directeur.html") else (echo Lancez d'abord le Directeur : option D.)
+if exist "%RES%\directeur.html" (start "" "%RES%\directeur.html") else (echo Lancez d'abord le Directeur : option D.)
 pause & goto menu
 
 :fiches
-if exist "results\fiches_strategies.html" (start "" "results\fiches_strategies.html") else (echo Lancez d'abord le Directeur : option D.)
+if exist "%RES%\fiches_strategies.html" (start "" "%RES%\fiches_strategies.html") else (echo Lancez d'abord le Directeur : option D.)
 pause & goto menu
 
 :bot
 set HOR=
 if not "%HORAIRE%"=="" set HOR=--horaire %HORAIRE%
-python run.py bot --capital %CAPITAL% %FTMO% %HOR%
-if exist "results\bot\LaboBot.mq5" (start "" "results\bot" & start "" notepad "results\bot\LISEZMOI_BOT.txt")
+python run.py bot --results %RES% --capital %CAPITAL% %FTMO% %HOR%
+if exist "%RES%\bot\LaboBot.mq5" (start "" "%RES%\bot" & start "" notepad "%RES%\bot\LISEZMOI_BOT.txt")
 pause & goto menu
 
 :papercomb
 set HOR=
 if not "%HORAIRE%"=="" set HOR=--horaire %HORAIRE%
-start "Paper trading - strategie combinee" "%~dp0paper_24h.bat" --source combinee %HOR% --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_combinee --port 8768
+start "Paper trading - strategie combinee" "%~dp0paper_24h.bat" --results %RES% --source combinee %HOR% --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out %RES%\paper_combinee --port 8768
 echo.
 echo La strategie combinee demarre dans une NOUVELLE fenetre (reduisez-la, ne la fermez pas).
 echo Plateforme : http://localhost:8768 - onglet "Strategie combinee".
 pause & goto menu
 
 :explore
-start "Paper trading - exploration" "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source exploration --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO%
+start "Paper trading - exploration" "%~dp0paper_24h.bat" --results %RES% --symbols %SYMS% --timeframes %TFS% --source exploration --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out %RES%\paper
 goto lance
 
 :paper
-start "Paper trading - 30 meilleures" "%~dp0paper_24h.bat" --symbols %SYMS% --source meilleures --top 30 --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_meilleures --port 8766
+start "Paper trading - 30 meilleures" "%~dp0paper_24h.bat" --results %RES% --symbols %SYMS% --source meilleures --top 30 --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out %RES%\paper_meilleures --port 8766
 goto lance
 
 :paperok
-start "Paper trading - portefeuille FTMO" "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source portefeuille --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_validees --port 8767
+start "Paper trading - portefeuille FTMO" "%~dp0paper_24h.bat" --results %RES% --symbols %SYMS% --timeframes %TFS% --source portefeuille --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out %RES%\paper_validees --port 8767
 goto lance
 
 :paperessai
-start "Paper trading - strategies a l'essai" "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source essai --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_essai --port 8769
+start "Paper trading - strategies a l'essai" "%~dp0paper_24h.bat" --results %RES% --symbols %SYMS% --timeframes %TFS% --source essai --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out %RES%\paper_essai --port 8769
 goto lance
 
 :lance
@@ -191,7 +215,7 @@ pause & goto menu
 :autostart
 set STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
 > "%STARTUP%\LaboMT5_paper_trading.bat" echo @echo off
->> "%STARTUP%\LaboMT5_paper_trading.bat" echo start "Paper trading - exploration" /min "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source exploration --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO%
+>> "%STARTUP%\LaboMT5_paper_trading.bat" echo start "Paper trading - exploration" /min "%~dp0paper_24h.bat" --results %RES% --symbols %SYMS% --timeframes %TFS% --source exploration --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out %RES%\paper
 echo.
 echo C'est fait : a chaque demarrage de Windows, l'exploration se lance toute seule (fenetre reduite).
 echo MetaTrader 5 est ouvert automatiquement par la plateforme s'il est installe.

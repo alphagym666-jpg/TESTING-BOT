@@ -67,6 +67,8 @@ class DirectorConfig:
     min_window_days: int = 45
     # horaires testés (heure LOCALE de l'utilisateur, entrées seulement) : (nom, début, fin) ; None = 24h/24
     sessions: tuple = (("24h/24", None, None), ("8h-17h", 8, 17), ("8h-13h", 8, 13))
+    beat_bh: bool = False              # exiger que chaque stratégie batte le buy & hold sur la période de validation
+    min_bars: int = 1000               # bougies minimum par case (400 en mode « période récente »)
     server_offset: float = 7.0         # heure du serveur MT5 - heure locale (FTMO vs Québec/New York : 7 h)
     seed: int = 7
 
@@ -138,7 +140,7 @@ class Director:
         return LabConfig(rounds=c.rounds + (2 if intensive else 0), budget=c.budget * k, risk_pct=c.lab_risk_pct,
                          seed=c.seed + seed, ftmo=c.ftmo, invent_generations=c.invent_generations * k,
                          invent_attempts=3 + (2 if intensive else 0), seeds=seeds or [], invent_bias=bias or [],
-                         catalog=c.catalog, bank_teams=c.bank_teams)
+                         catalog=c.catalog, bank_teams=c.bank_teams, beat_bh=c.beat_bh, bh_risk_pct=c.risk_pct)
 
     def run_cell(self, sym, tf, lab_cfg: LabConfig, why: str):
         try:
@@ -146,8 +148,8 @@ class Director:
         except Exception as exc:
             self.say(f"{sym} {tf} : pas de données ({exc}), case ignorée")
             return None
-        if len(df) < 1000:
-            self.say(f"{sym} {tf} : seulement {len(df)} bougies, case ignorée (il en faut 1000)")
+        if len(df) < self.cfg.min_bars:
+            self.say(f"{sym} {tf} : seulement {len(df)} bougies, case ignorée (il en faut {self.cfg.min_bars})")
             return None
         self.say(f"{sym} {tf} : {why}")
         return run_lab(df, cost, lab_cfg, f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}")
@@ -402,6 +404,7 @@ class Director:
         res["fenetre"] = (str(lo.date()), str(hi.date()))
         res["trades"] = int(len(merged))
         res["pire_jour"] = float(daily["worst"].min()) if len(daily) else 0.0
+        res["rendement_pct"] = float(daily["pnl"].sum()) if len(daily) else 0.0
         c = count_challenges(daily, self.cfg.ftmo)
         res["challenges_oos"] = {k: c[k] for k in ("reussis", "rates", "jours_moyens")}
         return res
@@ -743,6 +746,8 @@ class Director:
                     "R moyen OOS": r.get("avgR_oos"), "Profit factor OOS": r.get("pf_oos"),
                     "Gain par mois (%)": r.get("gain_mois_pct"), "Drawdown max OOS (%)": r.get("dd_oos_pct"),
                     "Réussite FTMO seule (%)": r.get("ftmo_pass"),
+                    "Gain sur la période de test à 1 %/trade (%)": r.get("rendement_oos_pct_risque_bh"),
+                    "Buy & hold sur la même période (%)": r.get("buy_hold_oos_pct"),
                     "Challenges réussis / ratés (tout l'historique)": _pair(r, "total"),
                     "Challenges réussis / ratés (hors-échantillon)": _pair(r, "oos"),
                     "Jours pour l'objectif": None if pd.isna(r.get("ftmo_jours_p1")) else int(r.get("ftmo_jours_p1"))}
@@ -852,6 +857,21 @@ pre{white-space:pre-wrap;font-size:12px;background:var(--card);border:1px solid 
 """
 
 
+def _bh_text(d, c) -> str:
+    """Buy & hold moyen (et sa pire baisse) des marchés de la stratégie combinée, sur la période de validation."""
+    if not len(d.allr) or "buy_hold_oos_pct" not in d.allr.columns:
+        return "—"
+    vals, dds = [], []
+    for sym, tf in {(x["symbole"], x["timeframe"]) for x in c.get("composants", [])}:
+        m = d.allr[(d.allr["symbole"] == sym) & (d.allr["timeframe"] == tf)]
+        if len(m) and pd.notna(m["buy_hold_oos_pct"].iloc[0]):
+            vals.append(float(m["buy_hold_oos_pct"].iloc[0]))
+            dds.append(float(m["buy_hold_dd_oos_pct"].iloc[0]))
+    if not vals:
+        return "—"
+    return f"{np.mean(vals):+.1f} % (pire baisse {max(dds):.1f} %)"
+
+
 def _slug(name: str) -> str:
     return name.replace("/", "").replace(" ", "").replace("h24h", "h") or "x"
 
@@ -885,6 +905,8 @@ def write_report(d: Director):
             ("Échec (limite de perte touchée)", f"{_fmt(res.get('ftmo_echec_p1'))} %"),
             ("Challenges enchaînés hors-échantillon", (lambda h: f"{h.get('reussis', '—')} réussis / {h.get('rates', '—')} ratés")(res.get("challenges_oos", {}))),
             ("Challenges enchaînés sur tout l'historique", (lambda h: f"{h['reussis']} réussis / {h['rates']} ratés" if h else "—")(c.get("challenges_historique"))),
+            ("Gain sur la période de test (stratégie combinée)", f"{res.get('rendement_pct', float('nan')):+.1f} %"),
+            ("Buy & hold sur la même période (moyenne des marchés utilisés)", _bh_text(d, c)),
             ("Composants", str(len(c["composants"]))),
             ("Pire journée (positions ouvertes au stop)", f"{res.get('pire_jour', 0):.2f} %"),
             ("Perte possible max par jour", f"{rules.get('day_budget', d.cfg.day_budget):g} %"),

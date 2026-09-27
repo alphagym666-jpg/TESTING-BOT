@@ -43,7 +43,8 @@ def collect(results_dir: Path) -> pd.DataFrame:
     for col in ("gain_mois_pct", "trades_mois", "oos_jours", "oos_debut", "oos_fin", "ftmo_pass", "ftmo_p1",
                 "ftmo_jours_p1", "ftmo_echec_p1", "donnees_debut", "donnees_fin", "walk_forward", "par_periode",
                 "equipe", "invention", "meilleure_version_de", "ftmo_reussis_total", "ftmo_rates_total",
-                "ftmo_jours_moy_total", "ftmo_reussis_oos", "ftmo_rates_oos", "ftmo_jours_moy_oos"):
+                "ftmo_jours_moy_total", "ftmo_reussis_oos", "ftmo_rates_oos", "ftmo_jours_moy_oos",
+                "buy_hold_oos_pct", "buy_hold_dd_oos_pct", "bat_buy_hold", "rendement_oos_pct_risque_bh"):
         if col not in out.columns:  # résultats d'une ancienne version
             out[col] = float("nan")
     return out
