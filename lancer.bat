@@ -59,6 +59,7 @@ echo   --- PAPER TRADING 24h/24 (s'ouvre dans sa propre fenetre, le menu reste l
 echo   6. EXPLORATION : toutes les strategies x tous les R:R
 echo   7. Les 30 meilleures strategies de la recherche
 echo   8. Le portefeuille du Chef FTMO / strategies validees
+echo   S. Strategies A L'ESSAI (non validees mais gagnantes sur la periode de test) + validees
 echo   9. Ouvrir la PLATEFORME (voir les trades en direct)
 echo   A. Lancer l'exploration automatiquement au demarrage de Windows
 echo   B. Ne plus lancer au demarrage de Windows
@@ -77,6 +78,7 @@ if "%CHOIX%"=="5" goto compare
 if "%CHOIX%"=="6" goto explore
 if "%CHOIX%"=="7" goto paper
 if "%CHOIX%"=="8" goto paperok
+if /i "%CHOIX%"=="S" goto paperessai
 if "%CHOIX%"=="9" goto platform
 if /i "%CHOIX%"=="D" goto directeur
 if /i "%CHOIX%"=="N" goto nouvelles
@@ -172,6 +174,10 @@ goto lance
 
 :paperok
 start "Paper trading - portefeuille FTMO" "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source portefeuille --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_validees --port 8767
+goto lance
+
+:paperessai
+start "Paper trading - strategies a l'essai" "%~dp0paper_24h.bat" --symbols %SYMS% --timeframes %TFS% --source essai --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out results\paper_essai --port 8769
 goto lance
 
 :lance

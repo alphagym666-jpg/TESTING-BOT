@@ -232,7 +232,7 @@ def cmd_paper(a):
 
 def cmd_bot(a):
     from mt5lab.pont import generate_bot
-    out = generate_bot(Path(a.results), a.capital, ftmo_rules(a), horaire=a.horaire)
+    out = generate_bot(Path(a.results), a.capital, ftmo_rules(a), horaire=a.horaire, forcer=a.forcer)
     print(f"Bot prêt : {out / 'LaboBot.mq5'}")
     print(f"Mode d'emploi : {out / 'LISEZMOI_BOT.txt'}")
 
@@ -297,12 +297,14 @@ def main():
     paper = sub.add_parser("paper", help="trades FICTIFS sur les prix réels de MT5 (aucun ordre envoyé)")
     paper.add_argument("--symbols", nargs="+", default=["EURUSD"])
     paper.add_argument("--timeframes", nargs="+", default=["H1"], help="un ou plusieurs timeframes (ou ALL)")
-    paper.add_argument("--source", choices=["exploration", "combinee", "meilleures", "portefeuille", "tous", "approuvees"], default="tous",
+    paper.add_argument("--source", choices=["exploration", "combinee", "meilleures", "portefeuille", "tous", "approuvees",
+                                            "essai"], default="tous",
                        help="exploration = TOUTES les stratégies + inventions × TOUS les R:R ; "
                             "combinee = la stratégie combinée du Directeur (un seul compte) ; "
                             "portefeuille = les stratégies choisies ensemble par le Chef FTMO ; "
                             "meilleures = top N global de la comparaison (tous marchés et timeframes) ; "
-                            "tous = top N finalistes par marché/timeframe ; approuvees = seulement les validées")
+                            "tous = top N finalistes par marché/timeframe ; approuvees = seulement les validées ; "
+                            "essai = validées + « à l'essai » (non validées mais gagnantes hors-échantillon)")
     paper.add_argument("--port", type=int, default=8765, help="port de la plateforme web locale (0 = désactivée)")
     paper.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur automatiquement")
     paper.add_argument("--top", type=int, default=20, help="nb max de stratégies suivies par symbole/timeframe")
@@ -356,6 +358,8 @@ def main():
     bot = sub.add_parser("bot", help="générer le bot MT5 (LaboBot.mq5) de la stratégie combinée")
     bot.add_argument("--results", default="results")
     bot.add_argument("--capital", type=float, default=100_000)
+    bot.add_argument("--forcer", action="store_true",
+                     help="accepter une stratégie combinée « à l'essai » (non validée) : déconseillé")
     bot.add_argument("--horaire", default=None, choices=["24h24", "8h-17h", "8h-13h"],
                      help="prendre la stratégie combinée de cet horaire (défaut : la meilleure)")
     add_ftmo_args(bot)

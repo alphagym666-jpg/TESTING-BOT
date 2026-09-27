@@ -300,6 +300,14 @@ class Director:
     def _pool(self, allr: pd.DataFrame):
         """Stratégies validées (sans doublons) + leurs variantes de R:R qui restent gagnantes hors-échantillon."""
         ok = allr[allr["_ok"] & allr["oos_debut"].notna()].copy()
+        self.trial_mode = False
+        if not len(ok):  # rien de validé : on construit quand même une combinée « à l'essai », pour le paper trading
+            ok = allr[allr["verdict"].astype(str).str.startswith("À L'ESSAI") & allr["oos_debut"].notna()].copy()
+            if len(ok):
+                self.trial_mode = True
+                self.say(f"Aucune stratégie validée : je construis une stratégie combinée « À L'ESSAI » avec les "
+                         f"{len(ok)} stratégies non validées mais gagnantes hors-échantillon. PAPER TRADING SEULEMENT, "
+                         "pas de bot tant qu'elle n'a pas fait ses preuves en direct.")
         trades, windows, info = {}, {}, {}
         for label in (ok["symbole"] + "_" + ok["timeframe"]).unique():
             path = self.cfg.out / label / "trades_oos.csv"
@@ -591,6 +599,8 @@ class Director:
             if not best:
                 continue
             best["horaire"] = {"nom": name, "debut": start, "fin": end, "decalage_serveur": self.cfg.server_offset}
+            if self.trial_mode:
+                best["essai"] = True
             best["scenario_choisi"] = best_b
             best["scenarios"] = rows
             hist = self.history_challenges(best)
@@ -616,6 +626,9 @@ class Director:
             return {}
         overall["scenarios"] = all_rows
         overall["horaires"] = self.session_rows
+        if getattr(self, "trial_mode", False):
+            overall["essai"] = True
+            overall["nom"] = "Stratégie combinée À L'ESSAI (non validée : paper trading seulement)"
         self.combined = overall
         (self.cfg.out / "strategie_combinee.json").write_text(
             json.dumps(overall, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
@@ -961,6 +974,23 @@ def write_report(d: Director):
                "<th>Meilleur réglage</th><th>Verdict</th><th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th>"
                "<th>Gain / mois</th><th>Réussite FTMO seule</th></tr></thead>"
                f"<tbody>{cat_rows}</tbody></table></div>") if cat_rows else "<p class='mut'>—</p>"
+    trial_rows = ""
+    if len(d.allr):
+        tr = d.allr[d.allr["verdict"].astype(str).str.startswith("À L'ESSAI")].sort_values("avgR_oos", ascending=False)
+        for _, r in tr.head(60).iterrows():
+            trial_rows += (f"<tr><td>{fiche(r['symbole'], r['timeframe'], json.loads(r['candidate']), r['strategie'][:110])}</td>"
+                           f"<td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{esc(str(r['risque']))}</td>"
+                           f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
+                           f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td>"
+                           f"<td class='mut'>{esc(str(r['verdict']).split('—')[-1].strip())}</td></tr>")
+    trial_tbl = ("<div class='scroll'><table><thead><tr><th>Stratégie</th><th>Marché</th><th>TF</th><th>Réglage</th>"
+                 "<th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th><th>Réussite FTMO seule</th>"
+                 f"<th>Pourquoi pas validée</th></tr></thead><tbody>{trial_rows}</tbody></table></div>"
+                 if trial_rows else "<p class='mut'>Aucune.</p>")
+    trial_banner = ('<p class="card" style="border-color:#d97706"><b>ATTENTION : stratégie combinée À L\'ESSAI.</b> '
+                    "Aucune stratégie n'a passé toute la validation : celle-ci est faite de stratégies non validées mais "
+                    "gagnantes hors-échantillon. Suivez-la en paper trading (option C) ; pas de bot tant qu'elle n'a "
+                    "pas fait ses preuves en direct.</p>") if c and c.get("essai") else ""
     fl = d.failles()
     fl_rows = "".join(
         f"<tr><td>{esc(f['symbole'])} {esc(f['timeframe'])}</td><td>{esc(f.get('agent', ''))}</td>"
@@ -989,6 +1019,9 @@ Chaque horaire a son fichier (strategie_combinee_*.json) pour le paper trading e
 <p class="mut">Pour chaque scénario, le Directeur construit la meilleure stratégie combinée (composants, R:R, risque par trade).
 Le scénario retenu est celui qui passe le challenge le plus souvent, puis le plus vite.</p>
 {scen}
+{trial_banner}
+<h2>Stratégies à l'essai (non validées mais gagnantes hors-échantillon : paper trading seulement)</h2>
+{trial_tbl}
 <h2>Classement des meilleures stratégies validées</h2>
 <p class="mut">Tous marchés, timeframes et équipes confondus. Réussite = challenge FTMO tradé avec cette stratégie SEULE
 ({d.cfg.lab_risk_pct:g} % par trade). La stratégie combinée ci-dessus les assemble pour aller plus vite.</p>

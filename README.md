@@ -411,6 +411,16 @@ prochaine clôture de bougie avant de prendre un trade.
   elle continue à être suivie « à blanc » mais ne touche plus le compte. Elle est réactivée si ses 20 derniers
   trades redeviennent bons. Colonne « Contrôle » dans la plateforme ; le Directeur en tient compte.
 
+## Stratégies « À L'ESSAI »
+
+Quand la validation est trop dure pour un marché (souvent en M1-M15 après les frais), rien n'est « APPROUVÉ ».
+Les 10 meilleures stratégies rejetées de chaque case qui **gagnent quand même hors-échantillon** (au moins 20
+trades, R moyen > 0, profit factor >= 1,05) passent « **À L'ESSAI (paper seulement)** », avec la raison du rejet.
+- Option **S** du menu : paper trading des stratégies validées + à l'essai (plateforme http://localhost:8769).
+- Si aucune stratégie n'est validée, le Directeur construit une **stratégie combinée à l'essai** (option C) pour le
+  paper trading ; le bot (option E) la refuse tant qu'elle n'a pas fait ses preuves (`--forcer` pour passer outre).
+- Les recherches déjà faites sont reprises telles quelles : rien à recalculer.
+
 ## Hypothèses du backtest
 
 - Entrée à l'ouverture de la bougie qui suit le signal (aucun regard dans le futur, vérifié par les tests).

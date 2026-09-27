@@ -106,3 +106,24 @@ def test_enrich_uses_at_least_median_spread():
                        "spread": [2, 10, 10, 10, 40]}, index=idx)
     out = conn.enrich(df, "EURUSD")
     assert np.allclose(out["cost"], np.array([10, 10, 10, 10, 40]) * 1e-5)
+
+
+def test_mark_trials_keeps_positive_oos_rejects_only():
+    from mt5lab.lab import mark_trials
+    b = pd.DataFrame({"verdict": ["APPROUVÉ", "rejeté : edge OOS non significatif", "rejeté : espérance OOS négative/faible",
+                                  "rejeté : edge OOS non significatif", "rejeté : trop peu de trades OOS"],
+                      "trades_oos": [50, 40, 40, 40, 5], "avgR_oos": [0.3, 0.12, -0.1, 0.02, 0.5],
+                      "pf_oos": [1.6, 1.3, 0.9, 1.01, 2.0], "sharpe_oos": [3, 1.5, -1, 0.2, 2]})
+    v = mark_trials(b)["verdict"].tolist()
+    assert v[0] == "APPROUVÉ" and v[1].startswith("À L'ESSAI") and "non validée : edge" in v[1]
+    assert v[2].startswith("rejeté") and v[3].startswith("rejeté") and v[4].startswith("rejeté")
+
+
+def test_bot_refuses_trial_combined(tmp_path):
+    import json as _json
+    import pytest
+    from mt5lab.pont import generate_bot
+    (tmp_path / "strategie_combinee.json").write_text(_json.dumps({"essai": True, "composants": []}), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        generate_bot(tmp_path)
+    assert (generate_bot(tmp_path, forcer=True) / "LaboBot.mq5").exists()

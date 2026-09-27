@@ -185,6 +185,8 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
     if not path.exists():
         return [], {}
     d = json.loads(path.read_text(encoding="utf-8"))
+    if d.get("essai"):
+        print("[paper] ATTENTION : stratégie combinée À L'ESSAI (faite de stratégies non validées) -> paper seulement")
     rules = d.get("regles", {})
     name = "Stratégie combinée"
     slots = []
@@ -219,8 +221,12 @@ def load_slots(results_dir: Path, symbols, timeframe, source="tous", top=20, cap
             print(f"[paper] {path} introuvable : lancez d'abord la recherche pour {sym} {timeframe}")
             continue
         board = pd.read_csv(path)
+        from .lab import mark_trials
+        board = mark_trials(board)
         if source == "approuvees":
             board = board[board["verdict"] == "APPROUVÉ"]
+        elif source == "essai":  # validées + à l'essai (non validées mais gagnantes hors-échantillon)
+            board = board[board["verdict"].eq("APPROUVÉ") | board["verdict"].str.startswith("À L'ESSAI")]
         board = board.head(top)
         slots += [_slot_from_row(sym, timeframe, r, capital) for _, r in board.iterrows()]
         print(f"[paper] {sym} {timeframe} : {min(len(board), top)} stratégies suivies")

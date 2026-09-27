@@ -87,7 +87,7 @@ class SignalBridge:
 
 
 def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None, template: str | Path | None = None,
-                 out_dir: str | Path | None = None, horaire: str | None = None) -> Path:
+                 out_dir: str | Path | None = None, horaire: str | None = None, forcer: bool = False) -> Path:
     """Prépare results/bot/ : LaboBot.mq5 réglé pour VOTRE stratégie combinée + LISEZMOI_BOT.txt."""
     import json
     results_dir = Path(results_dir)
@@ -95,6 +95,10 @@ def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None,
     if not comb_path.exists():
         raise SystemExit("Pas encore de stratégie combinée : lancez d'abord le Directeur (option D).")
     comb = json.loads(comb_path.read_text(encoding="utf-8"))
+    if comb.get("essai") and not forcer:
+        raise SystemExit("La stratégie combinée actuelle est « À L'ESSAI » : faite de stratégies NON validées. "
+                         "Suivez-la d'abord en paper trading (option C). Le bot n'est généré que pour une stratégie "
+                         "validée (ou avec --forcer, à vos risques, sur un compte démo).")
     rules = comb.get("regles", {})
     target = getattr(ftmo, "target1", 10.0)
     daily = getattr(ftmo, "max_daily", 3.0)

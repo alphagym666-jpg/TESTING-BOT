@@ -26,6 +26,8 @@ def collect(results_dir: Path) -> pd.DataFrame:
         df = pd.read_csv(path)
         if not len(df):
             continue
+        from .lab import mark_trials
+        df = mark_trials(df)  # recherches faites avant l'ajout des stratégies « à l'essai »
         df.insert(0, "timeframe", tf)
         df.insert(0, "symbole", sym)
         frames.append(df)

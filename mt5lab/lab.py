@@ -40,6 +40,24 @@ class LabConfig:
 # version de la méthode de calcul : le Directeur refait les recherches faites avec une version plus ancienne
 # (3 = coûts historiques bougie par bougie, spread du moment ignoré, walk-forward, challenges enchaînés)
 LAB_VERSION = 3
+# stratégies non validées mais gagnantes hors-échantillon : suivies en paper trading pour les juger en direct
+ESSAI = "À L'ESSAI"
+ESSAI_MAX = 10
+
+
+def mark_trials(board: pd.DataFrame, n_max: int = ESSAI_MAX) -> pd.DataFrame:
+    """Parmi les stratégies rejetées, garde les n_max meilleures qui GAGNENT quand même hors-échantillon
+    (>= 20 trades, R moyen > 0, profit factor >= 1,05) : verdict « À L'ESSAI (paper seulement) ».
+    Elles ne sont jamais mises dans le bot ; le paper trading dira si elles tiennent en direct."""
+    if not len(board) or "trades_oos" not in board.columns:
+        return board
+    ok = board["verdict"].eq("APPROUVÉ")
+    cand = board[~ok & board["verdict"].str.startswith("rejeté") & (board["trades_oos"].fillna(0) >= 20)
+                 & (board["avgR_oos"].fillna(-1) > 0) & (board["pf_oos"].fillna(0) >= 1.05)]
+    cand = cand.sort_values("sharpe_oos", ascending=False).head(n_max)
+    board.loc[cand.index, "verdict"] = [f"{ESSAI} (paper seulement) — {v.replace('rejeté : ', 'non validée : ')}"
+                                        for v in cand["verdict"]]
+    return board
 
 
 def stress_test(df: pd.DataFrame, oos_start: int, f: Finding, cost: float, risk_pct: float, wf_parts: int = 5) -> dict:
@@ -432,10 +450,14 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             "candidate": json.dumps(f.candidate),
             "version_calcul": LAB_VERSION,
         })
-    board = pd.DataFrame(rows)
+    board = mark_trials(pd.DataFrame(rows))
     if len(board):
-        board["_ok"] = board["verdict"].eq("APPROUVÉ")
+        board["_ok"] = board["verdict"].eq("APPROUVÉ").astype(int) * 2 + board["verdict"].str.startswith(ESSAI)
         board = board.sort_values(["_ok", "sharpe_oos", "score_is"], ascending=False).drop(columns="_ok")
+        n_trial = int(board["verdict"].str.startswith(ESSAI).sum())
+        if n_trial:
+            journal.log("Plateforme", f"{n_trial} stratégies non validées mais gagnantes hors-échantillon passent "
+                                      "« À L'ESSAI » : suivies en paper trading seulement, jamais dans le bot")
     if len(board):
         inv_keys = {candidate_key(e["candidate"]): (e["agent"], e["confirmed"])
                     for e in inventions + (bank["inventions_d"] if bank else [])}
