@@ -244,6 +244,51 @@ def f_htf(df, n):
     return htf_direction(df, n, "ema50")
 
 
+# ---------------------------------------------------------------- inter-marchés : un marché qui en annonce un autre
+# Les données d'un marché peuvent contenir les clôtures d'autres marchés (colonnes « ext:NASDAQ », « ext:XAUUSD »...,
+# ajoutées par data.add_ext, alignées sans regarder le futur). Les inventeurs cherchent alors des règles comme
+# « QUAND le NASDAQ a monté de 2 écarts-types sur 5 bougies ET le GER40 est resté à plat -> acheter le GER40 ».
+EXT_PREFIX = "ext:"
+EXT_FEATURES: dict[str, tuple] = {}
+
+
+def ext_feature(name, ns, label):
+    def deco(fn):
+        EXT_FEATURES[name] = fn
+        FEATURES[name] = (fn, True, ns, label)
+        return fn
+    return deco
+
+
+def ext_symbols(df: pd.DataFrame) -> list[str]:
+    return [c[len(EXT_PREFIX):] for c in df.columns if str(c).startswith(EXT_PREFIX)]
+
+
+def _ext_close(df, s):
+    col = f"{EXT_PREFIX}{s}"
+    return df[col].astype(float) if col in df.columns else pd.Series(np.nan, index=df.index)
+
+
+def _norm_ret(close: pd.Series, n: int) -> pd.Series:
+    r = np.log(close).diff()
+    return (np.log(close).diff(n)) / (r.rolling(100, min_periods=30).std() * np.sqrt(n)).replace(0, np.nan)
+
+
+@ext_feature("ext_mom", [1, 3, 5, 10, 20], "mouvement de {s} sur {n} bougies (en écarts-types)")
+def f_ext_mom(df, n, s):
+    return _norm_ret(_ext_close(df, s), n)
+
+
+@ext_feature("ext_div", [3, 5, 10, 20], "avance de {s} sur ce marché sur {n} bougies (écarts-types)")
+def f_ext_div(df, n, s):
+    return _norm_ret(_ext_close(df, s), n) - _norm_ret(df["close"].astype(float), n)
+
+
+@ext_feature("ext_z", [20, 50, 100], "Z-score({n}) de {s}")
+def f_ext_z(df, n, s):
+    return ind.zscore(_ext_close(df, s), n)
+
+
 # caractéristiques jouées en fenêtres (entre a et b) : bornes et largeurs possibles
 BETWEEN = {"hour": (0, 24, [2, 3, 4, 6, 8], "h"), "dow": (0, 5, [1, 2, 3], " (jour)"), "minute": (0, 60, [5, 10, 15, 30], " min")}
 BANK_FEATURES = ["sweep", "prev_day_pos", "round_dist", "session_move", "vwap_dist", "vol_spike", "asia_pos",
@@ -252,17 +297,18 @@ BANK_FEATURES = ["sweep", "prev_day_pos", "round_dist", "session_move", "vwap_di
 _CACHE: dict = {}
 
 
-def feat(df: pd.DataFrame, name: str, n: int) -> pd.Series:
-    key = (id(df), len(df), df.index[0], df.index[-1], name, n)
+def feat(df: pd.DataFrame, name: str, n: int, s: str | None = None) -> pd.Series:
+    key = (id(df), len(df), df.index[0], df.index[-1], name, n, s)
     if key not in _CACHE:
         if len(_CACHE) > 600:
             _CACHE.clear()
-        _CACHE[key] = FEATURES[name][0](df, n).astype(float)
+        fn = FEATURES[name][0]
+        _CACHE[key] = (fn(df, n, s) if name in EXT_FEATURES else fn(df, n)).astype(float)
     return _CACHE[key]
 
 
 def _cond(df, c, side: int) -> pd.Series:
-    x = feat(df, c["f"], c["n"])
+    x = feat(df, c["f"], c["n"], c.get("s"))
     if c["op"] == "between":  # heures : non directionnel
         lo, hi = c["v"]
         return (x >= lo) & (x < hi)
@@ -286,7 +332,7 @@ def rule_signal(df: pd.DataFrame, spec: dict) -> pd.Series:
 
 
 def _cond_text(c):
-    lab = FEATURES[c["f"]][3].format(n=c["n"])
+    lab = FEATURES[c["f"]][3].format(n=c["n"], s=c.get("s", "?"))
     if c["op"] == "between":
         unit = BETWEEN.get(c["f"], (0, 24, [], "h"))[3]
         return f"{lab} entre {c['v'][0]}{unit} et {c['v'][1]}{unit}"
@@ -319,6 +365,9 @@ AGENT_POOLS = {
     19: ["vwap_dist", "vol_spike", "zscore", "macd_h", "rsi"],
     20: list(FEATURES),
 }
+# les agents 7 (combos), 9 (aléatoire) et 20 (synthèse) regardent surtout les autres marchés quand ils sont là
+for _a in (7, 9, 20):
+    AGENT_POOLS[_a] = AGENT_POOLS[_a] + list(EXT_FEATURES) * 3
 
 
 def simplify(spec: dict) -> dict:
@@ -330,8 +379,8 @@ def simplify(spec: dict) -> dict:
             key = (c["f"], "between")
             kept.setdefault(key, c)
             continue
-        key = (c["f"], c["n"], c["op"])
-        if key == (trig["f"], trig["n"], trig["op"]):
+        key = (c["f"], c["n"], c["op"], c.get("s"))
+        if key == (trig["f"], trig["n"], trig["op"], trig.get("s")):
             continue  # déjà couvert par le déclencheur
         old = kept.get(key)
         if old is None or (c["op"] == ">" and c["v"] > old["v"]) or (c["op"] == "<" and c["v"] < old["v"]):
@@ -349,14 +398,15 @@ class Inventor:
         self.tag = agent_tag
         self.df = df
         self.rng = rng
-        self.pool = AGENT_POOLS.get(agent_no, list(FEATURES))
+        self.ext = ext_symbols(df)  # autres marchés disponibles (inter-marchés)
+        self.pool = [f for f in AGENT_POOLS.get(agent_no, list(FEATURES)) if f not in EXT_FEATURES or self.ext]
         self.counter = 0
         self._q: dict = {}
 
-    def _quantiles(self, f, n):
-        k = (f, n)
+    def _quantiles(self, f, n, s=None):
+        k = (f, n, s)
         if k not in self._q:
-            x = feat(self.df, f, n).dropna()
+            x = feat(self.df, f, n, s).dropna()
             if FEATURES[f][1]:
                 x = pd.concat([x, -x])  # seuils symétriques pour le miroir achat/vente
             self._q[k] = [float(f"{float(v):.3g}") for v in np.nanquantile(x, [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,
@@ -374,6 +424,10 @@ class Inventor:
             lo, hi, widths, _ = BETWEEN[f]
             a = self.rng.randrange(lo, hi - 1)
             return {"f": f, "n": 0, "op": "between", "v": [a, min(hi, a + self.rng.choice(widths))]}
+        if f in EXT_FEATURES:
+            sym = self.rng.choice(self.ext)
+            return {"f": f, "n": n, "s": sym, "op": self.rng.choice([">", "<"]),
+                    "v": self.rng.choice(self._quantiles(f, n, sym))}
         return {"f": f, "n": n, "op": self.rng.choice([">", "<"]), "v": self.rng.choice(self._quantiles(f, n))}
 
     def random_spec(self) -> dict:
@@ -392,14 +446,14 @@ class Inventor:
                 a = max(lo, min(hi - 2, c["v"][0] + self.rng.choice([-1, 1])))
                 c["v"] = [a, min(hi, a + max(1, c["v"][1] - c["v"][0] + self.rng.choice([-1, 0, 1])))]
             else:
-                q = self._quantiles(c["f"], c["n"])
+                q = self._quantiles(c["f"], c["n"], c.get("s"))
                 i = min(range(len(q)), key=lambda k: abs(q[k] - c["v"]))
                 c["v"] = q[max(0, min(len(q) - 1, i + self.rng.choice([-1, 1])))]
         elif r < 0.6:  # change la période
             c = self.rng.choice(conds)
             c["n"] = self.rng.choice(FEATURES[c["f"]][2]) if c["op"] != "between" else 0
             if c["op"] != "between":
-                c["v"] = self.rng.choice(self._quantiles(c["f"], c["n"]))
+                c["v"] = self.rng.choice(self._quantiles(c["f"], c["n"], c.get("s")))
         elif r < 0.75 and len(s["filters"]) < 3:
             s["filters"].append(self.random_cond())
         elif r < 0.85 and s["filters"]:

@@ -20,10 +20,13 @@ def test_invented_rules_have_no_lookahead_and_mirror():
 
 
 def test_every_feature_is_causal():
-    df = synthetic(1200, seed=5)
+    from mt5lab.data import add_ext
+    from mt5lab.inventions import EXT_FEATURES
+    df = add_ext(synthetic(1200, seed=5), {"NASDAQ": synthetic(1200, seed=6)["close"]})
     for name, (fn, _d, ns, _l) in FEATURES.items():
-        a = fn(df, ns[0]).to_numpy()[:800]
-        b = fn(df.iloc[:800], ns[0]).to_numpy()
+        call = (lambda d: fn(d, ns[0], "NASDAQ")) if name in EXT_FEATURES else (lambda d: fn(d, ns[0]))
+        a = call(df).to_numpy()[:800]
+        b = call(df.iloc[:800]).to_numpy()
         assert np.allclose(a, b, equal_nan=True), name
 
 

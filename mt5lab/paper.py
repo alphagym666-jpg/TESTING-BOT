@@ -110,6 +110,8 @@ class Group:
     total_budget: float | None = None # perte totale max depuis le départ, en % (jamais dépassée par un nouveau trade)
     max_corr: int | None = None       # positions max sur des marchés corrélés dans le même sens (NASDAQ + US30...)
     session: tuple | None = None      # (début, fin, décalage serveur) : entrées seulement dans cet horaire local
+    pilot: dict | None = None         # pilote de risque du challenge (ftmo.pilot_factor)
+    prev_day_pnl: float = 0.0
     balance: float = 100_000.0
     peak: float = 100_000.0
     max_dd_pct: float = 0.0
@@ -128,7 +130,7 @@ class Group:
 
 
 GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
-                                                                "total_budget", "max_corr", "session")]
+                                                                "total_budget", "max_corr", "session", "pilot")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -199,7 +201,8 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
         slots.append(s)
     groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0),
-                     "max_corr": rules.get("max_correles"), "session": _session_of(d)}}
+                     "max_corr": rules.get("max_correles"), "session": _session_of(d),
+                     "pilot": rules.get("pilote")}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
           f"(perte possible max {rules.get('day_budget')} %/jour)")
     return slots, groups
@@ -326,7 +329,7 @@ class PaperEngine:
         for name, g in (groups or {}).items():
             cap = g.get("capital", 100_000.0)
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
-                                      g.get("total_budget"), g.get("max_corr"), g.get("session"),
+                                      g.get("total_budget"), g.get("max_corr"), g.get("session"), g.get("pilot"),
                                       balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
@@ -424,6 +427,11 @@ class PaperEngine:
         pct = s.risk_pct if s.risk_pct is not None else self.risk_pct
         if s.group and s.group in self.groups:
             g = self.groups[s.group]
+            if g.pilot:  # pilote de risque : moins de risque quand le challenge va mal (ou près du but)
+                from .ftmo import pilot_factor
+                pl = {**g.pilot, "cible": self.ftmo.target1}
+                pct *= float(pilot_factor(pl, (g.day_start - g.capital) / g.capital * 100,
+                                          g.prev_day_pnl / g.capital * 100))
             return min(g.balance, g.capital) * pct / 100
         return min(s.balance, s.capital) * pct / 100
 
@@ -473,6 +481,8 @@ class PaperEngine:
     # ------------------------------------------------------------------ challenge FTMO
     def _roll_day(self, acc, equity: float, when: str):
         if when[:10] != acc.day:
+            if isinstance(acc, Group) and acc.day:
+                acc.prev_day_pnl = equity - acc.day_start
             acc.day, acc.day_start = when[:10], (equity if acc.day else acc.capital)
             if isinstance(acc, Group):
                 acc.day_realized = 0.0
@@ -549,8 +559,10 @@ class PaperEngine:
         if g is not None and when[:10] not in g.trade_days:
             g.trade_days.append(when[:10])
         if self._bot(s):
-            self.bridge.open(s.id, s.symbol, side, dist, s.cfg.rr, s.risk_pct if s.risk_pct is not None else self.risk_pct,
-                             self.commission(s.symbol))
+            g0 = self.groups.get(s.group)
+            base = min(g0.balance, g0.capital) if g0 else min(s.balance, s.capital)
+            self.bridge.open(s.id, s.symbol, side, dist, s.cfg.rr, round(self.risk_budget(s) / base * 100, 4),
+                             self.commission(s.symbol))  # risque du pilote compris
         d = info.digits
         self.event(when, "OUVERTURE", s, f"{'ACHAT' if side > 0 else 'VENTE'} {lots} lots @ {price:.{d}f} | "
                                          f"SL {s.position.sl:.{d}f} | TP {'signal' if tp is None else f'{tp:.{d}f}'} | "
@@ -791,6 +803,16 @@ class PaperEngine:
             if first:  # au démarrage on n'entre pas sur une bougie déjà clôturée
                 continue
             df = self.c.rates(sym, tf, self.bars)
+            ext = sorted({x for sl in self.by_bar[(sym, tf)] for x in ext_needed(sl.candidate)})
+            if ext:  # inventions inter-marchés : il faut aussi les prix des autres marchés
+                from .data import add_ext
+                others = {}
+                for o in ext:
+                    try:
+                        others[o] = self.c.rates(o, tf, self.bars)["close"]
+                    except Exception as exc:
+                        print(f"[paper] inter-marchés : {o} {tf} indisponible ({exc})")
+                df = add_ext(df, others)
             self.on_bar(sym, tf, df.iloc[:-1])
         if self.groups:
             self.update_groups()
@@ -960,6 +982,20 @@ def _base_name(cand: dict) -> str:
 
 def _msc(v) -> str:
     return datetime.fromtimestamp(int(v) / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def ext_needed(obj) -> set:
+    """Autres marchés utilisés par une stratégie (conditions inter-marchés « s » des inventions)."""
+    out = set()
+    if isinstance(obj, dict):
+        if obj.get("s") and str(obj.get("f", "")).startswith("ext_"):
+            out.add(obj["s"])
+        for v in obj.values():
+            out |= ext_needed(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            out |= ext_needed(v)
+    return out
 
 
 def in_session(when: str, session) -> bool:

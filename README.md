@@ -412,6 +412,20 @@ prochaine clôture de bougie avant de prendre un trade.
   elle continue à être suivie « à blanc » mais ne touche plus le compte. Elle est réactivée si ses 20 derniers
   trades redeviennent bons. Colonne « Contrôle » dans la plateforme ; le Directeur en tient compte.
 
+## Inventions inter-marchés et pilote de risque du challenge
+
+**Inter-marchés** : chaque marché reçoit aussi les prix des autres marchés choisis (sans jamais regarder le futur).
+Les inventeurs (surtout les agents 7, 9 et 20) cherchent des règles où un marché en annonce un autre, par exemple
+« QUAND le NASDAQ a monté de 2 écarts-types en 5 bougies ET le GER40 est en retard -> acheter le GER40 », ou
+« QUAND USDJPY chute fort -> vendre le NASDAQ ». Le paper trading va chercher tout seul les prix des marchés utilisés.
+`--sans-inter-marches` désactive.
+
+**Pilote de risque du challenge** : le Directeur essaie des règles qui changent le risque selon où en est le
+challenge, sans jamais dépasser ton risque max : risque réduit quand le compte est à -1,5 / -3 / -5 %, le lendemain
+d'une journée perdante, ou quand il reste moins de 2-4 % pour l'objectif. Moins d'échecs, donc il peut monter le
+risque des composants, donc challenge réussi plus vite. Il ne garde le pilote que s'il aide. Le paper trading de
+la stratégie combinée et le bot l'appliquent.
+
 ## Stratégies « À L'ESSAI »
 
 Quand la validation est trop dure pour un marché (souvent en M1-M15 après les frais), rien n'est « APPROUVÉ ».

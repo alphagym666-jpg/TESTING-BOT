@@ -68,11 +68,29 @@ def news_args(p):
 
 
 def period_args(p):
+    p.add_argument("--sans-inter-marches", action="store_true",
+                   help="ne pas donner aux inventeurs les prix des autres marchés")
     p.add_argument("--depuis", default=None,
                    help="ne garder que les données depuis cette date (ex. 2025-01-01) : recherche ET validation "
                         "sur la période récente")
     p.add_argument("--battre-buy-hold", action="store_true",
                    help="une stratégie n'est validée que si elle bat le buy & hold sur la période de validation")
+
+
+def with_ext(df, sym, tf, symbols, raw, a):
+    """Inter-marchés : ajoute les clôtures des autres marchés choisis (les inventeurs s'en servent)."""
+    if getattr(a, "sans_inter_marches", False):
+        return df
+    from mt5lab.data import add_ext
+    others = {}
+    for o in symbols:
+        if o == sym:
+            continue
+        try:
+            others[o] = raw(o, tf)["close"]
+        except Exception as exc:
+            print(f"[inter-marchés] {o} {tf} indisponible : {exc}")
+    return add_ext(df, others) if others else df
 
 
 def since(df, a):
@@ -122,9 +140,16 @@ def cmd_directeur(a):
     comm = parse_commission(a.commission)
     news = load_news_arg(a)
     with MT5Connector() as conn:
+        raw_cache: dict = {}
+
+        def raw(sym, tf):
+            if (sym, tf) not in raw_cache:
+                raw_cache[(sym, tf)] = since(conn.rates(sym, tf, a.bars) if a.bars else
+                                             conn.rates_years(sym, tf, a.annees), a)
+            return raw_cache[(sym, tf)]
+
         def get_data(sym, tf):
-            df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
-            df = since(df, a)
+            df = with_ext(raw(sym, tf), sym, tf, a.symbols, raw, a)
             c = commission_for(comm, sym)
             df = conn.enrich(df, sym, a.commission_points, c, news, a.fenetre_nouvelles)
             return df, conn.typical_cost(df, sym, a.commission_points, c)
@@ -158,11 +183,22 @@ def cmd_lab(a):
         comm = parse_commission(a.commission)
         news = load_news_arg(a)
         with MT5Connector() as conn:
-            for sym in a.symbols:
-                for tf in a.timeframes:
+            raw_cache: dict = {}
+
+            def raw(s, t):
+                if (s, t) not in raw_cache:
+                    raw_cache[(s, t)] = since(conn.rates(s, t, a.bars) if a.bars else conn.rates_years(s, t, a.annees), a)
+                return raw_cache[(s, t)]
+
+            total, n = len(a.symbols) * len(a.timeframes), 0
+            # timeframe par timeframe (les autres marchés du même timeframe servent aux inter-marchés), une case à
+            # la fois : on ne garde jamais tout l'historique de tous les marchés en mémoire
+            for tf in a.timeframes:
+                raw_cache.clear()
+                for sym in a.symbols:
+                    n += 1
                     try:
-                        df = conn.rates(sym, tf, a.bars) if a.bars else conn.rates_years(sym, tf, a.annees)
-                        df = since(df, a)
+                        df = with_ext(raw(sym, tf), sym, tf, a.symbols, raw, a)
                     except Exception as exc:
                         print(f"[lab] {sym} {tf} ignoré : {exc}")
                         continue
@@ -176,25 +212,31 @@ def cmd_lab(a):
                         df, cost = df.drop(columns=["cost"], errors="ignore"), a.cost
                     else:
                         cost = conn.typical_cost(df, sym, a.commission_points, commission_for(comm, sym))
-                    jobs.append((f"{sym}_{tf}", df, cost))
-    for n, (label, df, cost) in enumerate(jobs, 1):
-        print(f"\n########## [{n}/{len(jobs)}] {label} ##########")
-        board = run_lab(df, cost, cfg, label, out_root / label)
-        ok = board[board["verdict"] == "APPROUVÉ"] if len(board) else board
-        print(f"\n===== {label} : {len(ok)} stratégies approuvées =====")
-        if len(ok):
-            print(ok[["strategie", "risque", "trades_oos", "wr_oos", "avgR_oos", "pf_oos", "ret_oos_pct",
-                      "dd_oos_pct"]].head(15).to_string(index=False))
-        elif len(board) and board["trades_oos"].notna().any():
-            near = board[board["trades_oos"].notna()].sort_values("avgR_oos", ascending=False).head(5)
-            print("Les plus proches (non retenues, et pourquoi) :")
-            for _, r in near.iterrows():
-                print(f"  {r['avgR_oos']:+.2f}R/trade OOS sur {int(r['trades_oos'])} trades | {r['strategie'][:70]} "
-                      f"| {r['verdict']}")
-        print(f"Rapport : {out_root / label / 'rapport.html'}")
+                    run_cell(f"{sym}_{tf}", df, cost, cfg, out_root, n, total)
+                    jobs.append(f"{sym}_{tf}")
+                    del df
+    for n, (label, df, cost) in enumerate(j for j in jobs if isinstance(j, tuple)):
+        run_cell(label, df, cost, cfg, out_root, n + 1, len(jobs))
     if len(jobs) > 1 or not (a.demo or a.csv):
         from mt5lab.compare import build_comparison
         build_comparison(out_root, a.capital, ftmo_rules(a), a.risk)
+
+
+def run_cell(label, df, cost, cfg, out_root, n, total):
+    print(f"\n########## [{n}/{total}] {label} ##########")
+    board = run_lab(df, cost, cfg, label, out_root / label)
+    ok = board[board["verdict"] == "APPROUVÉ"] if len(board) else board
+    print(f"\n===== {label} : {len(ok)} stratégies approuvées =====")
+    if len(ok):
+        print(ok[["strategie", "risque", "trades_oos", "wr_oos", "avgR_oos", "pf_oos", "ret_oos_pct",
+                  "dd_oos_pct"]].head(15).to_string(index=False))
+    elif len(board) and board["trades_oos"].notna().any():
+        near = board[board["trades_oos"].notna()].sort_values("avgR_oos", ascending=False).head(5)
+        print("Les plus proches (non retenues, et pourquoi) :")
+        for _, r in near.iterrows():
+            print(f"  {r['avgR_oos']:+.2f}R/trade OOS sur {int(r['trades_oos'])} trades | {r['strategie'][:70]} "
+                  f"| {r['verdict']}")
+    print(f"Rapport : {out_root / label / 'rapport.html'}")
 
 
 def cmd_live(a):

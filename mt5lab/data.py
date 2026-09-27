@@ -437,3 +437,16 @@ def news_blocked(news: pd.DataFrame | None, currencies: set[str], when, window: 
     when = pd.Timestamp(when)
     ev = news.loc[news["currency"].isin(currencies), "time"]
     return bool(((ev - when).abs() <= pd.Timedelta(minutes=window)).any())
+
+
+# ---------------------------------------------------------------------------------------------- inter-marchés
+def add_ext(df: pd.DataFrame, others: dict) -> pd.DataFrame:
+    """Ajoute la clôture d'autres marchés (colonnes « ext:SYMBOLE ») alignée sur les bougies de df.
+    À chaque bougie, on prend la DERNIÈRE clôture connue de l'autre marché à cette heure-là (jamais le futur)."""
+    df = df.copy()
+    for name, close in others.items():
+        if close is None or not len(close):
+            continue
+        close = close[~close.index.duplicated()].sort_index()
+        df[f"ext:{name}"] = close.reindex(df.index, method="ffill").to_numpy(dtype=np.float32)
+    return df

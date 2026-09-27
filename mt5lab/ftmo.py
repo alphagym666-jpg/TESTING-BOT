@@ -123,7 +123,40 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
     return t.loc[keep].drop(columns=["e_dt", "x_dt"]).reset_index(drop=True)
 
 
-def _phase(pnl, worst, traded, target, rules: FtmoRules, n: int, rng, block: int = 5):
+def pilot_factor(pilot: dict | None, cum_before, prev_day):
+    """Pilote de risque du challenge : multiplicateur du risque de la journée (<= 1, jamais au-dessus du risque
+    choisi), selon où en est le challenge au DÉBUT de la journée.
+      {"type": "dd", "seuil": 3, "facteur": 0.5}  : risque x0,5 tant que le compte est à -3 % ou pire
+      {"type": "jour", "facteur": 0.5}           : risque x0,5 le lendemain d'une journée perdante
+      {"type": "cible", "seuil": 2, "facteur": 0.5}: risque x0,5 quand il reste moins de 2 % pour l'objectif
+                                                     (les derniers % sans se faire mal)"""
+    if not pilot:
+        return 1.0 if np.isscalar(cum_before) else np.ones_like(cum_before, dtype=float)
+    f = float(pilot.get("facteur", 1.0))
+    t = pilot.get("type")
+    if t == "dd":
+        cond = cum_before <= -float(pilot["seuil"])
+    elif t == "jour":
+        cond = prev_day < 0
+    elif t == "cible":
+        cond = cum_before >= float(pilot["cible"]) - float(pilot["seuil"])
+    else:
+        cond = cum_before != cum_before
+    return np.where(cond, f, 1.0)
+
+
+def pilot_text(pilot: dict | None) -> str:
+    if not pilot:
+        return "aucun (risque constant)"
+    f = f"x{float(pilot['facteur']):g}"
+    if pilot["type"] == "dd":
+        return f"risque {f} tant que le compte est à -{float(pilot['seuil']):g} % ou pire"
+    if pilot["type"] == "jour":
+        return f"risque {f} le lendemain d'une journée perdante"
+    return f"risque {f} quand il reste moins de {float(pilot['seuil']):g} % pour l'objectif"
+
+
+def _phase(pnl, worst, traded, target, rules: FtmoRules, n: int, rng, block: int = 5, pilot=None):
     L = len(pnl)
     H = rules.horizon_days
     nb = -(-H // block)
@@ -131,6 +164,16 @@ def _phase(pnl, worst, traded, target, rules: FtmoRules, n: int, rng, block: int
     idx = (starts[:, :, None] + np.arange(block)[None, None, :]).reshape(n, -1)[:, :H]
     idx = np.minimum(idx, L - 1)
     P, W, T = pnl[idx], worst[idx], traded[idx]
+    if pilot:  # le risque de chaque journée dépend d'où en est le challenge : on rejoue jour par jour
+        pilot = {**pilot, "cible": target}
+        P, W = P.astype(float).copy(), W.astype(float).copy()
+        cum, prev = np.zeros(P.shape[0]), np.zeros(P.shape[0])
+        for d in range(P.shape[1]):
+            k = pilot_factor(pilot, cum, prev)
+            P[:, d] *= k
+            W[:, d] *= k
+            cum += P[:, d]
+            prev = P[:, d]
     cum_after = np.cumsum(P, axis=1)
     cum_before = cum_after - P
     fail = (W <= -rules.max_daily) | (cum_before + W <= -rules.max_total)
@@ -149,7 +192,8 @@ def _phase(pnl, worst, traded, target, rules: FtmoRules, n: int, rng, block: int
     }
 
 
-def simulate(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), n: int = 3000, seed: int = 0) -> dict:
+def simulate(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), n: int = 3000, seed: int = 0,
+             pilot: dict | None = None) -> dict:
     """Probabilités de réussir chaque phase et le challenge complet, et jours de bourse médians."""
     if daily is None or len(daily) < 15:
         return {"ftmo_p1": np.nan, "ftmo_p2": np.nan, "ftmo_pass": np.nan, "ftmo_jours_p1": np.nan,
@@ -158,8 +202,8 @@ def simulate(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), n: int = 3000,
     pnl = daily["pnl"].to_numpy(float)
     worst = daily["worst"].to_numpy(float)
     traded = daily["traded"].to_numpy(bool)
-    p1 = _phase(pnl, worst, traded, rules.target1, rules, n, rng)
-    p2 = _phase(pnl, worst, traded, rules.target2, rules, n, rng) if rules.target2 > 0 else None
+    p1 = _phase(pnl, worst, traded, rules.target1, rules, n, rng, pilot=pilot)
+    p2 = _phase(pnl, worst, traded, rules.target2, rules, n, rng, pilot=pilot) if rules.target2 > 0 else None
     total = p1["pass"] * (p2["pass"] if p2 else 1.0)
     return {"ftmo_p1": round(p1["pass"] * 100, 1), "ftmo_p2": round(p2["pass"] * 100, 1) if p2 else np.nan,
             "ftmo_pass": round(total * 100, 1),
@@ -167,7 +211,7 @@ def simulate(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), n: int = 3000,
             "ftmo_echec_p1": round(p1["fail"] * 100, 1), "ftmo_jours_hist": int(len(daily))}
 
 
-def count_challenges(daily: pd.DataFrame, rules: FtmoRules = FtmoRules()) -> dict:
+def count_challenges(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), pilot: dict | None = None) -> dict:
     """Rejoue l'historique RÉEL jour après jour, comme si on avait acheté un challenge le premier jour :
     dès qu'il est réussi (phase 1, puis phase 2 si activée) ou raté, on en recommence un le lendemain.
     Renvoie le nombre de challenges réussis / ratés sur toute la période et leur durée (jours de bourse)."""
@@ -184,10 +228,13 @@ def count_challenges(daily: pd.DataFrame, rules: FtmoRules = FtmoRules()) -> dic
     while i < n:
         start, result = i, None
         for target in phases:
-            cum, tdays = 0.0, 0
+            cum, tdays, prev = 0.0, 0, 0.0
+            pl = {**pilot, "cible": target} if pilot else None
             while i < n:
-                fail = worst[i] <= -rules.max_daily or cum + worst[i] <= -rules.max_total
-                cum += pnl[i]
+                k = float(pilot_factor(pl, cum, prev)) if pl else 1.0
+                fail = worst[i] * k <= -rules.max_daily or cum + worst[i] * k <= -rules.max_total
+                cum += pnl[i] * k
+                prev = pnl[i] * k
                 tdays += traded[i]
                 i += 1
                 if fail:
