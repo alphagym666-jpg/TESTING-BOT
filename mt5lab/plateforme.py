@@ -229,12 +229,12 @@ function tiles(){const c=D.comptes,P=D.positions;const closed=c.reduce((a,x)=>a+
  tiles_.innerHTML=T.map(([k,v,s])=>`<div class="tile"><div class="mut">${k}</div><div class="v">${v}</div><div class="mut" style="font-size:12px">${s}</div></div>`).join("")}
 const tiles_=document.getElementById("tiles");
 function viewPos(){return `<p class="note">Chaque ligne est un trade fictif en cours, calculé sur les vrais prix de MT5. Le SL et le TP sont vérifiés tick par tick.</p>`+
- table("pos",[["Marché","symbole"],["TF","tf"],["Sens","sens",v=>`<b>${v}</b>`],["Lots","lots",v=>fmt(v,2),1],["Ouverture","ouverture"],
+ table("pos",[["Marché","symbole"],["TF","tf"],["Bot","id",botBtn],["Sens","sens",v=>`<b>${v}</b>`],["Lots","lots",v=>fmt(v,2),1],["Ouverture","ouverture"],
  ["Entrée","entree",px,1],["SL initial","sl_initial",px,1],["SL actuel","sl",px,1],["TP","tp",px,1],["Prix actuel","prix",px,1],
  ["Pips → SL","pips_sl",v=>fmt(v,1),1],["Pips → TP","pips_tp",v=>fmt(v,1),1],["Latent","latent",money,1],["Latent R","latent_r",rr,1],
  ["Bougies","bougies",null,1],["Stratégie","strategie"],["Risque","risque"]],filt(D.positions))}
 function viewHist(){const n=D.n_trades_total||D.trades.length;return `<p class="note">${fmt(n,0)} trades pris depuis le début, tous gardés pour toujours
- (fichier trades.csv). Ici : les ${fmt(Math.min(n,D.trades.length),0)} plus récents. Tout l'historique : bouton « Télécharger tous les trades (Excel) ».</p>`+table("hist",[["Fermeture","fermeture"],["Ouverture","ouverture"],["Durée","duree_min",v=>v==null?"—":v<60?fmt(v,0)+" min":fmt(v/60,1)+" h",1],
+ (fichier trades.csv). Ici : les ${fmt(Math.min(n,D.trades.length),0)} plus récents. Tout l'historique : bouton « Télécharger tous les trades (Excel) ».</p>`+table("hist",[["Fermeture","fermeture"],["Bot","strategie_id",botBtn],["Ouverture","ouverture"],["Durée","duree_min",v=>v==null?"—":v<60?fmt(v,0)+" min":fmt(v/60,1)+" h",1],
  ["Marché","symbole"],["TF","timeframe"],["Sens","sens",v=>`<b>${v}</b>`],["Lots","lots",v=>fmt(v,2),1],["Entrée","prix_entree",px,1],
  ["SL initial","sl_initial",px,1],["SL final","sl_final",px,1],["TP","tp",px,1],["Sortie","prix_sortie",px,1],
  ["Raison","raison",v=>`<span class="tag">${esc(v)}</span>`],["Pips","pips",v=>`<span class="${cls(v)}">${fmt(v,1,true)}</span>`,1],
@@ -244,15 +244,15 @@ function ftmoCell(v,x){if(v==="RÉUSSI")return `<span class="tag ok">réussi</sp
  const p=x&&x.profit_pct!=null?x.profit_pct:null,j=x?x.jours_trades:null,m=D.ftmo.min_days;
  if(p!=null&&p>=((x&&x.objectif_requis_pct)||D.ftmo.target1))return j!=null&&j<m?`<span class="tag ok" title="FTMO exige au moins ${m} jours avec un trade : l'objectif est atteint, il manque ${m-j} jour(s) de trading">objectif atteint · jours ${j}/${m}</span>`:`<span class="tag ok" title="Objectif atteint : le challenge sera validé à la fermeture des positions">objectif atteint · positions à fermer</span>`;
  return `<span class="tag run">en cours</span>`}
-function botBtn(v){return `<button class="botbtn" data-id="${esc(v)}" title="Créer le bot MT5 de cette stratégie">Bot MT5</button>`}
+function botBtn(v){if(!v)return "";return `<button class="botbtn" data-id="${esc(v)}" title="Créer le bot MT5 de cette stratégie">Bot MT5</button>`}
 function prog(p,x){const t=(x&&x.objectif_requis_pct)||D.ftmo.target1,w=Math.max(0,Math.min(100,Math.abs(p)/t*100));
  const more=t>D.ftmo.target1+1e-9?` <span class="mut" title="Règle du meilleur jour : une journée ne peut pas faire plus de ${D.ftmo.best_day_pct} % du profit total">(objectif ${fmt(t,2)} %)</span>`:"";
  return `<span class="meter${p<0?" neg":""}" title="${fmt(p,2,true)} % sur ${fmt(t,2)} %"><i style="width:${w}%"></i></span> ${fmt(p,2,true)} %${more}`}
 function viewStrat(){return `<p class="note">Un compte fictif par stratégie × marché × timeframe × R:R. Triez en cliquant sur les colonnes.</p>`+
- table("strat",[["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Risque","risque"],["Origine","origine"],["Trades","trades",null,1],
+ table("strat",[["Marché","symbole"],["TF","tf"],["Bot","id",botBtn],["Stratégie","strategie"],["Risque","risque"],["Origine","origine"],["Trades","trades",null,1],
  ["Réussite","gagnants",(v,r)=>r.trades?fmt(v/r.trades*100,0)+" %":"—",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["P&L","pnl",money,1],
  ["Objectif FTMO","profit_pct",prog],["Pire jour","pire_jour_pct",v=>`<span class="${cls(v)}">${fmt(v,2)} %</span>`,1],["DD max","dd_max",v=>fmt(v,2)+" %",1],
- ["Challenge","ftmo",ftmoCell],["Jours tradés","jours_trades",null,1],["Attendu (recherche)","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],["Bot","id",botBtn],["","en_position",v=>v?'<span class="tag run">en position</span>':""]],filt(D.comptes))}
+ ["Challenge","ftmo",ftmoCell],["Jours tradés","jours_trades",null,1],["Attendu (recherche)","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],["","en_position",v=>v?'<span class="tag run">en position</span>':""]],filt(D.comptes))}
 function pauseCell(v,x){return v?`<span class="tag ko" title="${esc(x.pause_raison||"")}">en pause</span>`:(x.trades>=20&&x.attendu_r!=null?'<span class="tag ok">conforme</span>':"")}
 function viewRR(){const c=filt(D.comptes),by={};c.forEach(x=>{const k=x.rr==null?"signal":"1:"+x.rr;(by[k]=by[k]||{k,rr:x.rr??99,t:0,w:0,R:0,p:0,n:0});
  const b=by[k];b.t+=x.trades;b.w+=x.gagnants;b.R+=x.r_total;b.p+=x.pnl;b.n++});
@@ -268,7 +268,7 @@ function viewRR(){const c=filt(D.comptes),by={};c.forEach(x=>{const k=x.rr==null
  table("rrs",[["Stratégie","base"],["Meilleur R:R","best"],["R total (meilleur)","R",rr,1],["Trades (tous R:R)","t",null,1]],Object.values(strat).filter(s=>s.best).sort((a,b)=>b.R-a.R))}
 function viewFtmo(){const c=filt(D.comptes);const ok=c.filter(x=>x.ftmo==="RÉUSSI"),ko=c.filter(x=>x.ftmo.startsWith("ÉCHOUÉ"));
  return `<p class="note">Chaque compte fictif est suivi comme un challenge FTMO (${esc(D.ftmo_label)}). La perte du jour compte le latent des positions ouvertes.</p>`+
- table("ftmo",[["Challenge","ftmo",ftmoCell],["Quand","ftmo_quand"],["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Risque","risque"],
+ table("ftmo",[["Challenge","ftmo",ftmoCell],["Bot","id",botBtn],["Quand","ftmo_quand"],["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Risque","risque"],
  ["Progression","profit_pct",prog],["Pire jour","pire_jour_pct",v=>`<span class="${cls(v)}">${fmt(v,2)} %</span>`,1],["Jours tradés","jours_trades",null,1],
  ["Trades","trades",null,1],["DD max","dd_max",v=>fmt(v,2)+" %",1]],[...ok,...c.filter(x=>x.ftmo==="en cours").sort((a,b)=>b.profit_pct-a.profit_pct),...ko])}
 function gauge(val,limit,label,good){if(Math.abs(val)<1e-9)val=0;const w=Math.max(0,Math.min(100,Math.abs(val)/limit*100));
