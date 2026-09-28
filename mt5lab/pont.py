@@ -224,3 +224,44 @@ def generate_strategy_bot(comb: dict, root: str | Path, capital: float = 100_000
               launcher=f"Double-cliquez LANCER_BOT.bat dans ce dossier (paper trading de CETTE stratégie qui envoie "
                         f"ses signaux au bot ; plateforme http://localhost:{port})")
     return out
+
+
+def install_in_mt5(mq5: str | Path, mt5, name: str | None = None) -> tuple[bool, str]:
+    """Installe le bot DIRECTEMENT dans MT5 : copie dans <données MT5>\\MQL5\\Experts\\LaboBot\\ puis compile avec
+    MetaEditor (livré avec MT5). Le bot apparaît ensuite dans le Navigateur : Expert Advisors > LaboBot."""
+    import shutil
+    import subprocess
+    try:
+        info = mt5.terminal_info()
+        data, prog = Path(info.data_path), Path(info.path)
+    except Exception as exc:
+        return False, f"MT5 introuvable ({exc}) : copiez LaboBot.mq5 à la main (voir LISEZMOI_BOT.txt)."
+    dest_dir = data / "MQL5" / "Experts" / "LaboBot"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / (name or Path(mq5).name)
+    shutil.copyfile(mq5, dest)
+    editor = next((p for p in (prog / "metaeditor64.exe", prog / "MetaEditor64.exe", prog / "metaeditor.exe")
+                   if p.exists()), None)
+    where = f"Navigateur de MT5 (Ctrl+N) > Expert Advisors (Experts) > LaboBot > {dest.stem}"
+    if editor is None:
+        return False, (f"Copié dans {dest}, mais MetaEditor est introuvable : ouvrez ce fichier dans MetaEditor et "
+                       f"appuyez sur F7. Ensuite : {where}.")
+    log = dest.with_suffix(".log")
+    try:
+        subprocess.run([str(editor), f"/compile:{dest}", f"/log:{log}"], timeout=180, check=False)
+    except Exception as exc:
+        return False, f"Copié dans {dest}, compilation impossible ({exc}) : ouvrez-le dans MetaEditor et F7."
+    text = ""
+    for enc in ("utf-16", "utf-8", "cp1252"):
+        try:
+            text = log.read_text(encoding=enc)
+            if "result" in text.lower() or "error" in text.lower():
+                break
+        except (OSError, UnicodeError):
+            continue
+    ex5 = dest.with_suffix(".ex5")
+    errors = [ln.strip() for ln in text.splitlines() if " error " in f" {ln.lower()} " and "0 error" not in ln.lower()]
+    if ex5.exists() and not errors:
+        return True, (f"Bot installé et compilé dans MT5 : {where}. S'il n'apparaît pas tout de suite : clic droit sur "
+                      "« Expert Advisors » > Actualiser.")
+    return False, ("Compilation avec erreurs (envoyez ce message) :\n" + "\n".join(errors[:8] or [text[-600:]]))

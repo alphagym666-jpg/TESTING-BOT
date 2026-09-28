@@ -69,7 +69,7 @@ def make_bot(engine, url: str) -> dict:
     """Bouton « Bot MT5 » : prépare le bot d'une stratégie (?id=...) ou de la stratégie combinée (?groupe=...)."""
     from urllib.parse import parse_qs, urlparse
 
-    from .pont import generate_strategy_bot, single_strategy
+    from .pont import generate_strategy_bot, install_in_mt5, single_strategy
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
     if q.get("groupe"):
@@ -92,15 +92,17 @@ def make_bot(engine, url: str) -> dict:
         comb = single_strategy(s.candidate, s.symbol, s.timeframe, risk)
         capital = s.capital
     out = generate_strategy_bot(comb, root, capital, engine.ftmo, risk)
+    ok, inst = install_in_mt5(out / "LaboBot.mq5", engine.mt5, f"LaboBot_{out.name}.mq5")
     try:
         import os
         os.startfile(str(out))  # Windows : ouvre le dossier du bot
     except Exception:
         pass
     return {"ok": True, "dossier": str(out.resolve()),
-            "message": f"Bot prêt dans : {out.resolve()}\n\n1) Double-cliquez LANCER_BOT.bat (il suit cette stratégie en "
-                       "paper trading et envoie ses signaux au bot).\n2) Copiez LaboBot.mq5 dans MQL5\\Experts, "
-                       "compilez (F7) et posez-le sur UN graphique.\nTout est expliqué dans LISEZMOI_BOT.txt."}
+            "message": f"{inst}\n\nDossier du bot : {out.resolve()}\n\n1) Double-cliquez LANCER_BOT.bat dans ce dossier "
+                       f"(il suit cette stratégie en paper trading et envoie ses signaux au bot).\n2) Dans MT5, glissez "
+                       f"LaboBot_{out.name} sur UN graphique, cochez « Autoriser le trading algorithmique », et activez "
+                       "le bouton Algo Trading.\nTout est expliqué dans LISEZMOI_BOT.txt."}
 
 
 def start_server(engine, port: int = 8765, open_browser: bool = True):

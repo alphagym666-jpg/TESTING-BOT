@@ -298,6 +298,18 @@ def cmd_paper(a):
         eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
 
 
+def _install(mq5, name):
+    """Installe et compile le bot directement dans MT5 (si MT5 est ouvert)."""
+    try:
+        from mt5lab.data import MT5Connector
+        from mt5lab.pont import install_in_mt5
+        with MT5Connector() as conn:
+            ok, msg = install_in_mt5(mq5, conn.mt5, name)
+        print(("OK : " if ok else "ATTENTION : ") + msg)
+    except Exception as exc:
+        print(f"Installation automatique impossible ({exc}) : copiez {mq5} dans MQL5\\Experts et compilez (F7).")
+
+
 def cmd_bot(a):
     from mt5lab.pont import generate_bot, generate_strategy_bot, single_strategy
     if a.fiche:  # n'importe quelle stratégie : fiche du classement (results/fiches/ID.json ou juste ID)
@@ -312,10 +324,12 @@ def cmd_bot(a):
                                card.get("nom"))
         out = generate_strategy_bot(comb, Path(a.results), a.capital, ftmo_rules(a), comb["composants"][0]["risk_pct"])
         print(f"Bot prêt : {out}")
+        _install(out / "LaboBot.mq5", f"LaboBot_{out.name}.mq5")
         print(f"1) Double-cliquez {out / 'LANCER_BOT.bat'}   2) posez {out / 'LaboBot.mq5'} sur un graphique MT5 "
               f"(mode d'emploi : {out / 'LISEZMOI_BOT.txt'})")
         return
     out = generate_bot(Path(a.results), a.capital, ftmo_rules(a), horaire=a.horaire, forcer=a.forcer)
+    _install(out / "LaboBot.mq5", "LaboBot_combinee.mq5")
     print(f"Bot prêt : {out / 'LaboBot.mq5'}")
     print(f"Mode d'emploi : {out / 'LISEZMOI_BOT.txt'}")
 

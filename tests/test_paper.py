@@ -480,3 +480,15 @@ def test_trade_history_survives_restart(setup):
     eng2 = _engine(tmp)
     snap = eng2.snapshot()
     assert snap["n_trades_total"] == 1 and len(snap["trades"]) == 1 and snap["trades"][0]["r"] > 0
+
+
+def test_install_bot_in_mt5_folder(tmp_path):
+    from types import SimpleNamespace
+    from mt5lab.pont import install_in_mt5
+    src = tmp_path / "LaboBot.mq5"
+    src.write_text("// bot", encoding="utf-8")
+    fake = SimpleNamespace(terminal_info=lambda: SimpleNamespace(data_path=str(tmp_path / "data"),
+                                                                 path=str(tmp_path / "prog")))
+    ok, msg = install_in_mt5(src, fake, "LaboBot_XAUUSD_M5_1.mq5")
+    assert (tmp_path / "data" / "MQL5" / "Experts" / "LaboBot" / "LaboBot_XAUUSD_M5_1.mq5").exists()
+    assert not ok and "MetaEditor" in msg
