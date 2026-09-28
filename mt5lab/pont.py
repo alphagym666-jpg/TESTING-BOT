@@ -120,7 +120,8 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
     for name, v in values.items():
         src = re.sub(rf"(input\s+\w+\s+{name}\s*=\s*)[^;]+;", rf"\g<1>{v};", src)
     lines = ["//+------------------------------------------------------------------+",
-             f"//| Stratégie combinée du Directeur ({comb.get('cree_le', '')})",
+             (f"//| Stratégie combinée du Directeur ({comb.get('cree_le', '')})" if len(comb.get("composants", [])) != 1
+              else f"//| Bot d'UNE stratégie (créé le {comb.get('cree_le', '')}) : signaux envoyés par LANCER_BOT.bat"),
              f"//| Règles : perte possible max {rules.get('day_budget')} %/jour, perte totale max "
              f"{rules.get('total_budget')} %, positions max {rules.get('max_open') or 'illimité'}",
              f"//| Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure locale)",
