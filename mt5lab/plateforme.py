@@ -141,7 +141,7 @@ h1{font-size:18px;margin:0 12px 0 0}
 .live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2)}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--good)}.dot.off{background:var(--crit)}
 .px{font-variant-numeric:tabular-nums;font-size:12.5px;padding:3px 8px;border:1px solid var(--border);border-radius:999px;background:var(--page)}
-main{max-width:1500px;margin:auto;padding:14px 16px 40px}
+main{max-width:none;margin:auto;padding:14px 16px 40px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px}
 .tile{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
 .tile .v{font-size:22px;font-weight:600;margin-top:2px}
@@ -154,8 +154,11 @@ input{min-width:220px}
 .scroll{overflow:auto;max-height:68vh;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{padding:6px 8px;border-bottom:1px solid var(--grid);text-align:left;white-space:nowrap}
-th{position:sticky;top:0;background:var(--surface);color:var(--ink2);font-weight:600;cursor:pointer;user-select:none}
+th{position:sticky;top:0;z-index:2;background:var(--surface);color:var(--ink2);font-weight:600;cursor:pointer;user-select:none}
 td.n{text-align:right;font-variant-numeric:tabular-nums}
+td.s{max-width:340px;overflow:hidden;text-overflow:ellipsis;cursor:help}
+.scroll tr>*:first-child{position:sticky;left:0;z-index:1;background:var(--surface)}
+.scroll thead tr>*:first-child{z-index:3}
 tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .pos{color:var(--pos);font-weight:600}.neg{color:var(--neg);font-weight:600}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11.5px;border:1px solid var(--border)}
@@ -208,7 +211,9 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   return (x>y?1:x<y?-1:0)*(st.d)})}
  if(!rows.length)return `<div class="scroll"><div class="empty">Rien pour l'instant</div></div>`;
  return `<div class="scroll"><table data-id="${id}"><thead><tr>${cols.map((c,i)=>`<th data-i="${i}">${c[0]}</th>`).join("")}</tr></thead><tbody>`+
- rows.slice(0,1500).map(r=>"<tr>"+cols.map(c=>`<td${c[3]?' class="n"':""}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`).join("")+"</tr>").join("")+"</tbody></table></div>"}
+ rows.slice(0,1500).map(r=>"<tr>"+cols.map(c=>{const long=["strategie","texte","risque"].includes(c[1]);
+  const att=c[3]?' class="n"':long?` class="s" title="${esc(r[c[1]])}"`:"";
+  return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
  e.stopPropagation();b.disabled=true;const q=b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
  try{const r=await (await fetch("/api/bot?"+q,{cache:"no-store"})).json();alert(r.message)}catch(err){alert("Erreur : "+err)}b.disabled=false});
@@ -236,11 +241,12 @@ function viewHist(){return table("hist",[["Fermeture","fermeture"],["Ouverture",
  ["Stratégie","strategie"],["Risque","risque"]],filt(D.trades,"symbole","timeframe"))}
 function ftmoCell(v,x){if(v==="RÉUSSI")return `<span class="tag ok">réussi</span>`;if(v.startsWith("ÉCHOUÉ"))return `<span class="tag ko">${esc(v.toLowerCase())}</span>`;
  const p=x&&x.profit_pct!=null?x.profit_pct:null,j=x?x.jours_trades:null,m=D.ftmo.min_days;
- if(p!=null&&p>=D.ftmo.target1)return j!=null&&j<m?`<span class="tag ok" title="FTMO exige au moins ${m} jours avec un trade : l'objectif est atteint, il manque ${m-j} jour(s) de trading">objectif atteint · jours ${j}/${m}</span>`:`<span class="tag ok" title="Objectif atteint : le challenge sera validé à la fermeture des positions">objectif atteint · positions à fermer</span>`;
+ if(p!=null&&p>=((x&&x.objectif_requis_pct)||D.ftmo.target1))return j!=null&&j<m?`<span class="tag ok" title="FTMO exige au moins ${m} jours avec un trade : l'objectif est atteint, il manque ${m-j} jour(s) de trading">objectif atteint · jours ${j}/${m}</span>`:`<span class="tag ok" title="Objectif atteint : le challenge sera validé à la fermeture des positions">objectif atteint · positions à fermer</span>`;
  return `<span class="tag run">en cours</span>`}
 function botBtn(v){return `<button class="botbtn" data-id="${esc(v)}" title="Créer le bot MT5 de cette stratégie">Bot MT5</button>`}
-function prog(p){const t=D.ftmo.target1,w=Math.max(0,Math.min(100,Math.abs(p)/t*100));
- return `<span class="meter${p<0?" neg":""}" title="${fmt(p,2,true)} % sur ${t} %"><i style="width:${w}%"></i></span> ${fmt(p,2,true)} %`}
+function prog(p,x){const t=(x&&x.objectif_requis_pct)||D.ftmo.target1,w=Math.max(0,Math.min(100,Math.abs(p)/t*100));
+ const more=t>D.ftmo.target1+1e-9?` <span class="mut" title="Règle du meilleur jour : une journée ne peut pas faire plus de ${D.ftmo.best_day_pct} % du profit total">(objectif ${fmt(t,2)} %)</span>`:"";
+ return `<span class="meter${p<0?" neg":""}" title="${fmt(p,2,true)} % sur ${fmt(t,2)} %"><i style="width:${w}%"></i></span> ${fmt(p,2,true)} %${more}`}
 function viewStrat(){return `<p class="note">Un compte fictif par stratégie × marché × timeframe × R:R. Triez en cliquant sur les colonnes.</p>`+
  table("strat",[["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Risque","risque"],["Origine","origine"],["Trades","trades",null,1],
  ["Réussite","gagnants",(v,r)=>r.trades?fmt(v/r.trades*100,0)+" %":"—",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["P&L","pnl",money,1],
@@ -295,8 +301,13 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
  const v={comb:viewComb,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
- const el=document.getElementById("view"),sc=el.querySelector(".scroll"),top=sc?sc.scrollTop:0;el.innerHTML=v();
- const sc2=el.querySelector(".scroll");if(sc2)sc2.scrollTop=top}
+ const el=document.getElementById("view");
+ // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
+ const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;
+ el.innerHTML=v();
+ if(tab===lastTab)el.querySelectorAll(".scroll").forEach((x,i)=>{if(keep[i]){x.scrollTop=keep[i][0];x.scrollLeft=keep[i][1]}});
+ lastTab=tab;window.scrollTo(0,wy)}
+let lastTab=null;
 function fillSelect(id,vals){const el=document.getElementById(id),cur=el.value,first=el.options[0].outerHTML;
  el.innerHTML=first+[...vals].sort().map(v=>`<option${v===cur?" selected":""}>${esc(v)}</option>`).join("")}
 async function poll(){try{const r=await fetch("/api/etat",{cache:"no-store"});D=await r.json();

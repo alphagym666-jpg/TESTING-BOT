@@ -285,6 +285,9 @@ des inventions « chanceuses », mais la validation finale les rejette toutes.
 Toute la recherche est notée selon votre challenge. Par défaut (phase 1) : **+10 %**, perte max **3 % par jour** et
 **10 % au total**, 4 jours de trading minimum. Tout est réglable : `--ftmo-target`, `--ftmo-daily`, `--ftmo-total`,
 `--ftmo-min-days`, et `--ftmo-phase2 5` pour simuler aussi la phase 2.
+**Règle du meilleur jour** (`--ftmo-meilleur-jour 50`, 0 = aucune) : aucune journée ne peut faire plus de 50 % du
+profit total. Une journée à +6 % oblige donc à atteindre plus de +12 %. La règle est appliquée partout : simulateur,
+challenges enchaînés, paper trading (colonne « objectif 12 % ») et bot.
 - Pour chaque stratégie, un **simulateur Monte Carlo** rejoue des milliers de challenges à partir de ses journées
   réelles hors-échantillon. Les positions ouvertes sont comptées à leur stop dans la perte du jour. Il en sort la
   **probabilité de réussite**, le **nombre de jours** pour atteindre +10 % et le **taux d'échec**.

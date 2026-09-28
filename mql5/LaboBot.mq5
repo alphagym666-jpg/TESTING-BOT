@@ -32,6 +32,7 @@ input double InpRisqueMax       = 1.0;    // risque max par trade en % (plafond,
 input double InpPerteJourMax    = 2.8;    // perte du jour qui déclenche la fermeture de tout (%)
 input double InpPerteTotaleMax  = 9.5;    // perte totale qui arrête le bot (%)
 input double InpObjectif        = 10.0;   // objectif du challenge en % (0 = pas d'arrêt à l'objectif)
+input double InpMeilleurJour    = 50.0;   // règle du meilleur jour : une journée <= X % du profit total (0 = aucune)
 input int    InpDelaiMaxSec     = 90;     // un signal d'ouverture plus vieux que ça est ignoré
 input long   InpMagic           = 260926; // numéro magique des ordres du bot
 input bool   InpAutoriserReel   = false;  // autoriser un compte RÉEL (laisser false pour un challenge / démo)
@@ -42,6 +43,9 @@ long     g_last_seq = 0;
 string   g_gv_seq, g_gv_stop;
 datetime g_day = 0;
 double   g_day_start = 0;
+string   g_gv_best;
+
+double BestDay() { return GlobalVariableCheck(g_gv_best) ? GlobalVariableGet(g_gv_best) : 0.0; }
 bool     g_block_day = false;
 datetime g_last_signal = 0;
 string   g_status = "";
@@ -61,6 +65,7 @@ int OnInit()
    trade.SetDeviationInPoints(30);
    g_gv_seq  = "LaboBot_seq_" + IntegerToString(InpMagic);
    g_gv_stop = "LaboBot_arret_" + IntegerToString(InpMagic);
+   g_gv_best = "LaboBot_meilleurjour_" + IntegerToString(InpMagic);
    // au premier lancement, on ne rejoue pas les anciens signaux du fichier
    if(GlobalVariableCheck(g_gv_seq))
       g_last_seq = (long)GlobalVariableGet(g_gv_seq);
@@ -100,6 +105,12 @@ void NewDay()
    datetime d = StructToTime(t);
    if(d != g_day)
      {
+      if(g_day != 0)  // meilleure journée (argent), gardée même si MT5 redémarre
+        {
+         double prev = AccountInfoDouble(ACCOUNT_BALANCE) - g_day_start;
+         if(prev > BestDay())
+            GlobalVariableSet(g_gv_best, prev);
+        }
       g_day = d;
       g_day_start = AccountInfoDouble(ACCOUNT_BALANCE);  // comme FTMO : solde au début de la journée
       g_block_day = false;
@@ -129,11 +140,20 @@ void Guards()
      }
   }
 
+// objectif réel : +InpObjectif %, ou plus si la meilleure journée dépasse InpMeilleurJour % du profit total
+double TargetNeeded()
+  {
+   double best = MathMax(BestDay(), AccountInfoDouble(ACCOUNT_BALANCE) - g_day_start) / InpCapital * 100.0;
+   if(InpMeilleurJour > 0 && best > 0)
+      return MathMax(InpObjectif, best / (InpMeilleurJour / 100.0));
+   return InpObjectif;
+  }
+
 bool TargetReached()
   {
    if(InpObjectif <= 0)
       return false;
-   return (AccountInfoDouble(ACCOUNT_BALANCE) - InpCapital) / InpCapital * 100.0 >= InpObjectif;
+   return (AccountInfoDouble(ACCOUNT_BALANCE) - InpCapital) / InpCapital * 100.0 >= TargetNeeded();
   }
 
 void CloseAll(string why)
@@ -229,14 +249,15 @@ void Execute(string &f[])
    if(action == "OPEN")
      {
       if(Stopped() || g_block_day)       { Print("LaboBot : signal ignoré (garde-fou actif) ", symbol); return; }
-      if(TargetReached())                { Print("LaboBot : objectif atteint, plus de nouveau trade"); return; }
+      // objectif atteint : seulement les micro-trades (risque 0 = lot minimum) qui comptent les jours minimum FTMO
+      if(TargetReached() && risk > 0)    { Print("LaboBot : objectif atteint, plus de nouveau trade"); return; }
       if(age > InpDelaiMaxSec)           { Print("LaboBot : signal trop vieux (", age, " s) ignoré ", symbol); return; }
       if(ticket > 0 || dist <= 0 || side == 0)
          return;
       double stops = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(symbol, SYMBOL_POINT);
       if(dist <= stops)                  { Print("LaboBot : stop trop proche pour ", symbol); return; }
       double risk_money = InpCapital * MathMin(risk, InpRisqueMax) / 100.0;
-      double lots = Lots(symbol, risk_money, dist, commission);
+      double lots = risk <= 0 ? SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN) : Lots(symbol, risk_money, dist, commission);
       if(lots <= 0)                      { Print("LaboBot : lot trop petit pour le risque demandé ", symbol); return; }
       MqlTick tk;
       if(!SymbolInfoTick(symbol, tk))
@@ -288,6 +309,7 @@ void ShowStatus()
            DoubleToString(InpPerteJourMax, 1), " %)",
            "\nTotal : ", DoubleToString((eq - InpCapital) / InpCapital * 100.0, 2), " %   (arrêt à -",
            DoubleToString(InpPerteTotaleMax, 1), " %)",
+           "\nObjectif à atteindre : +", DoubleToString(TargetNeeded(), 2), " % (règle du meilleur jour comprise)",
            "\nPositions du bot : ", n,
            "\nDernier signal reçu : ", g_last_signal > 0 ? TimeToString(g_last_signal) : "aucun",
            "\nLe paper trading de la stratégie combinée (option C) doit tourner pour envoyer les signaux.");

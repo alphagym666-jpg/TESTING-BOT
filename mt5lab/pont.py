@@ -114,7 +114,8 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
     src = template.read_text(encoding="utf-8-sig")
     values = {"InpCapital": f"{capital:g}", "InpRisqueMax": f"{risk_max:g}",
               "InpPerteJourMax": f"{max(0.5, daily - 0.2):g}", "InpPerteTotaleMax": f"{max(1.0, total - 0.5):g}",
-              "InpObjectif": f"{target:g}", "InpMagic": str(int(magic)), "InpFichier": f'"{signal_file}"'}
+              "InpObjectif": f"{target:g}", "InpMagic": str(int(magic)), "InpFichier": f'"{signal_file}"',
+              "InpMeilleurJour": f"{getattr(ftmo, 'best_day_pct', 50.0):g}"}
     import re
     for name, v in values.items():
         src = re.sub(rf"(input\s+\w+\s+{name}\s*=\s*)[^;]+;", rf"\g<1>{v};", src)
@@ -165,6 +166,8 @@ Démarrer
      InpPerteJourMax   = {values['InpPerteJourMax']} % : au-delà, tout est fermé jusqu'au lendemain
      InpPerteTotaleMax = {values['InpPerteTotaleMax']} % : au-delà, tout est fermé et le bot s'arrête
      InpObjectif       = {values['InpObjectif']} % : objectif atteint = plus de nouveau trade
+     InpMeilleurJour   = {values['InpMeilleurJour']} % : une journée ne peut pas faire plus que ça du profit total
+                         (l'objectif monte si besoin : une journée à +6 % -> il faut +12 %)
 3. Le coin du graphique affiche l'état du bot, la perte du jour et le dernier signal reçu.
    Onglet « Experts » (en bas) : chaque ordre passé ou refusé est expliqué.
 

@@ -127,3 +127,17 @@ def test_bot_refuses_trial_combined(tmp_path):
     with pytest.raises(SystemExit):
         generate_bot(tmp_path)
     assert (generate_bot(tmp_path, forcer=True) / "LaboBot.mq5").exists()
+
+
+def test_best_day_rule_raises_target():
+    """Règle du meilleur jour (50 %) : une journée à +6 % oblige à atteindre plus de +12 %."""
+    from mt5lab.ftmo import FtmoRules, count_challenges
+    r = FtmoRules()
+    assert r.target_needed(10, 6) == 12 and r.target_needed(10, 4) == 10
+    days = pd.bdate_range("2020-01-01", periods=10)
+    pnl = [6, 1, 1, 2, 1, 1.5, 1, 0, 0, 0]          # +10 au 4e jour, mais meilleur jour 6 > 50 % de 10
+    daily = pd.DataFrame({"pnl": pnl, "worst": 0.0, "traded": True}, index=days)
+    c = count_challenges(daily, r)
+    assert c["reussis"] == 1 and c["liste"][0]["jours"] == 6    # réussi quand le total dépasse 12 (6+1+1+2+1+1.5)
+    c0 = count_challenges(daily, FtmoRules(best_day_pct=0))
+    assert c0["liste"][0]["jours"] == 4

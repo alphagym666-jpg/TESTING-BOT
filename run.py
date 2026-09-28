@@ -104,7 +104,7 @@ def since(df, a):
 def ftmo_rules(a):
     from mt5lab.ftmo import FtmoRules
     return FtmoRules(target1=a.ftmo_target, target2=a.ftmo_phase2, max_daily=a.ftmo_daily, max_total=a.ftmo_total,
-                     min_days=a.ftmo_min_days)
+                     min_days=a.ftmo_min_days, best_day_pct=a.ftmo_meilleur_jour)
 
 
 def add_ftmo_args(p):
@@ -114,6 +114,8 @@ def add_ftmo_args(p):
     g.add_argument("--ftmo-total", type=float, default=10.0, help="perte max totale en %% (défaut 10)")
     g.add_argument("--ftmo-phase2", type=float, default=0.0, help="objectif phase 2 en %% (0 = pas de phase 2)")
     g.add_argument("--ftmo-min-days", type=int, default=4, help="jours de trading minimum (défaut 4)")
+    g.add_argument("--ftmo-meilleur-jour", type=float, default=50.0,
+                   help="la meilleure journée ne peut pas dépasser X %% du profit total (défaut 50 ; 0 = pas de règle)")
 
 
 def cmd_directeur(a):

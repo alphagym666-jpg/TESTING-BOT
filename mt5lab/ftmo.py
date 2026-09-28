@@ -33,11 +33,20 @@ class FtmoRules:
     max_total: float = 10.0
     min_days: int = 4
     horizon_days: int = 250     # jours de bourse simulés au max (~1 an ; FTMO n'impose plus de limite de temps)
+    best_day_pct: float = 50.0  # règle du meilleur jour : aucune journée ne peut faire plus de X % du profit total
+                                # (0 = pas de règle). Ex. une journée à +6 % -> il faut au moins +12 % pour réussir
+
+    def target_needed(self, target: float, best_day: float) -> float:
+        """Objectif réellement à atteindre compte tenu de la meilleure journée (règle des 50 %)."""
+        if self.best_day_pct and self.best_day_pct > 0 and best_day > 0:
+            return max(target, best_day / (self.best_day_pct / 100))
+        return target
 
     def label(self) -> str:
         p2 = f", phase 2 +{self.target2:g} %" if self.target2 > 0 else ""
+        bd = f", meilleur jour <= {self.best_day_pct:g} % du profit" if self.best_day_pct else ""
         return (f"objectif +{self.target1:g} %{p2}, perte max {self.max_daily:g} %/jour et {self.max_total:g} % au total, "
-                f"min {self.min_days} jours de trading")
+                f"min {self.min_days} jours de trading{bd}")
 
 
 def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> pd.DataFrame:
@@ -179,6 +188,9 @@ def _phase(pnl, worst, traded, target, rules: FtmoRules, n: int, rng, block: int
     fail = (W <= -rules.max_daily) | (cum_before + W <= -rules.max_total)
     tdays = np.cumsum(T, axis=1)
     ok = (cum_after >= target) & (tdays >= rules.min_days)
+    if rules.best_day_pct and rules.best_day_pct > 0:  # meilleure journée <= X % du profit total
+        best = np.maximum.accumulate(np.maximum(P, 0.0), axis=1)
+        ok &= best < cum_after * (rules.best_day_pct / 100) + 1e-12
     first_fail = np.where(fail.any(1), fail.argmax(1), H + 1)
     first_pass = np.where(ok.any(1), ok.argmax(1), H + 1)
     passed = first_pass < first_fail
@@ -228,19 +240,21 @@ def count_challenges(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), pilot:
     while i < n:
         start, result = i, None
         for target in phases:
-            cum, tdays, prev = 0.0, 0, 0.0
+            cum, tdays, prev, best = 0.0, 0, 0.0, 0.0
             pl = {**pilot, "cible": target} if pilot else None
             while i < n:
                 k = float(pilot_factor(pl, cum, prev)) if pl else 1.0
                 fail = worst[i] * k <= -rules.max_daily or cum + worst[i] * k <= -rules.max_total
                 cum += pnl[i] * k
                 prev = pnl[i] * k
+                best = max(best, prev)
                 tdays += traded[i]
                 i += 1
                 if fail:
                     result = "raté"
                     break
-                if cum >= target and tdays >= rules.min_days:
+                if cum >= rules.target_needed(target, best) and tdays >= rules.min_days and \
+                        (not rules.best_day_pct or best < cum * rules.best_day_pct / 100 + 1e-12):
                     result = "phase ok"
                     break
             if result != "phase ok":

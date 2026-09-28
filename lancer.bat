@@ -18,8 +18,9 @@ set RISK=1
 rem Commission aller-retour par lot, par symbole (verifiez les montants de votre compte FTMO)
 set COMMISSION=EURUSD=5 GBPUSD=5 USDJPY=5 XAUUSD=5 NASDAQ=0 GER40=0 US30=0
 rem Regles OFFICIELLES du challenge FTMO (objectif, perte max par jour, perte max totale, en %%).
+rem --ftmo-meilleur-jour 50 : une journee ne peut pas faire plus de 50 %% du profit total (0 = pas de regle).
 rem Vos propres limites, plus prudentes (2.5 %% par jour), sont DIR_PERTE_JOUR et DIR_PERTE_TOTALE plus bas.
-set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10
+set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10 --ftmo-meilleur-jour 50
 rem Le Directeur : risque MAX par trade, et perte possible max par jour (il teste tous les scenarios jusqu'a ce plafond)
 set DIR_RISQUE_MAX=1.0
 set DIR_PERTE_JOUR=2.5

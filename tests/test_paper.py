@@ -452,3 +452,14 @@ def test_target_reached_then_micro_trades_until_min_days(setup):
     eng.step()
     assert s.position is not None and s.position.lots == 0.01
     assert mk.sent == []
+
+
+def test_paper_best_day_rule(setup):
+    mk, tmp = setup
+    eng = _engine(tmp, risk_pct=1.0)
+    s = eng.slots["s1"]
+    s.balance, s.best_day, s.day, s.day_start = 111_000.0, 6_000.0, "2000-01-03", 111_000.0
+    assert eng.target_needed(s) == pytest.approx(12.0)
+    assert not eng._target_reached(s)                      # +11 % ne suffit pas : il faut plus de +12 %
+    s.balance = 112_500.0
+    assert eng._target_reached(s)

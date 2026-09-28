@@ -84,6 +84,7 @@ class Slot:
     day_start: float = 100_000.0
     worst_day_pct: float = 0.0
     trade_days: list = field(default_factory=list)
+    best_day: float = 0.0            # meilleure journée (argent) : règle « meilleur jour <= 50 % du profit »
     group: str = ""                  # composant d'une stratégie combinée (compte partagé)
     risk_pct: float | None = None    # risque propre à ce composant (sinon le risque général)
     paused: bool = False             # mis en pause par le contrôleur de qualité (sous-performance en direct)
@@ -111,6 +112,7 @@ class Group:
     max_corr: int | None = None       # positions max sur des marchés corrélés dans le même sens (NASDAQ + US30...)
     session: tuple | None = None      # (début, fin, décalage serveur) : entrées seulement dans cet horaire local
     pilot: dict | None = None         # pilote de risque du challenge (ftmo.pilot_factor)
+    best_day: float = 0.0             # meilleure journée (argent)
     prev_day_pnl: float = 0.0
     balance: float = 100_000.0
     peak: float = 100_000.0
@@ -484,6 +486,8 @@ class PaperEngine:
     # ------------------------------------------------------------------ challenge FTMO
     def _roll_day(self, acc, equity: float, when: str):
         if when[:10] != acc.day:
+            if acc.day:
+                acc.best_day = max(acc.best_day, equity - acc.day_start)
             if isinstance(acc, Group) and acc.day:
                 acc.prev_day_pnl = equity - acc.day_start
             acc.day, acc.day_start = when[:10], (equity if acc.day else acc.capital)
@@ -502,7 +506,8 @@ class PaperEngine:
             acc.ftmo_status, acc.ftmo_when = f"ÉCHOUÉ (perte du jour {daily:.2f} %)", when
         elif (equity - acc.capital) / acc.capital * 100 <= -R.max_total:
             acc.ftmo_status, acc.ftmo_when = "ÉCHOUÉ (perte max totale)", when
-        elif flat and (acc.balance - acc.capital) / acc.capital * 100 >= R.target1 and len(acc.trade_days) >= R.min_days:
+        elif flat and (acc.balance - acc.capital) / acc.capital * 100 >= self.target_needed(acc) \
+                and len(acc.trade_days) >= R.min_days:
             acc.ftmo_status, acc.ftmo_when = "RÉUSSI", when
         return acc.ftmo_status != "en cours"
 
@@ -551,7 +556,8 @@ class PaperEngine:
             return
         lots = self._lots(s.symbol, self.risk_budget(s), dist)
         acc = self.groups.get(s.group) if s.group else s
-        if acc is not None and self._target_reached(acc):
+        micro = acc is not None and self._target_reached(acc)
+        if micro:
             if when[:10] in acc.trade_days:
                 return  # objectif atteint et journée déjà comptée : on ne risque plus rien
             lots = info.volume_min  # objectif atteint : micro-trade pour compter les jours minimum FTMO
@@ -569,7 +575,8 @@ class PaperEngine:
         if self._bot(s):
             g0 = self.groups.get(s.group)
             base = min(g0.balance, g0.capital) if g0 else min(s.balance, s.capital)
-            self.bridge.open(s.id, s.symbol, side, dist, s.cfg.rr, round(self.risk_budget(s) / base * 100, 4),
+            self.bridge.open(s.id, s.symbol, side, dist, s.cfg.rr,
+                             0.0 if micro else round(self.risk_budget(s) / base * 100, 4),  # 0 = micro-trade
                              self.commission(s.symbol))  # risque du pilote compris
         d = info.digits
         self.event(when, "OUVERTURE", s, f"{'ACHAT' if side > 0 else 'VENTE'} {lots} lots @ {price:.{d}f} | "
@@ -580,9 +587,15 @@ class PaperEngine:
         """Les ordres du bot MT5 ne concernent que les composants actifs de la stratégie combinée."""
         return self.bridge is not None and bool(s.group) and not (s.position is not None and s.position.shadow)
 
+    def target_needed(self, acc) -> float:
+        """Objectif réel en % : +10 %, ou plus si la meilleure journée dépasse 50 % du profit (règle du meilleur jour).
+        La journée en cours compte aussi."""
+        best = max(acc.best_day, acc.balance - acc.day_start if acc.day else 0.0)
+        return self.ftmo.target_needed(self.ftmo.target1, best / acc.capital * 100)
+
     def _target_reached(self, acc) -> bool:
         """Objectif FTMO atteint mais challenge pas encore validé (jours de trading minimum pas atteints)."""
-        return acc.ftmo_status == "en cours" and (acc.balance - acc.capital) / acc.capital * 100 >= self.ftmo.target1
+        return acc.ftmo_status == "en cours" and (acc.balance - acc.capital) / acc.capital * 100 >= self.target_needed(acc)
 
     def _swap(self, symbol: str, p: Position, price: float, when: str) -> float:
         """Swaps (frais ou crédit de nuit) pour chaque nuit passée en position, comme chez le courtier."""
@@ -862,6 +875,8 @@ class PaperEngine:
                     "equite": round(eq, 2), "dd_max": round(s.max_dd_pct, 2),
                     "profit_pct": round((eq - s.capital) / s.capital * 100, 2),
                     "pire_jour_pct": round(s.worst_day_pct, 2), "jours_trades": len(s.trade_days),
+                    "objectif_requis_pct": round(self.target_needed(s), 2),
+                    "meilleur_jour_pct": round(max(s.best_day, s.balance - s.day_start if s.day else 0) / s.capital * 100, 2),
                     "ftmo": s.ftmo_status, "ftmo_quand": s.ftmo_when, "en_position": bool(p),
                     "attendu_r": s.expected_avg_r, "en_pause": s.paused, "pause_raison": s.pause_reason})
         slot_rows.sort(key=lambda r: r["r_total"], reverse=True)
@@ -878,6 +893,7 @@ class PaperEngine:
                 "jour_realise_pct": round(g.day_realized / g.capital * 100, 2),
                 "risque_ouvert_pct": round(open_risk / g.capital * 100, 2),
                 "pire_jour_pct": round(g.worst_day_pct, 2), "dd_max": round(g.max_dd_pct, 2), "trades": g.trades,
+                "objectif_requis_pct": round(self.target_needed(g), 2),
                 "gagnants": g.wins, "r_total": round(g.sum_r, 2), "pnl": round(g.pnl, 2), "ftmo": g.ftmo_status,
                 "ftmo_quand": g.ftmo_when, "jours_trades": len(g.trade_days), "refuses": g.skipped,
                 "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open,
