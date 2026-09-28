@@ -93,6 +93,16 @@ def logic_source(signal: dict) -> str:
         for f in dict.fromkeys(c["f"] for c in conds):
             parts.append(inspect.getsource(inventions.FEATURES[f][0]))
         return "\n\n".join(parts)
+    if signal["type"] == "formula":
+        from . import genies
+        parts = [inspect.getsource(genies.formula_signal), inspect.getsource(genies.eval_expr)]
+        for leaf in genies.leaves_used(signal["expr"]):
+            f = leaf["f"]
+            fn = genies._leaf_ext if f == "ext_rel" else genies._leaf_strat if f == "strat" else genies.PRIMS[f][0]
+            parts.append(inspect.getsource(fn))
+        parts.append("# opérateurs : voir UNARY / BINARY dans mt5lab/genies.py\n# formule (arbre JSON) :\n# "
+                     + json.dumps(signal["expr"], ensure_ascii=False, default=str))
+        return "\n\n".join(dict.fromkeys(parts))
     return logic_source(signal["a"]) + "\n\n# ----- combinée avec -----\n\n" + logic_source(signal["b"])
 
 
@@ -116,6 +126,19 @@ def entry_text(signal: dict) -> list[str]:
                          "etc. ; les heures, jours et volumes restent identiques).")
         else:
             lines.append("Pas de vente : achats seulement.")
+        return lines
+    if signal["type"] == "formula":
+        from .genies import expr_text, symbols_text
+        k, sens = float(signal.get("k", 1.5)), int(signal.get("sens", 1))
+        lines = [f"Loi mathématique « {signal.get('name', 'LOI')} » découverte par le génie {signal.get('genie', '')}.",
+                 f"Formule : X = {expr_text(signal['expr'])}",
+                 "À chaque clôture : z = (X - moyenne des 200 dernières valeurs de X) / leur écart-type."]
+        if sens > 0:
+            lines.append(f"ACHAT quand z passe au-dessus de +{k:g} ; VENTE quand z passe sous -{k:g}"
+                         + ("." if signal.get("mirror", True) else " (désactivée : achats seulement)."))
+        else:
+            lines.append(f"Sens inverse : VENTE quand z passe au-dessus de +{k:g} ; ACHAT quand z passe sous -{k:g}.")
+        lines += [f"Symboles : {sym} = {txt}." for sym, txt in symbols_text(signal["expr"]).items()]
         return lines
     return [f"Combinaison : signal de A « {describe({'signal': signal['a'], 'filter': 'none'})} », "
             f"validé seulement si B « {describe({'signal': signal['b'], 'filter': 'none'})} » a donné le même sens "
@@ -235,6 +258,9 @@ def write_cards(cards: list[dict], out_dir: Path, title: str = "Fiches des strat
   + ''.join(f"<tr><td class='mut'>{esc(p['debut'])} → {esc(p['fin'])}</td><td>{p['trades']} trades</td>"
             f"<td>R moyen {p['r_moyen']:+.2f}</td><td>R total {p['r_total']:+.1f}</td></tr>" for p in c.get('periodes', []))
   + '</table></details>') if c.get('periodes') else ''}
+<p class="card" style="margin:10px 0"><b>Bot MT5 de cette stratégie</b> : menu <b>E</b>, puis collez l'identifiant
+<code>{esc(c['id'])}</code> — ou <code>python run.py bot --fiche {esc(c['id'])}</code>. Vous obtenez un dossier avec
+LaboBot.mq5, LANCER_BOT.bat et le mode d'emploi. (Aussi : bouton « Bot MT5 » dans la plateforme de paper trading.)</p>
 <details open><summary>Pseudo-code (pour coder le bot)</summary><pre>{esc(c['pseudo_code'])}</pre></details>
 <details><summary>Code Python exact de la logique du signal</summary><pre>{esc(c['code_python'])}</pre></details>
 <p class="mut">Fichier pour le bot Python : fiches/{esc(c['id'])}.json</p>

@@ -53,10 +53,54 @@ class _Handler(BaseHTTPRequestHandler):
             f = self.server.engine.out / "trades.csv"
             body = f.read_bytes() if f.exists() else b""
             self._send(body, "text/csv; charset=utf-8", {"Content-Disposition": "attachment; filename=trades.csv"})
+        elif path == "/api/bot":
+            try:
+                body = json.dumps(make_bot(self.server.engine, self.path), ensure_ascii=False)
+            except Exception as exc:
+                body = json.dumps({"ok": False, "message": f"Impossible de créer le bot : {exc}"}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path in ("/", "/index.html"):
             self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
         else:
             self.send_error(404)
+
+
+def make_bot(engine, url: str) -> dict:
+    """Bouton « Bot MT5 » : prépare le bot d'une stratégie (?id=...) ou de la stratégie combinée (?groupe=...)."""
+    from urllib.parse import parse_qs, urlparse
+
+    from .pont import generate_strategy_bot, single_strategy
+    q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+    root = engine.out.parent
+    if q.get("groupe"):
+        g = engine.groups[q["groupe"]]
+        members = [x for x in engine.slots.values() if x.group == g.name]
+        comb = single_strategy(members[0].candidate, members[0].symbol, members[0].timeframe,
+                               members[0].risk_pct or engine.risk_pct, g.name, g.day_budget or 2.5,
+                               g.total_budget or 10.0)
+        comb["composants"] = [single_strategy(x.candidate, x.symbol, x.timeframe, x.risk_pct or engine.risk_pct)
+                              ["composants"][0] for x in members]
+        comb["regles"].update({"day_stop": g.day_stop, "max_open": g.max_open, "max_correles": g.max_corr,
+                               "pilote": g.pilot})
+        if g.session:
+            comb["horaire"] = {"nom": f"{g.session[0]:g}h-{g.session[1]:g}h", "debut": g.session[0],
+                               "fin": g.session[1], "decalage_serveur": g.session[2]}
+        capital, risk = g.capital, max(x.risk_pct or engine.risk_pct for x in members)
+    else:
+        s = engine.slots[q["id"]]
+        risk = s.risk_pct or engine.risk_pct
+        comb = single_strategy(s.candidate, s.symbol, s.timeframe, risk)
+        capital = s.capital
+    out = generate_strategy_bot(comb, root, capital, engine.ftmo, risk)
+    try:
+        import os
+        os.startfile(str(out))  # Windows : ouvre le dossier du bot
+    except Exception:
+        pass
+    return {"ok": True, "dossier": str(out.resolve()),
+            "message": f"Bot prêt dans : {out.resolve()}\n\n1) Double-cliquez LANCER_BOT.bat (il suit cette stratégie en "
+                       "paper trading et envoie ses signaux au bot).\n2) Copiez LaboBot.mq5 dans MQL5\\Experts, "
+                       "compilez (F7) et posez-le sur UN graphique.\nTout est expliqué dans LISEZMOI_BOT.txt."}
 
 
 def start_server(engine, port: int = 8765, open_browser: bool = True):
@@ -115,6 +159,8 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .pos{color:var(--pos);font-weight:600}.neg{color:var(--neg);font-weight:600}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11.5px;border:1px solid var(--border)}
+.botbtn{font:inherit;font-size:12px;padding:3px 9px;border-radius:8px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer;white-space:nowrap}
+.botbtn:hover{border-color:currentColor}
 .ok::before{content:"✔ ";color:var(--good)}.ko::before{content:"✖ ";color:var(--crit)}.run::before{content:"● ";color:var(--accent)}
 .meter{position:relative;width:120px;height:8px;border-radius:4px;background:var(--track);display:inline-block;vertical-align:middle}
 .meter i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--fill)}
@@ -163,6 +209,9 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
  if(!rows.length)return `<div class="scroll"><div class="empty">Rien pour l'instant</div></div>`;
  return `<div class="scroll"><table data-id="${id}"><thead><tr>${cols.map((c,i)=>`<th data-i="${i}">${c[0]}</th>`).join("")}</tr></thead><tbody>`+
  rows.slice(0,1500).map(r=>"<tr>"+cols.map(c=>`<td${c[3]?' class="n"':""}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`).join("")+"</tr>").join("")+"</tbody></table></div>"}
+document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
+ e.stopPropagation();b.disabled=true;const q=b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
+ try{const r=await (await fetch("/api/bot?"+q,{cache:"no-store"})).json();alert(r.message)}catch(err){alert("Erreur : "+err)}b.disabled=false});
 document.getElementById("view").addEventListener("click",e=>{const th=e.target.closest("th");if(!th)return;
  const id=th.closest("table").dataset.id,i=+th.dataset.i;const s=sortState[id];
  sortState[id]={i,d:s&&s.i===i?-s.d:-1};render()});
@@ -185,14 +234,18 @@ function viewHist(){return table("hist",[["Fermeture","fermeture"],["Ouverture",
  ["Raison","raison",v=>`<span class="tag">${esc(v)}</span>`],["Pips","pips",v=>`<span class="${cls(v)}">${fmt(v,1,true)}</span>`,1],
  ["R","r",rr,1],["P&L","pnl",money,1],["Solde","solde",v=>fmt(v,2),1],["Spread entrée","spread_entree_pts",v=>fmt(v,1)+" pts",1],
  ["Stratégie","strategie"],["Risque","risque"]],filt(D.trades,"symbole","timeframe"))}
-function ftmoCell(v){return v==="RÉUSSI"?`<span class="tag ok">réussi</span>`:v.startsWith("ÉCHOUÉ")?`<span class="tag ko">${esc(v.toLowerCase())}</span>`:`<span class="tag run">en cours</span>`}
+function ftmoCell(v,x){if(v==="RÉUSSI")return `<span class="tag ok">réussi</span>`;if(v.startsWith("ÉCHOUÉ"))return `<span class="tag ko">${esc(v.toLowerCase())}</span>`;
+ const p=x&&x.profit_pct!=null?x.profit_pct:null,j=x?x.jours_trades:null,m=D.ftmo.min_days;
+ if(p!=null&&p>=D.ftmo.target1)return j!=null&&j<m?`<span class="tag ok" title="FTMO exige au moins ${m} jours avec un trade : l'objectif est atteint, il manque ${m-j} jour(s) de trading">objectif atteint · jours ${j}/${m}</span>`:`<span class="tag ok" title="Objectif atteint : le challenge sera validé à la fermeture des positions">objectif atteint · positions à fermer</span>`;
+ return `<span class="tag run">en cours</span>`}
+function botBtn(v){return `<button class="botbtn" data-id="${esc(v)}" title="Créer le bot MT5 de cette stratégie">Bot MT5</button>`}
 function prog(p){const t=D.ftmo.target1,w=Math.max(0,Math.min(100,Math.abs(p)/t*100));
  return `<span class="meter${p<0?" neg":""}" title="${fmt(p,2,true)} % sur ${t} %"><i style="width:${w}%"></i></span> ${fmt(p,2,true)} %`}
 function viewStrat(){return `<p class="note">Un compte fictif par stratégie × marché × timeframe × R:R. Triez en cliquant sur les colonnes.</p>`+
  table("strat",[["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Risque","risque"],["Origine","origine"],["Trades","trades",null,1],
  ["Réussite","gagnants",(v,r)=>r.trades?fmt(v/r.trades*100,0)+" %":"—",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["P&L","pnl",money,1],
  ["Objectif FTMO","profit_pct",prog],["Pire jour","pire_jour_pct",v=>`<span class="${cls(v)}">${fmt(v,2)} %</span>`,1],["DD max","dd_max",v=>fmt(v,2)+" %",1],
- ["Challenge","ftmo",ftmoCell],["Attendu (recherche)","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],["","en_position",v=>v?'<span class="tag run">en position</span>':""]],filt(D.comptes))}
+ ["Challenge","ftmo",ftmoCell],["Jours tradés","jours_trades",null,1],["Attendu (recherche)","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],["Bot","id",botBtn],["","en_position",v=>v?'<span class="tag run">en position</span>':""]],filt(D.comptes))}
 function pauseCell(v,x){return v?`<span class="tag ko" title="${esc(x.pause_raison||"")}">en pause</span>`:(x.trades>=20&&x.attendu_r!=null?'<span class="tag ok">conforme</span>':"")}
 function viewRR(){const c=filt(D.comptes),by={};c.forEach(x=>{const k=x.rr==null?"signal":"1:"+x.rr;(by[k]=by[k]||{k,rr:x.rr??99,t:0,w:0,R:0,p:0,n:0});
  const b=by[k];b.t+=x.trades;b.w+=x.gagnants;b.R+=x.r_total;b.p+=x.pnl;b.n++});
@@ -219,7 +272,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
  Lancez le Directeur (menu, option D) puis le paper trading de la stratégie combinée (option C).</div>`;
  return G.map(g=>{const st=g.ftmo==="RÉUSSI"?'<span class="tag ok">challenge réussi</span>':g.ftmo.startsWith("ÉCHOUÉ")?`<span class="tag ko">${esc(g.ftmo.toLowerCase())}</span>`:'<span class="tag run">challenge en cours</span>';
   const r=g.regles||{};
-  return `<h3 style="margin:6px 0 8px;font-size:16px">${esc(g.nom)} ${st}</h3>
+  return `<h3 style="margin:6px 0 8px;font-size:16px">${esc(g.nom)} ${st} <button class="botbtn" data-groupe="${esc(g.nom)}">Créer le bot MT5 de cette stratégie combinée</button></h3>
   <p class="note">Un seul compte de ${fmt(g.capital,0)} $ partagé par ${g.composants.length} composants · perte possible max
   ${r.budget_jour==null?"—":fmt(r.budget_jour,1)+" %"} par jour · positions max ${r.max_positions??"illimité"} · marchés corrélés dans le même sens max ${r.max_correles??"illimité"} ·
   ${g.refuses} signaux refusés par les règles de risque</p>

@@ -40,6 +40,9 @@ def describe(c: dict) -> str:
     if s["type"] == "rule":
         from .inventions import describe_rule
         txt = describe_rule(s)
+    elif s["type"] == "formula":  # loi mathématique d'un génie
+        from .genies import describe_formula
+        txt = describe_formula(s)
     elif s["type"] == "single":
         txt = one(s)
     else:
@@ -55,6 +58,9 @@ def compute_signal(df: pd.DataFrame, sig: dict) -> pd.Series:
     if sig["type"] == "rule":  # stratégie inventée par un agent
         from .inventions import rule_signal
         return rule_signal(df, sig)
+    if sig["type"] == "formula":  # loi mathématique découverte par un génie
+        from .genies import formula_signal
+        return formula_signal(df, sig)
     a = compute_signal(df, sig["a"])
     b = compute_signal(df, sig["b"])
     return combine(a, b, sig["mode"], sig.get("window", 3))

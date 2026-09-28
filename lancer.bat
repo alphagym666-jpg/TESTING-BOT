@@ -61,7 +61,7 @@ echo      tous les marches et timeframes, reglages du risque), puis lance le pap
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
 echo   F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
 echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24) + signaux pour le bot
-echo   E. Generer le BOT MT5 (LaboBot.mq5) de la strategie combinee + mode d'emploi
+echo   E. Generer le BOT MT5 (LaboBot.mq5) : strategie combinee OU n'importe quelle strategie (fiche)
 echo.
 echo   --- RECHERCHE (les agents testent et inventent des strategies) ---
 echo   3. Recherche complete : tous les marches x tous les timeframes
@@ -176,10 +176,22 @@ if exist "%RES%\fiches_strategies.html" (start "" "%RES%\fiches_strategies.html"
 pause & goto menu
 
 :bot
+echo.
+echo Bot MT5 : Entree seule = la strategie combinee du Directeur.
+echo Pour une AUTRE strategie : collez l'identifiant ecrit dans sa fiche (option F), ex. XAUUSD-H1-ema-cross-...
+echo (ou utilisez le bouton "Bot MT5" dans la plateforme de paper trading)
+set FICHE=
+set /p FICHE=Identifiant de la fiche (ou Entree) : 
+if not "%FICHE%"=="" goto botfiche
 set HOR=
 if not "%HORAIRE%"=="" set HOR=--horaire %HORAIRE%
 python run.py bot --results %RES% --capital %CAPITAL% %FTMO% %HOR%
 if exist "%RES%\bot\LaboBot.mq5" (start "" "%RES%\bot" & start "" notepad "%RES%\bot\LISEZMOI_BOT.txt")
+pause & goto menu
+
+:botfiche
+python run.py bot --results %RES% --fiche %FICHE% --capital %CAPITAL% %FTMO%
+if exist "%RES%\bots" start "" "%RES%\bots"
 pause & goto menu
 
 :papercomb

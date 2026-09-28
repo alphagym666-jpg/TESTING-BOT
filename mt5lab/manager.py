@@ -67,6 +67,7 @@ class DirectorConfig:
     min_window_days: int = 45
     # horaires testés (heure LOCALE de l'utilisateur, entrées seulement) : (nom, début, fin) ; None = 24h/24
     sessions: tuple = (("24h/24", None, None), ("8h-17h", 8, 17), ("8h-13h", 8, 13))
+    genies: bool = True                # les 2 génies (Einstein, Hawking) dans chaque recherche
     beat_bh: bool = False              # exiger que chaque stratégie batte le buy & hold sur la période de validation
     min_bars: int = 1000               # bougies minimum par case (400 en mode « période récente »)
     server_offset: float = 7.0         # heure du serveur MT5 - heure locale (FTMO vs Québec/New York : 7 h)
@@ -94,6 +95,8 @@ def kind(r) -> str:
     """Type de stratégie, pour le classement."""
     equipe = _txt(r.get("equipe", ""))
     name = _txt(r.get("strategie", ""))
+    if equipe == "Génies" or name.startswith("LOI "):
+        return "Loi d'un génie (Einstein / Hawking)"
     if name.startswith("FAILLE") or equipe == "C":
         return "Faille des banques (équipe C)"
     if equipe == "D":
@@ -140,7 +143,8 @@ class Director:
         return LabConfig(rounds=c.rounds + (2 if intensive else 0), budget=c.budget * k, risk_pct=c.lab_risk_pct,
                          seed=c.seed + seed, ftmo=c.ftmo, invent_generations=c.invent_generations * k,
                          invent_attempts=3 + (2 if intensive else 0), seeds=seeds or [], invent_bias=bias or [],
-                         catalog=c.catalog, bank_teams=c.bank_teams, beat_bh=c.beat_bh, bh_risk_pct=c.risk_pct)
+                         catalog=c.catalog, bank_teams=c.bank_teams, beat_bh=c.beat_bh, bh_risk_pct=c.risk_pct,
+                         genies=c.genies, genie_generations=12 + (8 if intensive else 0))
 
     def run_cell(self, sym, tf, lab_cfg: LabConfig, why: str):
         try:
@@ -838,9 +842,18 @@ class Director:
             for _, r in self.catalog_ranking().iterrows():
                 add(json.loads(r["candidate"]), r["symbole"], r["timeframe"], "catalogue : meilleure version",
                     self.cfg.lab_risk_pct)
+            for _, r in self.genius_rows().iterrows():  # toutes les lois des génies, validées ou non
+                add(json.loads(r["candidate"]), r["symbole"], r["timeframe"], "loi d'un génie", self.cfg.lab_risk_pct)
         if cards:
             path = write_cards(cards, self.cfg.out)
             self.say(f"{len(cards)} fiches détaillées écrites : {path}")
+
+    def genius_rows(self) -> pd.DataFrame:
+        """Les lois découvertes par Einstein et Hawking, de la meilleure à la moins bonne hors-échantillon."""
+        if not len(self.allr) or "equipe" not in self.allr.columns:
+            return pd.DataFrame()
+        g = self.allr[self.allr["equipe"].astype(str).eq("Génies")]
+        return g.sort_values(["_ok", "avgR_oos"], ascending=[False, False])
 
     def catalog_ranking(self) -> pd.DataFrame:
         """Meilleure version de chaque stratégie du catalogue, tous marchés et timeframes confondus."""
@@ -1060,6 +1073,18 @@ def write_report(d: Director):
                            f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
                            f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td>"
                            f"<td class='mut'>{esc(str(r['verdict']).split('—')[-1].strip())}</td></tr>")
+    gen_rows = ""
+    for _, r in d.genius_rows().head(80).iterrows():
+        gen_rows += (f"<tr><td><b>{esc(str(r['trouve_par']).replace('Génie 1 ', '').replace('Génie 2 ', ''))}</b></td>"
+                     f"<td>{fiche(r['symbole'], r['timeframe'], json.loads(r['candidate']), r['strategie'][:160])}</td>"
+                     f"<td>{esc(r['symbole'])} {esc(r['timeframe'])}</td><td>{esc(str(r['risque']))}</td>"
+                     f"<td class='{'good' if r['_ok'] else ''}'>{esc(str(r['verdict']))}</td>"
+                     f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
+                     f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td></tr>")
+    gen_tbl = ("<div class='scroll'><table><thead><tr><th>Génie</th><th>Loi (lien vers la fiche : formule et symboles)</th>"
+               "<th>Marché</th><th>Réglage</th><th>Verdict hors-échantillon</th><th>Trades OOS</th><th>R moyen OOS</th>"
+               f"<th>PF OOS</th><th>Réussite FTMO seule</th></tr></thead><tbody>{gen_rows}</tbody></table></div>"
+               if gen_rows else "<p class='mut'>Pas encore de découverte (relancez la recherche avec la nouvelle version).</p>")
     trial_tbl = ("<div class='scroll'><table><thead><tr><th>Stratégie</th><th>Marché</th><th>TF</th><th>Réglage</th>"
                  "<th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th><th>Réussite FTMO seule</th>"
                  f"<th>Pourquoi pas validée</th></tr></thead><tbody>{trial_rows}</tbody></table></div>"
@@ -1098,6 +1123,12 @@ Le scénario retenu est celui qui donne un challenge RÉUSSI le plus vite (jours
 en ratant au plus {d.cfg.max_fail:g} % des challenges.</p>
 {scen}
 {trial_banner}
+<h2>Les découvertes des génies : Einstein et Hawking</h2>
+<p class="mut">Deux génies qui travaillent seuls et inventent des lois mathématiques (physique : vitesse, énergie,
+ressort, relativité ; maths et cosmologie : Hurst, entropie, queues, cycles, gravité), en se servant aussi des
+stratégies des agents et des autres marchés. Aucun chef ne les confirme ; leurs lois passent seulement le même test
+hors-échantillon que tout le monde, pour distinguer une vraie loi d'un hasard.</p>
+{gen_tbl}
 <h2>Stratégies à l'essai (non validées mais gagnantes hors-échantillon : paper trading seulement)</h2>
 {trial_tbl}
 <h2>Classement des meilleures stratégies validées</h2>

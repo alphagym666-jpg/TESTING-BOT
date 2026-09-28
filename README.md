@@ -412,6 +412,35 @@ prochaine clôture de bougie avant de prendre un trade.
   elle continue à être suivie « à blanc » mais ne touche plus le compte. Elle est réactivée si ses 20 derniers
   trades redeviennent bons. Colonne « Contrôle » dans la plateforme ; le Directeur en tient compte.
 
+## Un bot MT5 pour N'IMPORTE QUELLE stratégie
+
+- Dans la plateforme de paper trading, onglet « Classement des stratégies » : bouton **Bot MT5** sur chaque ligne ;
+  onglet « Stratégie combinée » : bouton pour la combinée.
+- Ou menu **E**, puis l'identifiant écrit dans la fiche de la stratégie (option F), ou
+  `python run.py bot --fiche ID`.
+- Résultat : un dossier `results/bots/<marché>_<tf>_<numéro>/` avec `LaboBot.mq5` (déjà réglé, avec son propre
+  fichier de signaux et son propre numéro magique : plusieurs bots peuvent tourner sur le même compte),
+  `LANCER_BOT.bat` (le paper trading de CETTE stratégie, qui envoie ses signaux au bot) et `LISEZMOI_BOT.txt`.
+
+## Les 2 génies : Einstein et Hawking
+
+Deux génies travaillent **seuls**, sans chef ni Directeur. Ils ne combinent pas des indicateurs : ils **inventent
+des formules mathématiques** par programmation génétique (des milliers de formules naissent, sont testées, se
+croisent et mutent ; une loi simple est préférée à une loi compliquée).
+- **Einstein (physique)** : vitesse et accélération du prix, énergie cinétique (masse = volume), impulsion, force de
+  rappel d'un ressort (loi de Hooke), frottement, **relativité** (ce marché vu depuis un autre marché).
+- **Hawking (maths et cosmologie)** : exposant de Hurst (mémoire du marché), entropie de Shannon (désordre),
+  asymétrie et queues épaisses (événements extrêmes), tendance filtrée de Holt, cycles, gravité autour du prix
+  moyen pondéré par le volume.
+- Ils peuvent aussi prendre comme ingrédients les **5 meilleures stratégies des agents** et les prix des autres
+  marchés, par exemple « z[corps + stratégie⟨Agent 8⟩] ».
+- Une loi devient une stratégie : ACHAT quand la formule normalisée franchit +k (VENTE au miroir sous -k).
+- Chaque génie se contrôle lui-même sur une période qu'il n'a pas utilisée, puis présente ses 3 meilleures lois.
+  La plateforme les passe au même test hors-échantillon que tout le monde (sans ça, impossible de distinguer une
+  vraie loi d'un hasard) ; toutes leurs lois sont affichées dans « Les découvertes des génies » du rapport du
+  Directeur, avec une fiche qui donne la formule et la signification de chaque symbole.
+- `--sans-genies` pour les désactiver.
+
 ## Inventions inter-marchés et pilote de risque du challenge
 
 **Inter-marchés** : chaque marché reçoit aussi les prix des autres marchés choisis (sans jamais regarder le futur).

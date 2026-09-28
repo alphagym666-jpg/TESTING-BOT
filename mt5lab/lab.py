@@ -35,6 +35,9 @@ class LabConfig:
     catalog_budget: int = 45    # essais par stratégie du catalogue (étape 1), + 20 en étape 2
     seeds: list = field(default_factory=list)        # idées du Directeur : stratégies qui marchent ailleurs
     invent_bias: list = field(default_factory=list)  # indicateurs que le Directeur demande aux inventeurs d'explorer
+    genies: bool = True         # les 2 génies (Einstein, Hawking) inventent des formules mathématiques
+    genie_generations: int = 12
+    genie_pop: int = 60
     beat_bh: bool = False       # exiger de battre le buy & hold (acheter et garder) sur la période de validation
     bh_risk_pct: float = 1.0    # risque par trade utilisé pour comparer au buy & hold
 
@@ -141,6 +144,8 @@ def team_of(agent_tag: str) -> str:
         return "Optimiseur du catalogue"
     if "Directeur" in agent_tag:
         return "Directeur"
+    if "Génie" in agent_tag:
+        return "Génies"
     m = re.search(r"Agent\s+(\d+)", agent_tag)
     if not m:
         return ""
@@ -216,6 +221,36 @@ def run_bank_teams(ev, extra, cfg: LabConfig, journal, rules):
     return {"lead_c": lead_c, "lead_d": lead_d, "agents": agents_c + agents_d, "failles": failles,
             "findings_c": findings_c[:10], "findings_d": findings_d, "inventions_d": inventions_d,
             "describe": describe_faille}
+
+
+def run_genies(ev, extra, cfg: LabConfig, journal, rules, champions):
+    """Les 2 génies inventent des lois mathématiques, SEULS (aucun chef ne confirme). Ils peuvent se servir des
+    meilleures stratégies des agents et des prix des autres marchés comme ingrédients."""
+    import random as _random
+
+    from .agents import Finding
+    from .evaluator import score
+    from .genies import GENIES, Genius, discover
+    from .inventions import ext_symbols
+
+    journal.log("Plateforme", "=== LES GÉNIES : Einstein et Hawking cherchent des lois mathématiques, seuls ===")
+    strategies = [{"sig": f.candidate["signal"], "flt": f.candidate.get("filter", "none"),
+                   "label": f"{f.agent.split('|')[0].strip()} : {describe(f.candidate)[:50]}"}
+                  for f in champions[:5] if f.candidate["signal"].get("type") != "formula"]
+    ext = ext_symbols(extra["isa"])
+    geniuses, findings = [], []
+    for i, (code, tag, role, who) in enumerate(GENIES):
+        g = Genius(code, tag, role, who, _random.Random(cfg.seed * 7 + i), ext, strategies)
+        geniuses.append(g)
+        journal.log(tag, f"Je travaille seul. Mes ingrédients : {role.split(':', 1)[1].strip()}"
+                         + (f", les prix de {', '.join(ext)}" if ext else "")
+                         + (f" et les {len(strategies)} meilleures stratégies des agents" if strategies else ""))
+        for d in discover(g, ev, "isa", "isb", cfg.genie_generations, cfg.genie_pop, log=journal.log):
+            cand = d["candidate"]
+            res_is = ev.evaluate([cand], "is")[0][1]
+            sc = score(res_is, rules.min_trades_is)
+            findings.append(Finding(cand, res_is, sc if math.isfinite(sc) else -99.0, tag))
+    return findings, geniuses
 
 
 def optimize_catalog(ev, cfg: LabConfig, journal, rules):
@@ -335,6 +370,8 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
 
         bank = run_bank_teams(ev, extra, cfg, journal, rules) if cfg.bank_teams else None
         cat_findings, cat_keys = optimize_catalog(ev, cfg, journal, rules) if cfg.catalog else ([], {})
+        champions = sorted(lead_a.champions() + lead_b.champions(), key=lambda f: f.score, reverse=True)
+        genie_findings, geniuses = run_genies(ev, extra, cfg, journal, rules, champions) if cfg.genies else ([], [])
 
         # chaque chef présente ses meilleurs candidats + TOUTES les inventions de ses agents
         short_a = lead_a.shortlist() + invented_a
@@ -362,13 +399,22 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             journal.log("Plateforme", f"Catalogue : {len(cat_short)} meilleures versions en validation, "
                                       f"seuil t >= {t_cat:.2f}")
             approved += [(f, lead_b) for f in lead_a.validate(cat_short, t_cat)]
+        # les génies : leur propre famille de validation (aucun chef ne les confirme, mais la plateforme vérifie
+        # leurs lois sur la période hors-échantillon comme pour tout le monde)
+        short_g = [f for f in genie_findings if f.key not in seen]
+        if short_g:
+            from .agents import TeamLead
+            lead_g = TeamLead("Contrôle des génies (plateforme)", "vérifier les lois des génies hors-échantillon",
+                              [], ev, journal, rules)
+            approved += [(f, lead_a) for f in lead_g.validate(short_g, rules.t_threshold(len(short_g)))]
         if cat_weak:  # résultats hors-échantillon affichés pour le classement, sans validation possible
             oos = {candidate_key(c): r for c, r in ev.evaluate([f.candidate for f in cat_weak], "oos")}
             for f in cat_weak:
                 f.oos_res = oos.get(f.key)
                 f.verdict = "rejeté : trop faible en in-sample"
         everything = list({f.key: f for f in list(lead_a.findings.values()) + list(lead_b.findings.values())
-                           + invented_a + invented_b + short_c + short_d + cat_findings}.values())
+                           + invented_a + invented_b + short_c + short_d + cat_findings
+                           + genie_findings}.values())
         n_evals = ev.n_evals
 
     # contre-expertise croisée : chaque chef vérifie les trouvailles de l'autre
@@ -498,5 +544,7 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
     if bank:
         teams += [("Chef C — Algorithmes des banques", bank["agents"][:5]),
                   ("Chef D — Inventions institutionnelles", bank["agents"][5:])]
+    if geniuses:
+        teams += [("Les génies (travaillent seuls)", geniuses)]
     write_report(out_dir / "rapport.html", label, board, journal, teams, cfg, n_evals, df)
     return board

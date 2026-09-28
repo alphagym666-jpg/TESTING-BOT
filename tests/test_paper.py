@@ -1,5 +1,6 @@
 """Paper trading sur un faux MT5 : prix contrôlés, aucun ordre ne doit partir."""
 import sys
+from pathlib import Path
 import types
 from types import SimpleNamespace
 
@@ -408,3 +409,46 @@ def test_session_hours_local_time():
     assert not in_session("2024-03-05 20:00:00", (8, 13, 7))
     assert not in_session("2024-03-05 14:59:00", (8, 17, 7))
     assert in_session("2024-03-05 23:30:00", (8, 17, 7))
+
+
+def test_bot_button_for_any_strategy_and_combined(setup):
+    """Bouton « Bot MT5 » de la plateforme : dossier avec strategie.json, LaboBot.mq5 réglé (fichier de signaux et
+    numéro magique propres), LANCER_BOT.bat ; la stratégie se recharge en paper trading."""
+    import json as _json
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot, load_combined_slots
+    from mt5lab.plateforme import make_bot
+    mk, tmp = setup
+    cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+    conn = MT5Connector().connect(verbose=False)
+    eng = PaperEngine(conn, [Slot("solo", "EURUSD", "H1", cand), Slot("c1", "EURUSD", "H1", cand, group="g", risk_pct=0.8)],
+                      tmp / "results" / "paper", 1.0, groups={"g": {"capital": 100_000, "day_budget": 2.5}})
+    r = make_bot(eng, "/api/bot?id=solo")
+    out = Path(r["dossier"])
+    assert r["ok"] and (out / "LaboBot.mq5").exists() and (out / "LANCER_BOT.bat").exists()
+    src = (out / "LaboBot.mq5").read_text(encoding="utf-8-sig")
+    assert 'InpFichier         = "labo_signaux_' in src and "InpMagic           = 26" in src
+    bat = (out / "LANCER_BOT.bat").read_text()
+    assert "--combinee-fichier" in bat and "--signaux labo_signaux_" in bat
+    slots, groups = load_combined_slots(tmp, 100_000, path=out / "strategie.json")
+    assert len(slots) == 1 and slots[0].candidate == cand and groups
+    r2 = make_bot(eng, "/api/bot?groupe=g")
+    comb = _json.loads((Path(r2["dossier"]) / "strategie.json").read_text(encoding="utf-8"))
+    assert len(comb["composants"]) == 1 and comb["composants"][0]["risk_pct"] == 0.8
+    assert mk.sent == []
+
+
+def test_target_reached_then_micro_trades_until_min_days(setup):
+    """Objectif atteint avant les 4 jours FTMO : plus que des micro-trades (lot minimum), un par jour."""
+    mk, tmp = setup
+    eng = _engine(tmp, risk_pct=1.0)
+    s = eng.slots["s1"]
+    s.balance = s.peak = 111_000.0
+    s.trade_days = ["2000-01-01"]
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    assert s.position is not None and s.position.lots == 0.01
+    assert mk.sent == []

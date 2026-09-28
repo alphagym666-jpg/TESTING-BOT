@@ -68,6 +68,7 @@ def news_args(p):
 
 
 def period_args(p):
+    p.add_argument("--sans-genies", action="store_true", help="sans les 2 génies (Einstein, Hawking)")
     p.add_argument("--sans-inter-marches", action="store_true",
                    help="ne pas donner aux inventeurs les prix des autres marchés")
     p.add_argument("--depuis", default=None,
@@ -123,7 +124,7 @@ def cmd_directeur(a):
                          budget=a.budget, invent_generations=a.invent_generations, reuse=not a.refaire,
                          second_pass=not a.sans_deuxieme_passe, years=a.annees, total_budget=a.perte_max_totale,
                          max_fail=a.echec_max, catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques,
-                         server_offset=a.decalage_horaire, beat_bh=a.battre_buy_hold,
+                         server_offset=a.decalage_horaire, beat_bh=a.battre_buy_hold, genies=not a.sans_genies,
                          min_bars=400 if a.depuis else 1000)
     if a.depuis:  # la « durée exigée » devient la période récente (sinon le Directeur redemanderait 5 ans)
         cfg.years = max(0.2, (pd.Timestamp.now() - pd.Timestamp(a.depuis)).days / 365.25)
@@ -165,7 +166,7 @@ def cmd_lab(a):
     cfg = LabConfig(rounds=a.rounds, budget=a.budget, oos_fraction=a.oos, risk_pct=a.risk,
                     workers=a.workers, seed=a.seed, ftmo=ftmo_rules(a), invent=not a.no_invent,
                     catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques,
-                    invent_generations=a.invent_generations, beat_bh=a.battre_buy_hold)
+                    invent_generations=a.invent_generations, beat_bh=a.battre_buy_hold, genies=not a.sans_genies)
     out_root = Path(a.out)
     jobs = []
     if a.demo:
@@ -263,7 +264,7 @@ def cmd_paper(a):
                 raise SystemExit(3)
     slots, groups = [], {}
     if a.source == "combinee":
-        slots, groups = load_combined_slots(Path(a.results), a.capital, a.horaire)
+        slots, groups = load_combined_slots(Path(a.results), a.capital, a.horaire, a.combinee_fichier)
         if not slots:
             raise SystemExit("Pas encore de stratégie combinée : lancez d'abord le Directeur (python run.py directeur).")
     if a.source == "portefeuille":
@@ -286,7 +287,7 @@ def cmd_paper(a):
         bridge = None
         if groups and not a.sans_bot:  # stratégie combinée : les décisions sont aussi envoyées au bot LaboBot
             from mt5lab.pont import SIGNAL_FILE, SignalBridge, common_files_dir
-            bridge = SignalBridge(common_files_dir(conn.mt5) / SIGNAL_FILE)
+            bridge = SignalBridge(common_files_dir(conn.mt5) / (a.signaux or SIGNAL_FILE))
             print(f"[bot] signaux pour LaboBot écrits dans {bridge.path} (le bot n'agit que s'il est posé sur un graphique)")
         eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots},
                           ftmo=ftmo_rules(a), groups=groups, news=load_news_arg(a), news_window=a.fenetre_nouvelles,
@@ -296,7 +297,22 @@ def cmd_paper(a):
 
 
 def cmd_bot(a):
-    from mt5lab.pont import generate_bot
+    from mt5lab.pont import generate_bot, generate_strategy_bot, single_strategy
+    if a.fiche:  # n'importe quelle stratégie : fiche du classement (results/fiches/ID.json ou juste ID)
+        import json
+        p = Path(a.fiche)
+        if not p.exists():
+            p = Path(a.results) / "fiches" / (a.fiche if a.fiche.endswith(".json") else a.fiche + ".json")
+        if not p.exists():
+            raise SystemExit(f"Fiche introuvable : {a.fiche} (l'identifiant est écrit en haut de chaque fiche)")
+        card = json.loads(p.read_text(encoding="utf-8"))
+        comb = single_strategy(card["candidate"], card["marche"], card["timeframe"], a.risk or card.get("risk_pct") or 1.0,
+                               card.get("nom"))
+        out = generate_strategy_bot(comb, Path(a.results), a.capital, ftmo_rules(a), comb["composants"][0]["risk_pct"])
+        print(f"Bot prêt : {out}")
+        print(f"1) Double-cliquez {out / 'LANCER_BOT.bat'}   2) posez {out / 'LaboBot.mq5'} sur un graphique MT5 "
+              f"(mode d'emploi : {out / 'LISEZMOI_BOT.txt'})")
+        return
     out = generate_bot(Path(a.results), a.capital, ftmo_rules(a), horaire=a.horaire, forcer=a.forcer)
     print(f"Bot prêt : {out / 'LaboBot.mq5'}")
     print(f"Mode d'emploi : {out / 'LISEZMOI_BOT.txt'}")
@@ -386,6 +402,9 @@ def main():
     news_args(paper)
     paper.add_argument("--horaire", default=None, choices=["24h24", "8h-17h", "8h-13h"],
                        help="stratégie combinée : prendre la meilleure de cet horaire (défaut : la meilleure de toutes)")
+    paper.add_argument("--combinee-fichier", default=None,
+                       help="suivre cette stratégie (fichier strategie.json d'un bot) au lieu de la combinée du Directeur")
+    paper.add_argument("--signaux", default=None, help="nom du fichier de signaux du bot (défaut labo_signaux.csv)")
     paper.add_argument("--sans-bot", action="store_true",
                        help="ne pas écrire les signaux pour le bot MT5 LaboBot (stratégie combinée)")
     paper.set_defaults(func=cmd_paper)
@@ -425,6 +444,9 @@ def main():
     bot = sub.add_parser("bot", help="générer le bot MT5 (LaboBot.mq5) de la stratégie combinée")
     bot.add_argument("--results", default="results")
     bot.add_argument("--capital", type=float, default=100_000)
+    bot.add_argument("--fiche", default=None,
+                     help="bot d'UNE stratégie : identifiant ou fichier de sa fiche (results/fiches/ID.json)")
+    bot.add_argument("--risk", type=float, default=None, help="risque par trade du bot (défaut : celui de la fiche)")
     bot.add_argument("--forcer", action="store_true",
                      help="accepter une stratégie combinée « à l'essai » (non validée) : déconseillé")
     bot.add_argument("--horaire", default=None, choices=["24h24", "8h-17h", "8h-13h"],

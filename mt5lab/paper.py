@@ -180,10 +180,12 @@ def load_portfolio_slots(results_dir: Path, capital=100_000.0) -> list[Slot]:
     return slots
 
 
-def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | None = None) -> tuple[list[Slot], dict]:
+def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | None = None,
+                        path: str | Path | None = None) -> tuple[list[Slot], dict]:
     """La stratégie combinée du Directeur (results/strategie_combinee.json) : un seul compte partagé.
     horaire = "24h24", "8h-17h", "8h-13h"... pour prendre la meilleure combinée de cet horaire."""
-    path = Path(results_dir) / (f"strategie_combinee_{horaire}.json" if horaire else "strategie_combinee.json")
+    path = Path(path) if path else \
+        Path(results_dir) / (f"strategie_combinee_{horaire}.json" if horaire else "strategie_combinee.json")
     if not path.exists():
         return [], {}
     d = json.loads(path.read_text(encoding="utf-8"))
@@ -270,9 +272,10 @@ def load_exploration_slots(results_dir: Path, symbols, timeframes, capital=100_0
                     sig = c["signal"]
                     if sig["type"] == "single" and sig["name"] in signals and not signals[sig["name"]][2]:
                         signals[sig["name"]] = (sig, "none", "réglages de la recherche")
-                    elif sig["type"] == "rule":  # 2) inventions des agents et failles des banques
+                    elif sig["type"] in ("rule", "formula"):  # 2) inventions, failles des banques, lois des génies
                         nm = sig.get("name", "")
-                        kind = ("faille des banques" if nm.startswith("FAILLE") else
+                        kind = ("loi d'un génie" if sig["type"] == "formula" else
+                                "faille des banques" if nm.startswith("FAILLE") else
                                 "invention institutionnelle" if str(r.get("equipe", "")) == "D" else "invention")
                         signals[nm or signal_key(sig)] = (sig, "none", kind)
                     best_of = r.get("meilleure_version_de", "")
@@ -547,6 +550,11 @@ class PaperEngine:
         if s.group and not shadow and not self.group_allows(s, when):
             return
         lots = self._lots(s.symbol, self.risk_budget(s), dist)
+        acc = self.groups.get(s.group) if s.group else s
+        if acc is not None and self._target_reached(acc):
+            if when[:10] in acc.trade_days:
+                return  # objectif atteint et journée déjà comptée : on ne risque plus rien
+            lots = info.volume_min  # objectif atteint : micro-trade pour compter les jours minimum FTMO
         if lots <= 0:
             return
         tp = price + side * s.cfg.rr * dist if s.cfg.rr else None
@@ -571,6 +579,10 @@ class PaperEngine:
     def _bot(self, s: Slot) -> bool:
         """Les ordres du bot MT5 ne concernent que les composants actifs de la stratégie combinée."""
         return self.bridge is not None and bool(s.group) and not (s.position is not None and s.position.shadow)
+
+    def _target_reached(self, acc) -> bool:
+        """Objectif FTMO atteint mais challenge pas encore validé (jours de trading minimum pas atteints)."""
+        return acc.ftmo_status == "en cours" and (acc.balance - acc.capital) / acc.capital * 100 >= self.ftmo.target1
 
     def _swap(self, symbol: str, p: Position, price: float, when: str) -> float:
         """Swaps (frais ou crédit de nuit) pour chaque nuit passée en position, comme chez le courtier."""
@@ -975,7 +987,7 @@ def _base_name(cand: dict) -> str:
     s = cand["signal"]
     if s["type"] == "single":
         return s["name"]
-    if s["type"] == "rule":
+    if s["type"] in ("rule", "formula"):
         return s.get("name", "INVENTION")
     return f"{s['a']['name']}+{s['b']['name']}"
 

@@ -99,6 +99,12 @@ def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None,
         raise SystemExit("La stratégie combinée actuelle est « À L'ESSAI » : faite de stratégies NON validées. "
                          "Suivez-la d'abord en paper trading (option C). Le bot n'est généré que pour une stratégie "
                          "validée (ou avec --forcer, à vos risques, sur un compte démo).")
+    return write_bot(comb, Path(out_dir or results_dir / "bot"), capital, ftmo, template=template)
+
+
+def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, signal_file: str = SIGNAL_FILE,
+              magic: int = 260926, launcher: str | None = None, template: str | Path | None = None) -> Path:
+    """Écrit LaboBot.mq5 réglé + LISEZMOI_BOT.txt pour une stratégie (combinée ou seule) au format du Directeur."""
     rules = comb.get("regles", {})
     target = getattr(ftmo, "target1", 10.0)
     daily = getattr(ftmo, "max_daily", 3.0)
@@ -108,7 +114,7 @@ def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None,
     src = template.read_text(encoding="utf-8-sig")
     values = {"InpCapital": f"{capital:g}", "InpRisqueMax": f"{risk_max:g}",
               "InpPerteJourMax": f"{max(0.5, daily - 0.2):g}", "InpPerteTotaleMax": f"{max(1.0, total - 0.5):g}",
-              "InpObjectif": f"{target:g}"}
+              "InpObjectif": f"{target:g}", "InpMagic": str(int(magic)), "InpFichier": f'"{signal_file}"'}
     import re
     for name, v in values.items():
         src = re.sub(rf"(input\s+\w+\s+{name}\s*=\s*)[^;]+;", rf"\g<1>{v};", src)
@@ -123,7 +129,6 @@ def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None,
                      f"{c['risk_pct']:g} %/trade")
     lines.append("//+------------------------------------------------------------------+")
     src = "\n".join(lines) + "\n" + src
-    out = Path(out_dir or results_dir / "bot")
     out.mkdir(parents=True, exist_ok=True)
     (out / "LaboBot.mq5").write_text(src, encoding="utf-8-sig")  # BOM : MetaEditor lit bien les accents
     res = comb.get("resultat", {})
@@ -152,7 +157,7 @@ Installation (une seule fois)
 
 Démarrer
 --------
-1. Menu lancer.bat : option C (paper trading de la stratégie combinée). Laissez la fenêtre ouverte.
+1. {launcher or "Menu lancer.bat : option C (paper trading de la stratégie combinée)"}. Laissez la fenêtre ouverte.
 2. Dans MT5, ouvrez UN graphique (n'importe lequel, par ex. EURUSD M1) et glissez-y LaboBot.
    Onglet « Dépendances » : cochez « Autoriser le trading algorithmique ». Onglet « Paramètres » : vérifiez :
      InpCapital        = {values['InpCapital']}   (taille du compte / challenge)
@@ -173,4 +178,46 @@ Sécurité
 - Testez-le d'abord plusieurs semaines sur un compte DÉMO.
 """
     (out / "LISEZMOI_BOT.txt").write_text(readme, encoding="utf-8-sig")
+    return out
+
+
+def single_strategy(candidate: dict, symbol: str, tf: str, risk_pct: float, name: str | None = None,
+                    day_budget: float = 2.5, total_budget: float = 10.0) -> dict:
+    """Une stratégie seule, mise au format « stratégie combinée » (un seul composant) pour le paper et le bot."""
+    from .backtest import RiskConfig
+    from .evaluator import describe
+    return {"nom": name or f"{symbol} {tf} | {describe(candidate)[:80]}", "cree_le": time.strftime("%Y-%m-%d %H:%M"),
+            "regles": {"day_budget": day_budget, "total_budget": total_budget, "day_stop": None, "max_open": None},
+            "resultat": {}, "composants": [{"symbole": symbol, "timeframe": tf, "candidate": candidate,
+                                            "strategie": describe(candidate), "risk_pct": float(risk_pct),
+                                            "risque_config": RiskConfig(**candidate["risk"]).label()}]}
+
+
+def generate_strategy_bot(comb: dict, root: str | Path, capital: float = 100_000.0, ftmo=None,
+                          risk_pct: float = 1.0) -> Path:
+    """Bot pour N'IMPORTE QUELLE stratégie (ou combinée) : dossier results/bots/<nom>/ avec
+    strategie.json, LaboBot.mq5 réglé (son propre fichier de signaux et numéro magique, pour pouvoir faire
+    tourner plusieurs bots sur le même compte), LISEZMOI_BOT.txt et LANCER_BOT.bat (paper + signaux du bot)."""
+    import json
+    import re
+    key = f"{zlib.crc32(json.dumps(comb.get('composants', []), sort_keys=True, default=str).encode()) % 100_000_000:08d}"
+    first = (comb.get("composants") or [{}])[0]
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{first.get('symbole', 'X')}_{first.get('timeframe', '')}_{key}")
+    out = Path(root) / "bots" / slug
+    out.mkdir(parents=True, exist_ok=True)
+    comb_path = out / "strategie.json"
+    comb_path.write_text(json.dumps(comb, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    signal_file = f"labo_signaux_{key}.csv"
+    port = 8800 + int(key) % 150
+    repo = Path(__file__).resolve().parent.parent
+    target = getattr(ftmo, "target1", 10.0)
+    bat = (f'@echo off\r\ncd /d "{repo}"\r\n'
+           f'start "Bot {slug}" "{repo / "paper_24h.bat"}" --source combinee --combinee-fichier "{comb_path.resolve()}" '
+           f'--signaux {signal_file} --capital {capital:g} --risk {risk_pct:g} --ftmo-target {target:g} '
+           f'--out "{(out / "paper").resolve()}" --port {port}\r\n'
+           f'echo Paper trading + signaux du bot lances (plateforme : http://localhost:{port})\r\npause\r\n')
+    (out / "LANCER_BOT.bat").write_text(bat, encoding="ascii", errors="replace")
+    write_bot(comb, out, capital, ftmo, signal_file, 260000 + int(key) % 9999,
+              launcher=f"Double-cliquez LANCER_BOT.bat dans ce dossier (paper trading de CETTE stratégie qui envoie "
+                        f"ses signaux au bot ; plateforme http://localhost:{port})")
     return out
