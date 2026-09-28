@@ -215,10 +215,18 @@ def generate_strategy_bot(comb: dict, root: str | Path, capital: float = 100_000
     port = 8800 + int(key) % 150
     repo = Path(__file__).resolve().parent.parent
     target = getattr(ftmo, "target1", 10.0)
-    bat = (f'@echo off\r\ncd /d "{repo}"\r\n'
-           f'start "Bot {slug}" "{repo / "paper_24h.bat"}" --source combinee --combinee-fichier "{comb_path.resolve()}" '
+    def rel(p: Path) -> str:  # chemins relatifs au dossier du projet : pas de guillemets (espaces dans le chemin)
+        try:
+            return str(p.resolve().relative_to(repo)).replace("/", "\\")
+        except ValueError:
+            return f'"{p.resolve()}"'
+    # le .bat se place dans le dossier du bot : on remonte au projet par %~dp0, puis tout est relatif
+    up = "\\".join([".."] * len(out.resolve().relative_to(repo).parts)) if out.resolve().is_relative_to(repo) else None
+    cd = f'cd /d "%~dp0{up}"' if up else f'cd /d "{repo}"'
+    bat = (f'@echo off\r\n{cd}\r\n'
+           f'start "Bot {slug}" paper_24h.bat --source combinee --combinee-fichier {rel(comb_path)} '
            f'--signaux {signal_file} --capital {capital:g} --risk {risk_pct:g} --ftmo-target {target:g} '
-           f'--out "{(out / "paper").resolve()}" --port {port}\r\n'
+           f'--out {rel(out / "paper")} --port {port}\r\n'
            f'echo Paper trading + signaux du bot lances (plateforme : http://localhost:{port})\r\npause\r\n')
     (out / "LANCER_BOT.bat").write_text(bat, encoding="ascii", errors="replace")
     write_bot(comb, out, capital, ftmo, signal_file, 260000 + int(key) % 9999,
