@@ -1123,7 +1123,7 @@ Le scénario retenu est celui qui donne un challenge RÉUSSI le plus vite (jours
 en ratant au plus {d.cfg.max_fail:g} % des challenges.</p>
 {scen}
 {trial_banner}
-<h2>Les découvertes des génies : Einstein et Hawking</h2>
+<h2 id="genies">Les découvertes des génies : Einstein et Hawking</h2>
 <p class="mut">Deux génies qui travaillent seuls et inventent des lois mathématiques (physique : vitesse, énergie,
 ressort, relativité ; maths et cosmologie : Hurst, entropie, queues, cycles, gravité), en se servant aussi des
 stratégies des agents et des autres marchés. Aucun chef ne les confirme ; leurs lois passent seulement le même test

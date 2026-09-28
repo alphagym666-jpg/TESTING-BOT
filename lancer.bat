@@ -43,7 +43,7 @@ if not "%DEPUIS%"=="" (set RES=results_depuis_%DEPUIS%& set PER=--depuis %DEPUIS
 if "%BATTRE_BH%"=="1" set PER=%PER% --battre-buy-hold
 cls
 echo ==================================================
-echo    Labo de strategies MT5 - 10 agents, 2 chefs
+echo    Labo de strategies MT5 - Directeur, 4 chefs, 20 agents, 2 genies
 echo ==================================================
 echo   Marches : %SYMS%    Timeframes : %TFS%
 echo   Capital fictif : %CAPITAL%    Risque max par trade : %RISK%%%    Perte max par jour : %DIR_PERTE_JOUR%%%    Perte max totale : %DIR_PERTE_TOTALE%%%
@@ -56,16 +56,17 @@ echo   1. Tester la connexion a MT5
 echo   2. Changer marches / timeframes
 echo   N. Activer le filtre des NOUVELLES economiques (explications)
 echo.
-echo   --- LE DIRECTEUR (4 chefs, 20 agents : pousse tout le monde, construit la strategie combinee) ---
+echo   --- LE DIRECTEUR (4 chefs, 20 agents + les 2 GENIES Einstein et Hawking) ---
 echo   D. PASSER LE CHALLENGE FTMO LE PLUS VITE : le Directeur fait tout (recherche, melange de
 echo      tous les marches et timeframes, reglages du risque), puis lance le paper trading du resultat
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
+echo   G. Voir les DECOUVERTES DES GENIES (Einstein et Hawking : leurs lois mathematiques)
 echo   F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
 echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24) + signaux pour le bot
 echo   E. Generer le BOT MT5 (LaboBot.mq5) : strategie combinee OU n'importe quelle strategie (fiche)
 echo.
 echo   --- RECHERCHE (les agents testent et inventent des strategies) ---
-echo   3. Recherche complete : tous les marches x tous les timeframes
+echo   3. Recherche complete : tous les marches x tous les timeframes (agents + genies)
 echo   4. Recherche FTMO INTENSIVE (beaucoup plus de tests, plusieurs heures)
 echo   5. Ouvrir la COMPARAISON (quelle strategie rapporte le plus / passe FTMO)
 echo.
@@ -98,6 +99,7 @@ if "%CHOIX%"=="9" goto platform
 if /i "%CHOIX%"=="D" goto directeur
 if /i "%CHOIX%"=="N" goto nouvelles
 if /i "%CHOIX%"=="R" goto rapportdir
+if /i "%CHOIX%"=="G" goto genies
 if /i "%CHOIX%"=="F" goto fiches
 if /i "%CHOIX%"=="C" goto papercomb
 if /i "%CHOIX%"=="E" goto bot
@@ -166,6 +168,14 @@ echo puis construit la strategie combinee. Comptez de quelques minutes a plusieu
 python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
 if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
 if exist "%RES%\strategie_combinee.json" goto papercomb
+pause & goto menu
+
+:genies
+echo.
+echo Les 2 genies travaillent seuls pendant chaque recherche (option D ou 3) : ils inventent des formules
+echo mathematiques (physique pour Einstein, maths et cosmologie pour Hawking). Dans le rapport qui s ouvre :
+echo section "Les decouvertes des genies".
+if exist "%RES%\directeur.html" (start "" "%RES%\directeur.html") else (echo Lancez d'abord le Directeur : option D.)
 pause & goto menu
 
 :rapportdir
