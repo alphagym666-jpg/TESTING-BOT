@@ -463,3 +463,20 @@ def test_paper_best_day_rule(setup):
     assert not eng._target_reached(s)                      # +11 % ne suffit pas : il faut plus de +12 %
     s.balance = 112_500.0
     assert eng._target_reached(s)
+
+
+def test_trade_history_survives_restart(setup):
+    """Tous les trades pris restent visibles après un redémarrage (rechargés depuis trades.csv)."""
+    mk, tmp = setup
+    eng = _engine(tmp)
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    s = eng.slots["s1"]
+    mk.push_ticks([s.position.tp + 0.0001])
+    eng.step()
+    eng.save()
+    assert eng.total_trades == 1
+    eng2 = _engine(tmp)
+    snap = eng2.snapshot()
+    assert snap["n_trades_total"] == 1 and len(snap["trades"]) == 1 and snap["trades"][0]["r"] > 0

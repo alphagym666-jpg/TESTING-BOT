@@ -348,9 +348,11 @@ class PaperEngine:
         self.last_bar: dict[str, str] = {}   # "SYM|TF" -> heure de la dernière bougie clôturée traitée
         self.last_msc: dict[str, int] = {}   # symbole -> dernier tick traité (ms)
         self.recent: list[dict] = []
+        self.total_trades = 0  # tous les trades jamais clôturés (gardés pour toujours dans trades.csv)
         self.events: deque = deque(maxlen=400)
         self.started = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._load_state()
+        self._load_history()  # tous les trades déjà pris restent visibles après un redémarrage
 
     # ------------------------------------------------------------------ persistance
     @property
@@ -380,6 +382,27 @@ class PaperEngine:
         self.started = st.get("started", self.started)
         n_open = sum(s.position is not None for s in self.slots.values())
         print(f"[paper] reprise de l'état sauvegardé ({n_open} positions fictives ouvertes)")
+
+    def _load_history(self, keep: int = 5000):
+        """Recharge les derniers trades depuis trades.csv (l'historique complet n'est jamais effacé)."""
+        path = self.out / "trades.csv"
+        if not path.exists():
+            return
+        try:
+            with open(path, newline="", encoding="utf-8") as fh:
+                rows = list(csv.DictReader(fh))
+        except (OSError, csv.Error):
+            return
+        self.total_trades = len(rows)
+        num = {"lots", "prix_entree", "sl_initial", "sl_final", "tp", "prix_sortie", "duree_min", "pips", "r", "pnl",
+               "solde", "spread_entree_pts"}
+        for r in rows[-keep:]:
+            for k in num & r.keys():
+                try:
+                    r[k] = float(r[k]) if r[k] not in ("", None) else None
+                except ValueError:
+                    pass
+        self.recent = rows[-keep:]
 
     def save(self):
         active = {sid: s for sid, s in self.slots.items() if s.trades or s.position or s.ftmo_status != "en cours"}
@@ -660,8 +683,9 @@ class PaperEngine:
                 w.writeheader()
             w.writerow(row)
         self.recent.append(row)
-        if len(self.recent) > 3000:
-            self.recent = self.recent[-2000:]
+        self.total_trades += 1
+        if len(self.recent) > 6000:
+            self.recent = self.recent[-5000:]
         g = None if p.shadow else self.groups.get(s.group)
         if g is not None:  # le compte partagé de la stratégie combinée encaisse aussi le trade
             self._roll_day(g, g.balance, when)
@@ -845,7 +869,7 @@ class PaperEngine:
             self.save()  # sauvegarde dès qu'un trade s'ouvre / se ferme (reprise sans perte après un arrêt)
 
     # ------------------------------------------------------------------ données pour la plateforme
-    def snapshot(self, max_slots: int = 3000, max_trades: int = 1500) -> dict:
+    def snapshot(self, max_slots: int = 3000, max_trades: int = 3000) -> dict:
         ticks = {sym: self.mt5.symbol_info_tick(sym) for sym in {s.symbol for s in self.slots.values()}}
         open_rows, slot_rows = [], []
         for s in self.slots.values():
@@ -918,7 +942,7 @@ class PaperEngine:
             "serveur": getattr(acc, "server", ""), "prix": prices,
             "capital": next(iter(self.slots.values())).capital if self.slots else 0,
             "risque_pct": self.risk_pct, "ftmo": asdict(self.ftmo), "ftmo_label": self.ftmo.label(),
-            "n_comptes": len(self.slots), "n_actifs": len(slot_rows),
+            "n_comptes": len(self.slots), "n_actifs": len(slot_rows), "n_trades_total": self.total_trades,
             "n_marches": len({(s.symbol, s.timeframe) for s in self.slots.values()}),
             "comptes": slot_rows[:max_slots], "positions": open_rows, "groupes": group_rows,
             "trades": self.recent[-max_trades:][::-1], "evenements": list(self.events)[::-1][:200],

@@ -233,7 +233,8 @@ function viewPos(){return `<p class="note">Chaque ligne est un trade fictif en c
  ["Entrée","entree",px,1],["SL initial","sl_initial",px,1],["SL actuel","sl",px,1],["TP","tp",px,1],["Prix actuel","prix",px,1],
  ["Pips → SL","pips_sl",v=>fmt(v,1),1],["Pips → TP","pips_tp",v=>fmt(v,1),1],["Latent","latent",money,1],["Latent R","latent_r",rr,1],
  ["Bougies","bougies",null,1],["Stratégie","strategie"],["Risque","risque"]],filt(D.positions))}
-function viewHist(){return table("hist",[["Fermeture","fermeture"],["Ouverture","ouverture"],["Durée","duree_min",v=>v==null?"—":v<60?fmt(v,0)+" min":fmt(v/60,1)+" h",1],
+function viewHist(){const n=D.n_trades_total||D.trades.length;return `<p class="note">${fmt(n,0)} trades pris depuis le début, tous gardés pour toujours
+ (fichier trades.csv). Ici : les ${fmt(Math.min(n,D.trades.length),0)} plus récents. Tout l'historique : bouton « Télécharger tous les trades (Excel) ».</p>`+table("hist",[["Fermeture","fermeture"],["Ouverture","ouverture"],["Durée","duree_min",v=>v==null?"—":v<60?fmt(v,0)+" min":fmt(v/60,1)+" h",1],
  ["Marché","symbole"],["TF","timeframe"],["Sens","sens",v=>`<b>${v}</b>`],["Lots","lots",v=>fmt(v,2),1],["Entrée","prix_entree",px,1],
  ["SL initial","sl_initial",px,1],["SL final","sl_final",px,1],["TP","tp",px,1],["Sortie","prix_sortie",px,1],
  ["Raison","raison",v=>`<span class="tag">${esc(v)}</span>`],["Pips","pips",v=>`<span class="${cls(v)}">${fmt(v,1,true)}</span>`,1],
