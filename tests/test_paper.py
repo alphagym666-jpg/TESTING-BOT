@@ -552,3 +552,37 @@ def test_real_account_decides_target_and_losses(setup):
     mk.new_bar()
     eng.step()
     assert eng.slots["c"].position is None and g.skipped >= 1
+
+
+def test_best_bot_per_market(setup):
+    """Onglet « Meilleur bot par marché » : la stratégie gagnante et solide en direct est conseillée pour son marché."""
+    import csv as _csv
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import TRADE_FIELDS, PaperEngine, Slot
+    from mt5lab.plateforme import MIN_TRADES_MARKET, best_per_market
+    mk, tmp = setup
+    mk_cand = lambda rr: {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+                          "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": rr, "management": "none",
+                                   "max_hold": 200, "direction": "both"}}
+    conn = MT5Connector().connect(verbose=False)
+    slots = [Slot("bon", "EURUSD", "H1", mk_cand(2.0)), Slot("moyen", "EURUSD", "H1", mk_cand(3.0)),
+             Slot("perdant", "EURUSD", "H1", mk_cand(1.0))]
+    eng = PaperEngine(conn, slots, tmp / "paper", 1.0)
+    assert best_per_market(eng)["marches"][0]["bot"] is None      # pas encore de trade
+    r_of = {"bon": [2, -1, 2, 2, -1, 2, 2, 2, -1, 2, 2, 2], "moyen": [3, -1, -1, 3, -1, -1, 3, -1, -1, 3, -1, 3],
+            "perdant": [-1, 1, -1, -1, 1, -1, -1, -1, 1, -1, -1, -1]}
+    with open(eng.out / "trades.csv", "w", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=TRADE_FIELDS)
+        w.writeheader()
+        for sid, rs in r_of.items():
+            for i, r in enumerate(rs):
+                w.writerow({"strategie_id": sid, "symbole": "EURUSD", "timeframe": "H1", "strategie": sid,
+                            "risque": "x", "ouverture": f"2026-09-{1 + i:02d} 10:00", "fermeture": f"2026-09-{1 + i:02d} 12:00",
+                            "r": r})
+    res = best_per_market(eng)
+    m = res["marches"][0]
+    assert len(r_of["bon"]) >= MIN_TRADES_MARKET
+    assert m["symbole"] == "EURUSD" and m["bot"]["strategie_id"] == "bon" and m["reserve"]["strategie_id"] == "moyen"
+    eng.slots["bon"].paused = True                                 # en pause : plus conseillé
+    assert best_per_market(eng)["marches"][0]["bot"]["strategie_id"] == "moyen"
+    assert mk.sent == []

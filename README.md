@@ -503,6 +503,13 @@ baisse), à 1 % de risque par trade. Avec `--battre-buy-hold` (question de l'opt
 pas mieux n'est pas validée. Le rapport du Directeur montre aussi le gain de la stratégie combinée à côté du buy &
 hold de ses marchés.
 
+## Meilleur bot par marché
+
+Onglet **« Meilleur bot par marché »** de la plateforme : pour chaque marché, la stratégie qui marche le mieux EN
+DIRECT (au moins 10 trades, gagnante, pas en pause, classée par solidité), avec son timeframe, un remplaçant et le
+bouton **« Créer le bot MT5 »**. Dans MT5, posez chaque bot sur un graphique de SON marché et de SON timeframe.
+Un avertissement s'affiche si une seule journée fait plus de 50 % du profit (règle FTMO du meilleur jour).
+
 ## Coûts réels mesurés en direct et frein de bonne journée
 
 - **Coûts réels** : à chaque lancement de la recherche (lab) ou du Directeur, le programme lit tous les

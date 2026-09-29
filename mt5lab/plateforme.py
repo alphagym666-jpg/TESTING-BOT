@@ -59,6 +59,12 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"message": f"Analyse impossible : {exc}", "classement": []}, ensure_ascii=False)
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
+        elif path == "/api/marches":
+            try:
+                body = json.dumps(best_per_market(self.server.engine), ensure_ascii=False, default=str)
+            except Exception as exc:
+                body = json.dumps({"message": f"Classement impossible : {exc}", "marches": []}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path == "/api/bot":
             try:
                 body = json.dumps(make_bot(self.server.engine, self.path), ensure_ascii=False)
@@ -84,6 +90,53 @@ def analyse_live(engine) -> dict:
     res = analyse(engine.out, engine.ftmo, engine.risk_pct, trades=trades, strategies=strategies, n_sim=800)
     engine.last_analysis = res
     return res
+
+
+MIN_TRADES_MARKET = 10   # trades en direct avant de conseiller un bot pour un marché
+
+
+def best_per_market(engine, min_trades: int = MIN_TRADES_MARKET) -> dict:
+    """Onglet « Meilleur bot par marché » : pour chaque marché, la stratégie du paper trading qui a le mieux marché
+    EN DIRECT (prix réels), à mettre sur ce marché dans MT5. Classement par solidité (t = R moyen / écart x racine
+    du nombre de trades), puis R total. Exclus : stratégies en pause, perdantes ou avec trop peu de trades."""
+    import pandas as pd
+
+    from .direct import strategy_table
+    path = engine.out / "trades.csv"
+    t = pd.read_csv(path) if path.exists() and path.stat().st_size else pd.DataFrame(engine.recent)
+    slots = engine.slots
+    markets: dict[str, dict] = {s.symbol: {"symbole": s.symbol, "bot": None, "reserve": None, "candidats": 0,
+                                            "raison": "pas encore de trade en direct"} for s in slots.values()}
+    if len(t) and "strategie_id" in t.columns:
+        t = t[t["strategie_id"].isin(slots.keys())].copy()
+        t["r"] = pd.to_numeric(t["r"], errors="coerce")
+        t = t.dropna(subset=["r"])
+    if len(t):
+        tab = strategy_table(t, min_trades)
+        for sym, g in tab.groupby("symbole"):
+            m = markets.setdefault(sym, {"symbole": sym, "bot": None, "reserve": None, "candidats": 0})
+            ok = g[g["fiable"] & (g["r_total"] > 0) & (g["r_moyen"] > 0)
+                   & ~g["strategie_id"].map(lambda k: bool(getattr(slots.get(k), "paused", False)))]
+            ok = ok.sort_values(["t", "r_total"], ascending=False)
+            m["candidats"] = int(len(g))
+            rows = []
+            for r in ok.head(2).to_dict("records"):
+                sl = slots.get(r["strategie_id"])
+                r.update(ftmo=getattr(sl, "ftmo_status", ""),
+                         attendu_r=getattr(sl, "expected_avg_r", None),
+                         meilleur_jour_ok=r["meilleur_jour_part"] is None or r["meilleur_jour_part"] <= engine.ftmo.best_day_pct)
+                rows.append(r)
+            m["bot"] = rows[0] if rows else None
+            m["reserve"] = rows[1] if len(rows) > 1 else None
+            if not rows:
+                m["raison"] = (f"aucune stratégie gagnante avec au moins {min_trades} trades en direct"
+                               if (g["trades"] >= min_trades).any() else
+                               f"pas encore {min_trades} trades en direct (max {int(g['trades'].max())})")
+    out = sorted(markets.values(), key=lambda m: (m["bot"] is None, -(m["bot"] or {}).get("t", 0)))
+    n = sum(1 for m in out if m["bot"])
+    return {"marches": out, "min_trades": min_trades,
+            "message": f"{n} marché(s) sur {len(out)} ont un bot conseillé d'après le direct" if out else
+                       "Aucun marché suivi par ce paper trading."}
 
 
 def make_bot(engine, url: str) -> dict:
@@ -221,7 +274,7 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 </main>
 <script>
 const TABS=[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
-["an","Meilleurs setups du direct"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
+["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
 let A=null,aTime=0;
 async function loadAnalyse(force){if(!force&&A&&Date.now()-aTime<60000)return;aTime=Date.now();
  try{A=await (await fetch("/api/analyse",{cache:"no-store"})).json()}catch(e){A={message:"Analyse impossible : "+e,classement:[]}}render()}
@@ -241,6 +294,22 @@ function viewAn(){if(!A){loadAnalyse(true);return `<div class="empty">Analyse de
   table("anr",[["Marché","symbole"],["TF","timeframe"],["Bot","strategie_id",botBtn],["Stratégie","strategie"],["Réglage","risque"],["Trades","trades",null,1],
    ["Réussite","reussite_pct",v=>fmt(v,0)+" %",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["t (solidité)","t",v=>fmt(v,2),1],
    ["Jours","jours",null,1],["Meilleur jour (part du profit)","meilleur_jour_part",v=>v==null?"—":fmt(v,0)+" %",1]],filt(A.classement||[],"symbole","timeframe"))}
+let M=null,mTime=0;
+async function loadMarches(force){if(!force&&M&&Date.now()-mTime<60000)return;mTime=Date.now();
+ try{M=await (await fetch("/api/marches",{cache:"no-store"})).json()}catch(e){M={message:"Classement impossible : "+e,marches:[]}}render()}
+function viewMk(){if(!M){loadMarches(true);return `<div class="empty">Classement des marchés en cours…</div>`}loadMarches(false);
+ const card=m=>{const b=m.bot,r=m.reserve;
+  if(!b)return `<div class="tile"><div class="v" style="font-size:18px">${esc(m.symbole)}</div><div class="mut">Aucun bot conseillé : ${esc(m.raison||"")}</div></div>`;
+  return `<div class="tile" style="border-color:var(--accent)"><div class="v" style="font-size:18px">${esc(m.symbole)} <span class="mut" style="font-size:13px">graphique ${esc(b.timeframe)}</span></div>
+  <div style="margin:6px 0"><b title="${esc(b.strategie)}">${esc(String(b.strategie).slice(0,90))}</b><div class="mut" style="font-size:12px">${esc(b.risque)}</div></div>
+  <div class="mut" style="font-size:13px">${b.trades} trades en direct · réussite ${fmt(b.reussite_pct,0)} % · R total ${rr(b.r_total)} · R moyen ${rr(b.r_moyen)} · solidité t ${fmt(b.t,2)} · ${b.jours} jours</div>
+  ${b.meilleur_jour_ok?"":`<div class="neg" style="font-size:12px">Attention : une seule journée fait ${fmt(b.meilleur_jour_part,0)} % du profit (règle FTMO du meilleur jour)</div>`}
+  <p style="margin:8px 0 0"><button class="botbtn" data-id="${esc(b.strategie_id)}">Créer le bot MT5 pour ${esc(m.symbole)}</button></p>
+  ${r?`<div class="mut" style="font-size:12px;margin-top:8px">Remplaçant : ${esc(r.timeframe)} · ${esc(String(r.strategie).slice(0,60))} (${r.trades} trades, ${fmt(r.r_total,2,true)}R) <button class="botbtn" data-id="${esc(r.strategie_id)}">Bot</button></div>`:""}</div>`};
+ return `<p class="note">${esc(M.message)}. Un bot par marché : dans MT5, posez chaque bot sur un graphique de SON marché et de SON timeframe.
+  Classement d'après les trades EN DIRECT de cette plateforme (au moins ${M.min_trades} trades, gagnant, pas en pause), puis la solidité t.
+  Les chiffres bougent tant qu'il y a peu de trades · <a href="#" onclick="loadMarches(true);return false">actualiser</a></p>
+  <div class="tiles" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">${(M.marches||[]).filter(m=>!fSym.value||m.symbole===fSym.value).map(card).join("")}</div>`}
 let tab=localStorageGet("tab")||"comb",D=null,sortState={};
 function localStorageGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function localStorageSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
@@ -353,7 +422,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- const v={comb:viewComb,an:viewAn,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ const v={comb:viewComb,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;
