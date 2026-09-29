@@ -153,7 +153,7 @@ pause & goto menu
 
 :labxl
 echo Recherche intensive : 6 rounds, 3000 tests par agent et par round, 15 generations d'inventions.
-python run.py lab --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --rounds 6 --budget 3000 --invent-generations 15 --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
+python run.py lab --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --rounds 6 --budget 3000 --invent-generations 15 --generations-genies 30 --risk %RISK% --capital %CAPITAL% --commission %COMMISSION% %FTMO%
 if exist "%RES%\comparaison.html" start "" "%RES%\comparaison.html"
 pause & goto menu
 

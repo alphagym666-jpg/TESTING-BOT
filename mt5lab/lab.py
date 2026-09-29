@@ -38,6 +38,7 @@ class LabConfig:
     genies: bool = True         # les 2 génies (Einstein, Hawking) inventent des formules mathématiques
     genie_generations: int = 12
     genie_pop: int = 60
+    genie_ingredients: list = field(default_factory=list)  # stratégies des agents (recherche déjà faite)
     beat_bh: bool = False       # exiger de battre le buy & hold (acheter et garder) sur la période de validation
     bh_risk_pct: float = 1.0    # risque par trade utilisé pour comparer au buy & hold
 
@@ -237,6 +238,10 @@ def run_genies(ev, extra, cfg: LabConfig, journal, rules, champions):
     strategies = [{"sig": f.candidate["signal"], "flt": f.candidate.get("filter", "none"),
                    "label": f"{f.agent.split('|')[0].strip()} : {describe(f.candidate)[:50]}"}
                   for f in champions[:5] if f.candidate["signal"].get("type") != "formula"]
+    if not strategies:  # recherche déjà faite : les meilleures stratégies des agents sont données aux génies
+        strategies = [{"sig": c["signal"], "flt": c.get("filter", "none"),
+                       "label": f"stratégie des agents : {describe(c)[:50]}"}
+                      for c in cfg.genie_ingredients[:5] if c["signal"].get("type") != "formula"]
     ext = ext_symbols(extra["isa"])
     geniuses, findings = [], []
     for i, (code, tag, role, who) in enumerate(GENIES):
@@ -251,6 +256,35 @@ def run_genies(ev, extra, cfg: LabConfig, journal, rules, champions):
             sc = score(res_is, rules.min_trades_is)
             findings.append(Finding(cand, res_is, sc if math.isfinite(sc) else -99.0, tag))
     return findings, geniuses
+
+
+def run_genies_only(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, cell_dir: Path) -> pd.DataFrame:
+    """Case déjà recherchée par les agents : seuls les 2 génies travaillent, puis leurs lois sont AJOUTÉES au
+    classement et aux trades de la case (rien n'est recalculé pour les agents)."""
+    import dataclasses
+    cell_dir = Path(cell_dir)
+    main_path = cell_dir / "classement.csv"
+    main = pd.read_csv(main_path) if main_path.exists() else pd.DataFrame()
+    ingredients = []
+    if len(main) and "candidate" in main.columns:
+        top = main[main["trades_oos"].notna()].sort_values("score_is", ascending=False) if "score_is" in main else main
+        ingredients = [json.loads(c) for c in top["candidate"].head(5)]
+    cfg2 = dataclasses.replace(cfg, rounds=0, invent=False, bank_teams=False, catalog=False, genies=True,
+                               genie_ingredients=ingredients, seeds=[])
+    board = run_lab(df, cost, cfg2, label, cell_dir / "genies")
+    g = board[board["equipe"].astype(str).eq("Génies")] if len(board) else board
+    if len(main) and "equipe" in main.columns:
+        main = main[~main["equipe"].astype(str).eq("Génies")]
+    merged = pd.concat([main, g], ignore_index=True, sort=False) if len(g) else main
+    if len(merged):
+        merged.to_csv(main_path, index=False)
+    gt = cell_dir / "genies" / "trades_oos.csv"
+    if gt.exists():
+        mt = cell_dir / "trades_oos.csv"
+        t = pd.concat([pd.read_csv(mt) if mt.exists() else pd.DataFrame(), pd.read_csv(gt)], ignore_index=True)
+        t.drop_duplicates().to_csv(mt, index=False)
+    (cell_dir / "genies_fait.txt").write_text("les génies ont travaillé sur cette case\n", encoding="utf-8")
+    return g
 
 
 def optimize_catalog(ev, cfg: LabConfig, journal, rules):
@@ -535,6 +569,8 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
               "description": bank["describe"](fa)} for fa in bank["failles"]], indent=2, ensure_ascii=False,
             default=str), encoding="utf-8")
     board.to_csv(out_dir / "classement.csv", index=False)
+    if cfg.genies and cfg.rounds > 0:
+        (out_dir / "genies_fait.txt").write_text("les génies ont travaillé sur cette case\n", encoding="utf-8")
     best = [json.loads(c) for c in board.loc[board["verdict"] == "APPROUVÉ", "candidate"].head(cfg.top)] if len(board) else []
     (out_dir / "meilleures_strategies.json").write_text(json.dumps(best, indent=2, ensure_ascii=False))
     (out_dir / "journal_agents.txt").write_text("\n".join(journal.lines), encoding="utf-8")

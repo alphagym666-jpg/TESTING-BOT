@@ -158,6 +158,22 @@ class Director:
         self.say(f"{sym} {tf} : {why}")
         return run_lab(df, cost, lab_cfg, f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}")
 
+    def run_genies_cell(self, sym, tf):
+        """Case déjà recherchée : seuls Einstein et Hawking y travaillent, leurs lois s'ajoutent au classement."""
+        from .lab import run_genies_only
+        try:
+            df, cost = self.data(sym, tf)
+        except Exception as exc:
+            self.say(f"{sym} {tf} : pas de données pour les génies ({exc})")
+            return
+        if len(df) < self.cfg.min_bars:
+            return
+        self.say(f"{sym} {tf} : les génies n'avaient pas encore travaillé sur cette case : Einstein et Hawking s'y "
+                 "mettent (le travail des agents est gardé)")
+        g = run_genies_only(df, cost, self.lab_cfg(), f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}")
+        n_ok = int(g["verdict"].eq("APPROUVÉ").sum()) if len(g) else 0
+        self.say(f"{sym} {tf} : {len(g)} lois découvertes par les génies, {n_ok} validées hors-échantillon")
+
     @staticmethod
     def _version(path: Path) -> int:
         try:
@@ -192,6 +208,8 @@ class Director:
                                  "je la fais refaire")
                     elif got is not None and got >= need * 0.9:
                         self.say(f"{sym} {tf} : je reprends le travail déjà fait par les chefs ({got:.1f} ans testés)")
+                        if self.cfg.genies and not (path.parent / "genies_fait.txt").exists():
+                            self.run_genies_cell(sym, tf)
                         continue
                     else:
                         self.say(f"{sym} {tf} : l'ancienne recherche ne couvrait que "

@@ -69,6 +69,7 @@ def news_args(p):
 
 def period_args(p):
     p.add_argument("--sans-genies", action="store_true", help="sans les 2 génies (Einstein, Hawking)")
+    p.add_argument("--generations-genies", type=int, default=12, help="générations d'évolution des formules des génies")
     p.add_argument("--sans-inter-marches", action="store_true",
                    help="ne pas donner aux inventeurs les prix des autres marchés")
     p.add_argument("--depuis", default=None,
@@ -168,7 +169,8 @@ def cmd_lab(a):
     cfg = LabConfig(rounds=a.rounds, budget=a.budget, oos_fraction=a.oos, risk_pct=a.risk,
                     workers=a.workers, seed=a.seed, ftmo=ftmo_rules(a), invent=not a.no_invent,
                     catalog=not a.sans_catalogue, bank_teams=not a.sans_equipes_banques,
-                    invent_generations=a.invent_generations, beat_bh=a.battre_buy_hold, genies=not a.sans_genies)
+                    invent_generations=a.invent_generations, beat_bh=a.battre_buy_hold, genies=not a.sans_genies,
+                    genie_generations=a.generations_genies)
     out_root = Path(a.out)
     jobs = []
     if a.demo:
