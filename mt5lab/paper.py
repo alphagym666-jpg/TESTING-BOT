@@ -353,6 +353,12 @@ class PaperEngine:
         self.started = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._load_state()
         self._load_history()  # tous les trades déjà pris restent visibles après un redémarrage
+        try:  # définition de chaque stratégie suivie : sert à l'analyse du direct et aux bots
+            (self.out / "strategies.json").write_text(json.dumps(
+                {s.id: {"symbole": s.symbol, "timeframe": s.timeframe, "candidate": s.candidate}
+                 for s in self.slots.values()}, ensure_ascii=False, default=str), encoding="utf-8")
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ persistance
     @property

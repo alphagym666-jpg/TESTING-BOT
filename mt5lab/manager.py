@@ -158,6 +158,17 @@ class Director:
         self.say(f"{sym} {tf} : {why}")
         return run_lab(df, cost, lab_cfg, f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}")
 
+    def live_analysis(self):
+        """Les trades du paper trading qui tourne (le vrai test, sur des prix jamais vus) : meilleurs setups du
+        direct et meilleure combinaison des stratégies qui tournent."""
+        try:
+            from .direct import run_direct
+            self.direct = run_direct(self.cfg.out, self.cfg.ftmo, self.cfg.risk_pct, self.cfg.day_budget,
+                                     self.cfg.total_budget, log=self.say)
+        except Exception as exc:
+            self.say(f"Analyse du direct impossible : {exc}")
+            self.direct = {}
+
     def run_genies_cell(self, sym, tf):
         """Case déjà recherchée : seuls Einstein et Hawking y travaillent, leurs lois s'ajoutent au classement."""
         from .lab import run_genies_only
@@ -908,6 +919,7 @@ class Director:
             if self.combined:
                 self.multi_tf_test()
             self.build_cards()
+        self.live_analysis()
         self.say(f"Campagne terminée en {(time.time() - t0) / 60:.0f} min. Rapport : {self.cfg.out / 'directeur.html'}")
         write_report(self)
         return self.combined
@@ -937,6 +949,21 @@ def expected_days(res: dict) -> float:
     if p is None or d is None or not p == p or not d == d or p <= 0:
         return float("inf")
     return float(d) / (float(p) / 100)
+
+
+def _direct_html(d) -> str:
+    esc = html.escape
+    r = getattr(d, "direct", None) or {}
+    if not r.get("trades"):
+        return "<p class='mut'>Pas encore de trades en paper trading : lancez-le (options 6, 7, 8, S ou C).</p>"
+    top = "".join(f"<li>{esc(str(x['symbole']))} {esc(str(x['timeframe']))} | {esc(str(x['strategie'])[:90])} | "
+                  f"{x['trades']} trades, {x['r_total']:+.1f}R</li>" for x in r.get("classement", [])[:5])
+    comb = r.get("combinaison")
+    ctext = (f"<p><b>Meilleure combinaison des stratégies qui tournent</b> : {len(comb['composants'])} stratégies, "
+             f"gain en direct {comb['resultat']['rendement_pct']:+.2f} %, pire journée {comb['resultat']['pire_jour']:.2f} %."
+             "</p>") if comb else ""
+    return (f"<p class='mut'>{esc(r.get('message', ''))} ({r['trades']} trades, {r['strategies']} stratégies)</p>{ctext}"
+            f"<p>Meilleurs setups en direct :</p><ol>{top}</ol><p><a href='direct.html'>Analyse complète du direct</a></p>")
 
 
 def _bh_text(d, c) -> str:
@@ -1141,6 +1168,8 @@ Le scénario retenu est celui qui donne un challenge RÉUSSI le plus vite (jours
 en ratant au plus {d.cfg.max_fail:g} % des challenges.</p>
 {scen}
 {trial_banner}
+<h2>Ce que dit le direct (paper trading)</h2>
+{_direct_html(d)}
 <h2 id="genies">Les découvertes des génies : Einstein et Hawking</h2>
 <p class="mut">Deux génies qui travaillent seuls et inventent des lois mathématiques (physique : vitesse, énergie,
 ressort, relativité ; maths et cosmologie : Hurst, entropie, queues, cycles, gravité), en se servant aussi des

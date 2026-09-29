@@ -53,6 +53,12 @@ class _Handler(BaseHTTPRequestHandler):
             f = self.server.engine.out / "trades.csv"
             body = f.read_bytes() if f.exists() else b""
             self._send(body, "text/csv; charset=utf-8", {"Content-Disposition": "attachment; filename=trades.csv"})
+        elif path == "/api/analyse":
+            try:
+                body = json.dumps(analyse_live(self.server.engine), ensure_ascii=False, default=str)
+            except Exception as exc:
+                body = json.dumps({"message": f"Analyse impossible : {exc}", "classement": []}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path == "/api/bot":
             try:
                 body = json.dumps(make_bot(self.server.engine, self.path), ensure_ascii=False)
@@ -65,6 +71,21 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
 
+def analyse_live(engine) -> dict:
+    """Onglet « Analyse du direct » : meilleurs setups de CE paper trading et meilleure combinaison."""
+    from .direct import analyse
+    strategies = {s.id: {"symbole": s.symbol, "timeframe": s.timeframe, "candidate": s.candidate}
+                  for s in engine.slots.values()}
+    import pandas as pd
+    trades = pd.DataFrame(engine.recent)
+    if len(trades):
+        trades["r"] = pd.to_numeric(trades["r"], errors="coerce")
+        trades = trades.dropna(subset=["r"])
+    res = analyse(engine.out, engine.ftmo, engine.risk_pct, trades=trades, strategies=strategies, n_sim=800)
+    engine.last_analysis = res
+    return res
+
+
 def make_bot(engine, url: str) -> dict:
     """Bouton « Bot MT5 » : prépare le bot d'une stratégie (?id=...) ou de la stratégie combinée (?groupe=...)."""
     from urllib.parse import parse_qs, urlparse
@@ -72,7 +93,15 @@ def make_bot(engine, url: str) -> dict:
     from .pont import generate_strategy_bot, install_in_mt5, single_strategy
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
-    if q.get("groupe"):
+    if q.get("analyse"):  # la meilleure combinaison trouvée par l'analyse du direct
+        comb = dict(getattr(engine, "last_analysis", {}).get("combinaison") or {})
+        if not comb:
+            return {"ok": False, "message": "Lancez d'abord l'analyse du direct."}
+        capital = next(iter(engine.slots.values())).capital
+        risk = max(c["risk_pct"] for c in comb["composants"])
+        comb["composants"] = [{**c, "symbole": engine.slots[c["strategie_id"]].symbol,
+                               "candidate": engine.slots[c["strategie_id"]].candidate} for c in comb["composants"]]
+    elif q.get("groupe"):
         g = engine.groups[q["groupe"]]
         members = [x for x in engine.slots.values() if x.group == g.name]
         comb = single_strategy(members[0].candidate, members[0].symbol, members[0].timeframe,
@@ -192,7 +221,26 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 </main>
 <script>
 const TABS=[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
-["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
+["an","Meilleurs setups du direct"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
+let A=null,aTime=0;
+async function loadAnalyse(force){if(!force&&A&&Date.now()-aTime<60000)return;aTime=Date.now();
+ try{A=await (await fetch("/api/analyse",{cache:"no-store"})).json()}catch(e){A={message:"Analyse impossible : "+e,classement:[]}}render()}
+function viewAn(){if(!A){loadAnalyse(true);return `<div class="empty">Analyse des trades du direct en cours…</div>`}loadAnalyse(false);
+ const c=A.combinaison,r=c?c.resultat:null;
+ const comb=c?`<div class="tiles"><div class="tile"><div class="mut">Gain en direct de la combinaison</div><div class="v">${fmt(r.rendement_pct,2,true)} %</div></div>
+  <div class="tile"><div class="mut">Pire journée</div><div class="v">${fmt(r.pire_jour,2)} %</div></div>
+  <div class="tile"><div class="mut">Challenges enchaînés</div><div class="v">${r.reussis} réussis / ${r.rates} ratés</div></div>
+  <div class="tile"><div class="mut">Challenge réussi en</div><div class="v">${isFinite(r.jours_attendus)?fmt(r.jours_attendus,0)+" j":"—"}</div><div class="mut" style="font-size:12px">${isFinite(r.jours_attendus)?"jours attendus":"pas assez de jours pour simuler"}</div></div></div>`+
+  table("anc",[["Marché","symbole"],["TF","timeframe"],["Stratégie","strategie"],["Réglage","risque_config"],["Risque/trade","risk_pct",v=>fmt(v,2)+" %",1],
+   ["Trades en direct","trades_direct",null,1],["R total en direct","r_total_direct",rr,1]],c.composants)+
+  `<p style="margin:10px 0"><button class="botbtn" data-analyse="1">Créer le bot MT5 de cette combinaison</button></p>`:`<p class="note">Pas encore de combinaison gagnante en direct.</p>`;
+ return `<p class="note">${esc(A.message)} (${fmt(A.trades,0)} trades, ${fmt(A.strategies,0)} stratégies${A.periode?", "+esc(A.periode):""}) ·
+  mise à jour chaque minute · <a href="#" onclick="loadAnalyse(true);return false">actualiser</a></p>
+  <h3 style="margin:8px 0">Meilleure combinaison des stratégies qui tournent (1 % max par trade, 2,5 % max par jour)</h3>${comb}
+  <h3 style="margin:14px 0 8px">Meilleurs setups en direct</h3>`+
+  table("anr",[["Marché","symbole"],["TF","timeframe"],["Bot","strategie_id",botBtn],["Stratégie","strategie"],["Réglage","risque"],["Trades","trades",null,1],
+   ["Réussite","reussite_pct",v=>fmt(v,0)+" %",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["t (solidité)","t",v=>fmt(v,2),1],
+   ["Jours","jours",null,1],["Meilleur jour (part du profit)","meilleur_jour_part",v=>v==null?"—":fmt(v,0)+" %",1]],filt(A.classement||[],"symbole","timeframe"))}
 let tab=localStorageGet("tab")||"comb",D=null,sortState={};
 function localStorageGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function localStorageSet(k,v){try{localStorage.setItem(k,v)}catch(e){}}
@@ -217,7 +265,7 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   const att=c[3]?' class="n"':long?` class="s" title="${esc(r[c[1]])}"`:"";
   return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
- e.stopPropagation();b.disabled=true;const q=b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
+ e.stopPropagation();b.disabled=true;const q=b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
  try{const r=await (await fetch("/api/bot?"+q,{cache:"no-store"})).json();alert(r.message)}catch(err){alert("Erreur : "+err)}b.disabled=false});
 document.getElementById("view").addEventListener("click",e=>{const th=e.target.closest("th");if(!th)return;
  const id=th.closest("table").dataset.id,i=+th.dataset.i;const s=sortState[id];
@@ -303,7 +351,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- const v={comb:viewComb,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ const v={comb:viewComb,an:viewAn,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;

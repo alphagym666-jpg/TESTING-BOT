@@ -60,6 +60,7 @@ echo   --- LE DIRECTEUR (4 chefs, 20 agents + les 2 GENIES Einstein et Hawking) 
 echo   D. PASSER LE CHALLENGE FTMO LE PLUS VITE : le Directeur fait tout (recherche, melange de
 echo      tous les marches et timeframes, reglages du risque), puis lance le paper trading du resultat
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
+echo   L. MEILLEURS SETUPS DU DIRECT : analyse des trades du paper trading + meilleure combinaison
 echo   G. Voir les DECOUVERTES DES GENIES (Einstein et Hawking : leurs lois mathematiques)
 echo   F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
 echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24) + signaux pour le bot
@@ -100,6 +101,7 @@ if /i "%CHOIX%"=="D" goto directeur
 if /i "%CHOIX%"=="N" goto nouvelles
 if /i "%CHOIX%"=="R" goto rapportdir
 if /i "%CHOIX%"=="G" goto genies
+if /i "%CHOIX%"=="L" goto direct
 if /i "%CHOIX%"=="F" goto fiches
 if /i "%CHOIX%"=="C" goto papercomb
 if /i "%CHOIX%"=="E" goto bot
@@ -168,6 +170,12 @@ echo puis construit la strategie combinee. Comptez de quelques minutes a plusieu
 python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
 if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
 if exist "%RES%\strategie_combinee.json" goto papercomb
+pause & goto menu
+
+:direct
+python run.py direct --results %RES% --risk %RISK% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% %FTMO%
+if exist "%RES%\direct.html" start "" "%RES%\direct.html"
+echo (Aussi en direct dans la plateforme : onglet "Meilleurs setups du direct")
 pause & goto menu
 
 :genies

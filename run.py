@@ -300,6 +300,12 @@ def cmd_paper(a):
         eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
 
 
+def cmd_direct(a):
+    from mt5lab.direct import run_direct
+    run_direct(Path(a.results), ftmo_rules(a), a.risk, a.perte_max_jour, a.perte_max_totale)
+    print(f"Rapport : {Path(a.results) / 'direct.html'}")
+
+
 def _install(mq5, name):
     """Installe et compile le bot directement dans MT5 (si MT5 est ouvert)."""
     try:
@@ -458,6 +464,14 @@ def main():
     news_args(di)
     period_args(di)
     di.set_defaults(func=cmd_directeur)
+
+    dr = sub.add_parser("direct", help="analyse des trades du paper trading : meilleurs setups et meilleure combinaison")
+    dr.add_argument("--results", default="results")
+    dr.add_argument("--risk", type=float, default=1.0)
+    dr.add_argument("--perte-max-jour", type=float, default=2.5)
+    dr.add_argument("--perte-max-totale", type=float, default=10.0)
+    add_ftmo_args(dr)
+    dr.set_defaults(func=cmd_direct)
 
     bot = sub.add_parser("bot", help="générer le bot MT5 (LaboBot.mq5) de la stratégie combinée")
     bot.add_argument("--results", default="results")
