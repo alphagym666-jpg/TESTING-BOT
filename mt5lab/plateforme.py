@@ -173,6 +173,9 @@ def make_bot(engine, url: str) -> dict:
         risk = s.risk_pct or engine.risk_pct
         comb = single_strategy(s.candidate, s.symbol, s.timeframe, risk)
         capital = s.capital
+    prof = getattr(engine, "profile", None)
+    if prof:  # compte perso / financé : le bot garde le même profil (pas d'objectif, intérêts composés...)
+        comb.update(profil=prof["cle"], composer=bool(prof.get("compound")))
     out = generate_strategy_bot(comb, root, capital, engine.ftmo, risk)
     ok, inst = install_in_mt5(out / "LaboBot.mq5", engine.mt5, f"LaboBot_{out.name}.mq5")
     try:
@@ -344,7 +347,7 @@ function tiles(){const c=D.comptes,P=D.positions;const closed=c.reduce((a,x)=>a+
  const ok=c.filter(x=>x.ftmo==="RÉUSSI").length,ko=c.filter(x=>x.ftmo.startsWith("ÉCHOUÉ")).length;
  const T=[["Comptes fictifs",fmt(D.n_comptes,0),`${fmt(D.n_actifs,0)} ont déjà tradé`],["Positions ouvertes",fmt(P.length,0),`latent ${fmt(lat,0,true)} $`],
  ["Trades clôturés",fmt(closed,0),closed?`${fmt(wins/closed*100,0)} % gagnants`:""],["P&L réalisé (tous comptes)",fmt(pnl,0,true)+" $",""],
- ["Challenges FTMO",`${ok} réussis`,`${ko} échoués · ${fmt(D.ftmo.target1,0)} % / ${fmt(D.ftmo.max_daily,0)} % jour / ${fmt(D.ftmo.max_total,0)} % total`]];
+ D.profil?["Compte",esc(D.profil.nom),esc(D.profil.but)]:["Challenges FTMO",`${ok} réussis`,`${ko} échoués · ${fmt(D.ftmo.target1,0)} % / ${fmt(D.ftmo.max_daily,0)} % jour / ${fmt(D.ftmo.max_total,0)} % total`]];
  tiles_.innerHTML=T.map(([k,v,s])=>`<div class="tile"><div class="mut">${k}</div><div class="v">${v}</div><div class="mut" style="font-size:12px">${s}</div></div>`).join("")}
 const tiles_=document.getElementById("tiles");
 function viewPos(){return `<p class="note">Chaque ligne est un trade fictif en cours, calculé sur les vrais prix de MT5. Le SL et le TP sont vérifiés tick par tick.</p>`+
@@ -396,7 +399,8 @@ function gauge(val,limit,label,good){if(Math.abs(val)<1e-9)val=0;const w=Math.ma
  <div class="mut" style="font-size:12px">limite ${fmt(limit,1)} %</div></div>`}
 function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty">Pas de stratégie combinée dans ce paper trading.<br>
  Lancez le Directeur (menu, option D) puis le paper trading de la stratégie combinée (option C).</div>`;
- return G.map(g=>{const st=g.ftmo==="RÉUSSI"?'<span class="tag ok">challenge réussi</span>':g.ftmo.startsWith("ÉCHOUÉ")?`<span class="tag ko">${esc(g.ftmo.toLowerCase())}</span>`:'<span class="tag run">challenge en cours</span>';
+ const P=D.profil;
+ return G.map(g=>{const st=P?(g.ftmo.startsWith("ÉCHOUÉ")?`<span class="tag ko">limite touchée : ${esc(g.ftmo.toLowerCase())}</span>`:'<span class="tag ok">compte actif</span>'):g.ftmo==="RÉUSSI"?'<span class="tag ok">challenge réussi</span>':g.ftmo.startsWith("ÉCHOUÉ")?`<span class="tag ko">${esc(g.ftmo.toLowerCase())}</span>`:'<span class="tag run">challenge en cours</span>';
   const r=g.regles||{};
   return `<h3 style="margin:6px 0 8px;font-size:16px">${esc(g.nom)} ${st} <button class="botbtn" data-groupe="${esc(g.nom)}">Créer le bot MT5 de cette stratégie combinée</button></h3>
   <p class="note">Un seul compte de ${fmt(g.capital,0)} $ partagé par ${g.composants.length} composants · perte possible max
@@ -406,7 +410,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
   <div class="tiles">
    <div class="tile"><div class="mut">Équité</div><div class="v">${fmt(g.equite,2)} $</div><div class="mut" style="font-size:12px">solde ${fmt(g.solde,2)} · latent ${fmt(g.latent,2,true)}</div></div>
    ${g.reel?`<div class="tile" style="border-color:var(--accent)"><div class="mut">VRAI compte MT5 (bot) — c'est lui qui compte</div><div class="v">${fmt(g.reel.profit_pct,2,true)} %</div><div class="mut" style="font-size:12px">solde ${fmt(g.reel.solde,2)} $ · aujourd'hui ${fmt(g.reel.jour_pct,2,true)} % · écart avec le paper ${fmt(g.reel.ecart_paper,2,true)} $ · objectif ${fmt(g.objectif_requis_pct,2)} %</div></div>`:""}
-   ${gauge(g.profit_pct,D.ftmo.target1,"Objectif FTMO",true)}
+   ${P?`<div class="tile"><div class="mut">Rendement depuis le départ</div><div class="v ${cls(g.profit_pct)}">${fmt(g.profit_pct,2,true)} %</div><div class="mut" style="font-size:12px">${esc(P.nom)} · ${P.composer?"intérêts composés":"risque sur le capital de départ"}</div></div>`:gauge(g.profit_pct,D.ftmo.target1,"Objectif FTMO",true)}
    ${gauge(g.jour_pct,r.budget_jour??D.ftmo.max_daily,"Aujourd'hui",true)}
    ${gauge(-g.risque_ouvert_pct,r.budget_jour??D.ftmo.max_daily,"Risque ouvert (si tous les stops sautent)",false)}
    ${gauge(g.pire_jour_pct,D.ftmo.max_daily,"Pire journée",true)}
@@ -421,7 +425,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["R moyen","r_moyen",rr,1],["Attendu","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
-function render(){if(!D)return;tiles();document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
+function render(){if(!D)return;tiles();if(D.profil){const t="Plateforme — "+D.profil.nom+" ("+fmt(D.profil.capital,0)+" $)";const h=document.querySelector("h1");if(h.textContent!==t){h.textContent=t;document.title=t}}document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
  const v={comb:viewComb,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour

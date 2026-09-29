@@ -115,7 +115,8 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
     values = {"InpCapital": f"{capital:g}", "InpRisqueMax": f"{risk_max:g}",
               "InpPerteJourMax": f"{max(0.5, daily - 0.2):g}", "InpPerteTotaleMax": f"{max(1.0, total - 0.5):g}",
               "InpObjectif": f"{target:g}", "InpMagic": str(int(magic)), "InpFichier": f'"{signal_file}"',
-              "InpMeilleurJour": f"{getattr(ftmo, 'best_day_pct', 50.0):g}"}
+              "InpMeilleurJour": f"{getattr(ftmo, 'best_day_pct', 50.0):g}",
+              "InpComposer": "true" if comb.get("composer") else "false"}
     import re
     for name, v in values.items():
         src = re.sub(rf"(input\s+\w+\s+{name}\s*=\s*)[^;]+;", rf"\g<1>{v};", src)
@@ -169,6 +170,8 @@ Démarrer
      InpObjectif       = {values['InpObjectif']} % : objectif atteint = plus de nouveau trade
      InpMeilleurJour   = {values['InpMeilleurJour']} % : une journée ne peut pas faire plus que ça du profit total
                          (l'objectif monte si besoin : une journée à +6 % -> il faut +12 %)
+     InpComposer       = {values['InpComposer']} : true = le risque suit le solde (compte perso, intérêts composés)
+     (InpObjectif = 0 : pas d'objectif, le bot continue à trader — compte perso ou compte financé)
 3. Le coin du graphique affiche l'état du bot, la perte du jour et le dernier signal reçu.
    Onglet « Experts » (en bas) : chaque ordre passé ou refusé est expliqué.
 
@@ -225,7 +228,8 @@ def generate_strategy_bot(comb: dict, root: str | Path, capital: float = 100_000
     cd = f'cd /d "%~dp0{up}"' if up else f'cd /d "{repo}"'
     bat = (f'@echo off\r\n{cd}\r\n'
            f'start "Bot {slug}" paper_24h.bat --source combinee --combinee-fichier {rel(comb_path)} '
-           f'--signaux {signal_file} --capital {capital:g} --risk {risk_pct:g} --ftmo-target {target:g} '
+           f'--signaux {signal_file} --capital {capital:g} --risk {risk_pct:g} '
+           + (f'--profil {comb["profil"]} ' if comb.get("profil") else f'--ftmo-target {target:g} ') +
            f'--out {rel(out / "paper")} --port {port}\r\n'
            f'echo Paper trading + signaux du bot lances (plateforme : http://localhost:{port})\r\npause\r\n')
     (out / "LANCER_BOT.bat").write_text(bat, encoding="ascii", errors="replace")

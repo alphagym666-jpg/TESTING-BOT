@@ -73,6 +73,7 @@ class DirectorConfig:
     min_bars: int = 1000               # bougies minimum par case (400 en mode « période récente »)
     server_offset: float = 7.0         # heure du serveur MT5 - heure locale (FTMO vs Québec/New York : 7 h)
     seed: int = 7
+    comptes: bool = True               # construire aussi le compte perso et le compte financé (comptes.py)
 
 
 def _fmt(v, f="{:.1f}"):
@@ -420,8 +421,8 @@ class Director:
         """Niveaux de risque autorisés : <= risque max, et un seul stop (+10 % de frais) doit tenir dans le budget du jour."""
         return sorted(l for l in self.cfg.risk_levels if l <= self.cfg.risk_pct and l * 1.1 <= self.cfg.day_budget + 1e-9)
 
-    def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500, max_corr=None, pilot=None,
-              day_lock=None):
+    def _daily(self, keys, weights, day_stop, max_open, trades, windows, max_corr=None, day_lock=None):
+        """Journées de la combinaison (P&L % et pire moment) sur la période commune, règles de risque appliquées."""
         lo = max(windows[k][0] for k in keys)
         hi = min(windows[k][1] for k in keys)
         if (hi - lo).days < self.cfg.min_window_days:
@@ -434,7 +435,18 @@ class Director:
             parts.append(t[(e >= lo) & (x <= hi)])
         merged = apply_risk_rules(pd.concat(parts, ignore_index=True), day_stop, max_open, self.cfg.risk_pct,
                                   day_budget=self.cfg.day_budget, max_corr=max_corr, day_lock=day_lock)
-        daily = daily_table(merged, self.cfg.risk_pct, lo, hi)
+        return daily_table(merged, self.cfg.risk_pct, lo, hi), merged, lo, hi
+
+    def _summary(self, res) -> str:
+        return (f"réussite {res['ftmo_pass']:.1f} %, +{self.cfg.ftmo.target1:g} % en "
+                f"~{_fmt(res['ftmo_jours_p1'], '{:.0f}')} jours, échec {_fmt(res['ftmo_echec_p1'])} %")
+
+    def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500, max_corr=None, pilot=None,
+              day_lock=None):
+        got = self._daily(keys, weights, day_stop, max_open, trades, windows, max_corr, day_lock)
+        if got is None:
+            return None
+        daily, merged, lo, hi = got
         res = simulate(daily, self.cfg.ftmo, n, seed=0, pilot=pilot)
         res["fenetre"] = (str(lo.date()), str(hi.date()))
         res["trades"] = int(len(merged))
@@ -544,8 +556,7 @@ class Director:
                 best, found = res, lk
         if found is None:
             return best, rules
-        say(f"Frein de bonne journée : {lock_text(found)} -> challenge réussi en "
-            f"~{_fmt(expected_days(best), '{:.0f}')} jours attendus, échec {_fmt(best['ftmo_echec_p1'])} %")
+        say(f"Frein de bonne journée : {lock_text(found)} -> {self._summary(best)}")
         return best, {**rules, "frein": found}
 
     def build_combined(self, allr: pd.DataFrame, pool=None, quiet=False) -> dict:
@@ -589,8 +600,7 @@ class Director:
                     best = pick_res
                     improved = True
                     say(f"+ composant {len(keys)} : {info[pick]['symbole']} {info[pick]['timeframe']} | "
-                             f"{info[pick]['strategie']} à {pick_w:g} %/trade -> réussite {best['ftmo_pass']:.1f} %, "
-                             f"+{self.cfg.ftmo.target1:g} % en ~{_fmt(best['ftmo_jours_p1'], '{:.0f}')} jours")
+                             f"{info[pick]['strategie']} à {pick_w:g} %/trade -> {self._summary(best)}")
             if not keys:
                 break
             # b) régler l'arrêt journalier et le nombre max de positions
@@ -630,8 +640,7 @@ class Director:
             ds_txt = "aucun" if rules["day_stop"] is None else f"-{rules['day_stop']:g} %"
             say(f"Réglages après le tour {rnd + 1} : arrêt journalier {ds_txt}, "
                      f"max positions {rules['max_open'] or 'illimité'}, max marchés corrélés dans le même sens "
-                     f"{rules.get('max_correles') or 'illimité'} -> réussite {best['ftmo_pass']:.1f} %, "
-                     f"~{_fmt(best['ftmo_jours_p1'], '{:.0f}')} jours")
+                     f"{rules.get('max_correles') or 'illimité'} -> {self._summary(best)}")
         if keys:
             best, rules, weights = self._tune_pilot(keys, weights, rules, best, trades, windows, info, say)
             best, rules = self._tune_lock(keys, weights, rules, best, trades, windows, say)
@@ -649,9 +658,8 @@ class Director:
         combined = {"nom": "Stratégie combinée du Directeur", "ftmo_regles": self.cfg.ftmo.label(),
                     "risque_max_par_trade": R, "regles": rules, "resultat": final, "composants": comps,
                     "cree_le": time.strftime("%Y-%m-%d %H:%M")}
-        say(f"STRATÉGIE COMBINÉE : {len(keys)} composants, réussite {final['ftmo_pass']:.1f} %, "
-                 f"+{self.cfg.ftmo.target1:g} % en ~{_fmt(final['ftmo_jours_p1'], '{:.0f}')} jours de bourse, "
-                 f"échec {_fmt(final['ftmo_echec_p1'])} %, pire journée {final['pire_jour']:.2f} %")
+        say(f"STRATÉGIE COMBINÉE : {len(keys)} composants, {self._summary(final)}, "
+            f"pire journée {final['pire_jour']:.2f} %")
         return combined
 
     def in_session(self, times, start, end) -> np.ndarray:
@@ -940,6 +948,9 @@ class Director:
             allr = self.review()
         if len(allr):
             self.scenarios(allr)
+            if self.cfg.comptes:
+                from .comptes import run_accounts
+                self.accounts = run_accounts(self, allr, overrides=getattr(self, "account_overrides", None))
             if self.combined:
                 self.multi_tf_test()
             self.build_cards()
@@ -988,6 +999,24 @@ def _direct_html(d) -> str:
              "</p>") if comb else ""
     return (f"<p class='mut'>{esc(r.get('message', ''))} ({r['trades']} trades, {r['strategies']} stratégies)</p>{ctext}"
             f"<p>Meilleurs setups en direct :</p><ol>{top}</ol><p><a href='direct.html'>Analyse complète du direct</a></p>")
+
+
+def _accounts_html(d) -> str:
+    from html import escape as esc
+    acc = getattr(d, "accounts", {}) or {}
+    if not acc:
+        return "<p class='mut'>Pas encore calculé (python run.py comptes, ou option K du menu).</p>"
+    out = ""
+    for name, c in acc.items():
+        if not c:
+            out += f"<p class='mut'>{esc(name)} : pas de combinaison possible pour l'instant.</p>"
+            continue
+        r = c["resultat"]
+        out += (f"<p><b>{esc(c['nom'])}</b> ({esc(c['but'])}) : {len(c['composants'])} composants, rendement médian "
+                f"{_fmt(r['rendement_an_median'])} %/an ({_fmt(r['rendement_mois_median'], '{:.2f}')} %/mois), "
+                f"problème {_fmt(r['p_probleme'])} % de chances sur un an. "
+                f"<a href='compte_{esc(name)}.html'>Détails</a></p>")
+    return out
 
 
 def _bh_text(d, c) -> str:
@@ -1193,6 +1222,8 @@ Le scénario retenu est celui qui donne un challenge RÉUSSI le plus vite (jours
 en ratant au plus {d.cfg.max_fail:g} % des challenges.</p>
 {scen}
 {trial_banner}
+<h2>Les autres comptes : compte perso et compte financé</h2>
+{_accounts_html(d)}
 <h2>Ce que dit le direct (paper trading)</h2>
 {_direct_html(d)}
 <h2 id="genies">Les découvertes des génies : Einstein et Hawking</h2>

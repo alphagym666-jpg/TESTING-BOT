@@ -32,3 +32,14 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     assert len(saved["horaires"]) >= 1
     assert (tmp_path / f"strategie_combinee_{saved['horaires'][0]['fichier'].split('_')[-1]}").exists()
     assert "24h/24 ou seulement le jour" in (tmp_path / "directeur.html").read_text(encoding="utf-8")
+    # les autres comptes : compte perso (5 000 $) et compte financé, construits avec les mêmes stratégies
+    html = (tmp_path / "directeur.html").read_text(encoding="utf-8")
+    assert "compte perso et compte financé" in html
+    for name in ("perso", "finance"):
+        f = tmp_path / f"strategie_combinee_{name}.json"
+        if f.exists():
+            acc = json.loads(f.read_text(encoding="utf-8"))
+            assert acc["profil"] == name and acc["resultat"]["p_probleme"] <= 5 or acc.get("essai")
+            assert acc["capital"] == (5000 if name == "perso" else 100_000) and acc["composer"] == (name == "perso")
+            assert all(c["risk_pct"] <= 1.0 for c in acc["composants"])
+            assert (tmp_path / f"compte_{name}.html").exists()

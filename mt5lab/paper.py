@@ -113,6 +113,7 @@ class Group:
     session: tuple | None = None      # (début, fin, décalage serveur) : entrées seulement dans cet horaire local
     pilot: dict | None = None         # pilote de risque du challenge (ftmo.pilot_factor)
     day_lock: dict | None = None      # frein de bonne journée {"seuil": %, "facteur": 0 = stop, 0.5 = risque /2}
+    compound: bool = False            # compte perso : le risque suit le SOLDE (intérêts composés)
     best_day: float = 0.0             # meilleure journée (argent)
     prev_day_pnl: float = 0.0
     balance: float = 100_000.0
@@ -134,7 +135,7 @@ class Group:
 
 GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
                                                                 "total_budget", "max_corr", "session", "pilot",
-                                                                "day_lock")]
+                                                                "day_lock", "compound")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -208,7 +209,8 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
     groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0),
                      "max_corr": rules.get("max_correles"), "session": _session_of(d),
-                     "pilot": rules.get("pilote"), "day_lock": rules.get("frein")}}
+                     "pilot": rules.get("pilote"), "day_lock": rules.get("frein"),
+                     "compound": bool(d.get("composer"))}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
           f"(perte possible max {rules.get('day_budget')} %/jour)")
     return slots, groups
@@ -346,7 +348,7 @@ class PaperEngine:
             cap = g.get("capital", 100_000.0)
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
                                       g.get("total_budget"), g.get("max_corr"), g.get("session"), g.get("pilot"),
-                                      g.get("day_lock"), balance=cap, peak=cap, day_start=cap)
+                                      g.get("day_lock"), bool(g.get("compound")), balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -481,8 +483,13 @@ class PaperEngine:
                                           g.prev_day_pnl / g.capital * 100))
             if self._locked(g):  # frein de bonne journée : risque réduit jusqu'à demain
                 pct *= float(g.day_lock.get("facteur", 0))
-            return min(g.balance, g.capital) * pct / 100
+            return self._risk_base(g) * pct / 100
         return min(s.balance, s.capital) * pct / 100
+
+    @staticmethod
+    def _risk_base(g: Group) -> float:
+        """Base du risque : le solde (compte perso, intérêts composés) ou le capital de départ s'il est plus bas."""
+        return g.balance if g.compound else min(g.balance, g.capital)
 
     def _locked(self, g: Group) -> bool:
         """Frein de bonne journée : +seuil % gagnés aujourd'hui (paper ou vrai compte, le plus haut des deux)."""
@@ -564,7 +571,7 @@ class PaperEngine:
             acc.ftmo_status, acc.ftmo_when = f"ÉCHOUÉ (perte du jour {daily:.2f} %)", when
         elif (equity - acc.capital) / acc.capital * 100 <= -R.max_total:
             acc.ftmo_status, acc.ftmo_when = "ÉCHOUÉ (perte max totale)", when
-        elif flat and (acc.balance - acc.capital) / acc.capital * 100 >= self.target_needed(acc) \
+        elif flat and R.target1 > 0 and (acc.balance - acc.capital) / acc.capital * 100 >= self.target_needed(acc) \
                 and len(acc.trade_days) >= R.min_days:
             acc.ftmo_status, acc.ftmo_when = "RÉUSSI", when
         return acc.ftmo_status != "en cours"
@@ -631,6 +638,9 @@ class PaperEngine:
                 return  # objectif atteint et journée déjà comptée : on ne risque plus rien
             lots = info.volume_min  # objectif atteint : micro-trade pour compter les jours minimum FTMO
         if lots <= 0:
+            if s.group:  # petit compte : le lot minimum dépasse le risque permis -> trade sauté (jamais plus de risque)
+                self.event(when, "REFUS", s, f"trade sauté : le lot minimum ({info.volume_min}) risquerait plus que "
+                                             f"{self.risk_budget(s):.2f} $ sur ce stop")
             return
         tp = price + side * s.cfg.rr * dist if s.cfg.rr else None
         s.position = Position(side, price, price - side * dist, tp, dist, lots,
@@ -648,7 +658,7 @@ class PaperEngine:
             from .pont import slot_key
             self.bot_watch.signal_open(slot_key(s.id), f"{s.symbol} {s.timeframe} {describe(s.candidate)[:60]}", price)
             g0 = self.groups.get(s.group)
-            base = min(g0.balance, g0.capital) if g0 else min(s.balance, s.capital)
+            base = self._risk_base(g0) if g0 else min(s.balance, s.capital)
             self.bridge.open(s.id, s.symbol, side, dist, s.cfg.rr,
                              0.0 if micro else round(self.risk_budget(s) / base * 100, 4),  # 0 = micro-trade
                              self.commission(s.symbol))  # risque du pilote compris
@@ -696,6 +706,8 @@ class PaperEngine:
         Avec le bot : c'est le solde du VRAI compte qui compte (s'il est à +9 % quand le paper est à +10 %, on
         continue à trader normalement)."""
         if acc.ftmo_status != "en cours" and not (isinstance(acc, Group) and self.bridge is not None):
+            return False
+        if self.ftmo.target1 <= 0:  # compte perso / financé : pas d'objectif, on continue à trader normalement
             return False
         real = self.real_account() if isinstance(acc, Group) else None
         bal = real["solde"] if real else acc.balance
@@ -1048,6 +1060,7 @@ class PaperEngine:
             "serveur": getattr(acc, "server", ""), "prix": prices,
             "capital": next(iter(self.slots.values())).capital if self.slots else 0,
             "risque_pct": self.risk_pct, "ftmo": asdict(self.ftmo), "ftmo_label": self.ftmo.label(),
+            "profil": getattr(self, "profile", None),
             "meteo": {k: {t: (x if isinstance(x, str) else None) for t, x in v.items()} for k, v in self.meteo.items()},
             "n_comptes": len(self.slots), "n_actifs": len(slot_rows), "n_trades_total": self.total_trades,
             "bot": self.bot_watch.status() if self.bot_watch is not None else None,

@@ -35,6 +35,9 @@ rem pour chercher ET valider seulement sur la periode recente (resultats dans un
 set DEPUIS=
 rem Exiger que chaque strategie batte le buy ^& hold (1 = oui)
 set BATTRE_BH=0
+rem Les autres comptes (options K, M, V) : capital du compte perso et du compte finance apres le challenge
+set CAPITAL_PERSO=5000
+set CAPITAL_FINANCE=100000
 rem Historique teste : 2 ans en M1 et M5, 5 ans en M15, M30, H1, H4 et D1 (automatique)
 rem =====================================================================================
 
@@ -68,6 +71,11 @@ echo   G. Voir les DECOUVERTES DES GENIES (Einstein et Hawking : leurs lois math
 echo   F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
 echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24) + signaux pour le bot
 echo   E. Generer le BOT MT5 (LaboBot.mq5) : strategie combinee OU n'importe quelle strategie (fiche)
+echo.
+echo   --- LES AUTRES COMPTES (memes strategies, autre objectif) ---
+echo   K. Construire la strategie du COMPTE PERSO (%CAPITAL_PERSO% $, long terme) et du COMPTE FINANCE (apres le challenge)
+echo   M. PLATEFORME + paper trading du COMPTE PERSO (http://localhost:8856)
+echo   V. PLATEFORME + paper trading du COMPTE FINANCE (3 %%/jour, 10 %% au total ; http://localhost:8857)
 echo.
 echo   --- RECHERCHE (les agents testent et inventent des strategies) ---
 echo   3. Recherche complete : tous les marches x tous les timeframes (agents + genies)
@@ -109,6 +117,9 @@ if /i "%CHOIX%"=="T" goto telegram
 if /i "%CHOIX%"=="F" goto fiches
 if /i "%CHOIX%"=="C" goto papercomb
 if /i "%CHOIX%"=="E" goto bot
+if /i "%CHOIX%"=="K" goto comptes
+if /i "%CHOIX%"=="M" goto paperperso
+if /i "%CHOIX%"=="V" goto paperfinance
 if /i "%CHOIX%"=="A" goto autostart
 if /i "%CHOIX%"=="B" goto noautostart
 if "%CHOIX%"=="0" exit /b 0
@@ -233,6 +244,27 @@ pause & goto menu
 :botfiche
 python run.py bot --results %RES% --fiche %FICHE% --capital %CAPITAL% %FTMO%
 if exist "%RES%\bots" start "" "%RES%\bots"
+pause & goto menu
+
+:comptes
+echo Le Directeur reprend les strategies deja trouvees et construit :
+echo  - le COMPTE PERSO : meilleur rendement a long terme (interets composes), au plus 5 %% de chances de baisser de 25 %%
+echo  - le COMPTE FINANCE : meilleur rendement par mois sans jamais perdre 3 %% dans une journee ni 10 %% au total
+python run.py directeur --comptes-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital-perso %CAPITAL_PERSO% --capital-finance %CAPITAL_FINANCE% --risk %RISK% --commission %COMMISSION% %FTMO%
+if exist "%RES%\compte_perso.html" start "" "%RES%\compte_perso.html"
+if exist "%RES%\compte_finance.html" start "" "%RES%\compte_finance.html"
+pause & goto menu
+
+:paperperso
+if not exist "%RES%\strategie_combinee_perso.json" (echo Lancez d'abord l'option K. & pause & goto menu)
+start "Paper trading - compte perso" "%~dp0paper_24h.bat" --results %RES% --profil perso --capital %CAPITAL_PERSO% --commission %COMMISSION% --out %RES%\paper_perso --port 8856
+echo Plateforme du compte perso : http://localhost:8856 (bouton Bot MT5 sur la plateforme pour son bot)
+pause & goto menu
+
+:paperfinance
+if not exist "%RES%\strategie_combinee_finance.json" (echo Lancez d'abord l'option K. & pause & goto menu)
+start "Paper trading - compte finance" "%~dp0paper_24h.bat" --results %RES% --profil finance --capital %CAPITAL_FINANCE% --commission %COMMISSION% --out %RES%\paper_finance --port 8857
+echo Plateforme du compte finance : http://localhost:8857 (bouton Bot MT5 sur la plateforme pour son bot)
 pause & goto menu
 
 :papercomb

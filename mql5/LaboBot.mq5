@@ -33,6 +33,7 @@ input double InpPerteJourMax    = 2.8;    // perte du jour qui déclenche la fer
 input double InpPerteTotaleMax  = 9.5;    // perte totale qui arrête le bot (%)
 input double InpObjectif        = 10.0;   // objectif du challenge en % (0 = pas d'arrêt à l'objectif)
 input double InpMeilleurJour    = 50.0;   // règle du meilleur jour : une journée <= X % du profit total (0 = aucune)
+input bool   InpComposer        = false;  // true = risque calculé sur le SOLDE (compte perso, intérêts composés)
 input int    InpDelaiMaxSec     = 90;     // un signal d'ouverture plus vieux que ça est ignoré
 input long   InpMagic           = 260926; // numéro magique des ordres du bot
 input bool   InpAutoriserReel   = false;  // autoriser un compte RÉEL (laisser false pour un challenge / démo)
@@ -302,7 +303,9 @@ void Execute(string &f[])
         }
       double stops = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(symbol, SYMBOL_POINT);
       if(dist <= stops)                  { Print("LaboBot : stop trop proche pour ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "stop trop proche"); return; }
-      double risk_money = InpCapital * MathMin(risk, InpRisqueMax) / 100.0;
+      // même base que le paper trading : le solde (intérêts composés) ou le plus bas entre solde et capital de départ
+      double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      double risk_money = (InpComposer ? bal : MathMin(bal, InpCapital)) * MathMin(risk, InpRisqueMax) / 100.0;
       double lots = risk <= 0 ? SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN) : Lots(symbol, risk_money, dist, commission);
       if(lots <= 0)                      { Print("LaboBot : lot trop petit pour le risque demandé ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "lot trop petit"); return; }
       MqlTick tk;

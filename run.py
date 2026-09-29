@@ -151,7 +151,7 @@ def cmd_directeur(a):
         def get_data(sym, tf):
             import zlib
             return synthetic(a.bars or 6000, seed=zlib.crc32(f"{sym}{tf}".encode()) % 1000, freq=freq.get(tf, "h")), 0.00012
-        Director(cfg, get_data).run()
+        _run_director(cfg, get_data, a)
         return
     from mt5lab.data import MT5Connector
     comm = parse_commission(a.commission)
@@ -171,7 +171,22 @@ def cmd_directeur(a):
             c = commission_for(comm, sym)
             df = conn.enrich(df, sym, a.commission_points, c, news, a.fenetre_nouvelles)
             return df, conn.typical_cost(df, sym, a.commission_points, c)
-        Director(cfg, get_data).run()
+        _run_director(cfg, get_data, a)
+
+
+def _run_director(cfg, get_data, a):
+    from mt5lab.manager import Director
+    cfg.comptes = not a.sans_comptes
+    d = Director(cfg, get_data)
+    d.account_overrides = {"perso": {"capital": a.capital_perso}, "finance": {"capital": a.capital_finance}}
+    if not a.comptes_seulement:
+        d.run()
+        return
+    from mt5lab.comptes import run_accounts
+    res = run_accounts(d, overrides=d.account_overrides)
+    for name, c in res.items():
+        if c:
+            print(f"-> {Path(cfg.out) / f'compte_{name}.html'}  (stratégie : strategie_combinee_{name}.json)")
 
 
 def cmd_compare(a):
@@ -274,6 +289,22 @@ def cmd_paper(a):
     from mt5lab.paper import (PaperEngine, load_best_slots, load_combined_slots, load_exploration_slots,
                               load_portfolio_slots, load_slots, write_dashboard)
 
+    prof = None
+    if a.profil:  # compte perso / compte financé : sa stratégie, sa plateforme, ses fichiers et son bot
+        from mt5lab.comptes import ftmo_like, profile
+        prof = profile(a.profil, capital=a.capital)
+        prof["composer"] = bool(prof["compound"])
+        a.capital, a.source = prof["capital"], "combinee"
+        a.combinee_fichier = a.combinee_fichier or str(Path(a.results) / f"strategie_combinee_{a.profil}.json")
+        if a.out == "results/paper":
+            a.out = f"results/paper_{a.profil}"
+        if a.port == 8765:
+            a.port = {"perso": 8856, "finance": 8857}[a.profil]
+        a.signaux = a.signaux or f"labo_signaux_{a.profil}.csv"
+        if not Path(a.combinee_fichier).exists():
+            raise SystemExit(f"Pas encore de stratégie pour ce compte : lancez d'abord l'option K du menu "
+                             f"(python run.py directeur --comptes-seulement).")
+    a.capital = a.capital or 100_000
     if a.port:  # déjà en marche ? (deux copies écriraient dans les mêmes fichiers)
         import socket
         with socket.socket() as sock:
@@ -309,8 +340,9 @@ def cmd_paper(a):
             bridge = SignalBridge(common_files_dir(conn.mt5) / (a.signaux or SIGNAL_FILE))
             print(f"[bot] signaux pour LaboBot écrits dans {bridge.path} (le bot n'agit que s'il est posé sur un graphique)")
         eng = PaperEngine(conn, slots, Path(a.out), a.risk, {s.symbol: commission_for(comm, s.symbol) for s in slots},
-                          ftmo=ftmo_rules(a), groups=groups, news=load_news_arg(a), news_window=a.fenetre_nouvelles,
-                          bridge=bridge)
+                          ftmo=ftmo_like(prof) if prof else ftmo_rules(a), groups=groups, news=load_news_arg(a),
+                          news_window=a.fenetre_nouvelles, bridge=bridge)
+        eng.profile = prof
         write_dashboard(eng)
         eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
 
@@ -440,7 +472,11 @@ def main():
     paper.add_argument("--port", type=int, default=8765, help="port de la plateforme web locale (0 = désactivée)")
     paper.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur automatiquement")
     paper.add_argument("--top", type=int, default=20, help="nb max de stratégies suivies par symbole/timeframe")
-    paper.add_argument("--capital", type=float, default=100_000, help="capital virtuel de chaque stratégie")
+    paper.add_argument("--capital", type=float, default=None,
+                       help="capital virtuel de chaque stratégie (défaut 100000, ou celui du profil)")
+    paper.add_argument("--profil", choices=["perso", "finance"], default=None,
+                       help="perso = compte perso (5000 $, long terme, intérêts composés) ; finance = compte financé "
+                            "après le challenge (3 %%/jour, 10 %% au total, pas d'objectif)")
     paper.add_argument("--risk", type=float, default=1.0,
                        help="perte max par trade en %% du capital (1 %% de 100 000 = 1 000 max au stop)")
     paper.add_argument("--commission", nargs="+", default=None,
@@ -485,6 +521,11 @@ def main():
     di.add_argument("--refaire", action="store_true", help="refaire aussi les cases déjà recherchées")
     di.add_argument("--sans-deuxieme-passe", action="store_true")
     di.add_argument("--demo", action="store_true", help="données synthétiques (sans MT5)")
+    di.add_argument("--comptes-seulement", action="store_true",
+                    help="seulement le compte perso et le compte financé, avec la recherche déjà faite (rapide)")
+    di.add_argument("--sans-comptes", action="store_true", help="ne pas construire le compte perso ni le compte financé")
+    di.add_argument("--capital-perso", type=float, default=5_000, help="capital du compte perso (défaut 5000)")
+    di.add_argument("--capital-finance", type=float, default=100_000, help="capital du compte financé (défaut 100000)")
     di.add_argument("--out", default="results")
     add_ftmo_args(di)
     news_args(di)

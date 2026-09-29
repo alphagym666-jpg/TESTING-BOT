@@ -503,6 +503,34 @@ baisse), à 1 % de risque par trade. Avec `--battre-buy-hold` (question de l'opt
 pas mieux n'est pas validée. Le rapport du Directeur montre aussi le gain de la stratégie combinée à côté du buy &
 hold de ses marchés.
 
+## Les autres comptes : compte perso et compte financé
+
+Mêmes stratégies validées que pour le challenge, mais un autre objectif (module `mt5lab/comptes.py`) :
+
+| | Compte perso (option K puis M) | Compte financé (option K puis V) |
+|---|---|---|
+| Capital | 5 000 $ (`CAPITAL_PERSO` dans lancer.bat) | 100 000 $ (`CAPITAL_FINANCE`) |
+| But | meilleur rendement à long terme | meilleur rendement par mois |
+| Risque | suit le SOLDE (intérêts composés), 1 %/trade max | sur le capital de départ, 1 %/trade max |
+| Limites | perte possible max 5 %/jour, trading arrêté à -30 % | jamais -3 % dans une journée ni -10 % au total |
+| Sécurité exigée | au plus 5 % de chances de baisser de 25 % en un an | au plus 5 % de chances de toucher une limite en un an |
+| Plateforme | http://localhost:8856 | http://localhost:8857 |
+
+Le gestionnaire du compte choisit les composants, le risque de chacun et les règles (arrêt journalier, positions
+max, marchés corrélés, frein de bonne journée) en simulant 2 000 années possibles à partir des journées
+hors-échantillon. Résultats : `compte_perso.html`, `compte_finance.html` et `strategie_combinee_perso.json` /
+`strategie_combinee_finance.json`. Le bouton « Bot MT5 » de chaque plateforme crée un bot réglé pour ce compte
+(pas d'objectif ; `InpComposer = true` pour le compte perso).
+
+Ligne de commande : `python run.py directeur --comptes-seulement` (rapide, avec la recherche déjà faite), puis
+`python run.py paper --profil perso` ou `--profil finance`.
+
+Attention :
+- Les rendements affichés viennent du passé. Le paper trading en direct doit les confirmer avant d'y mettre de l'argent.
+- Avec 5 000 $, 1 % = 50 $ par trade : sur certains marchés, le lot minimum (0,01) dépasse ce risque, et le trade est
+  alors sauté (visible dans le journal).
+- Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
+
 ## Meilleur bot par marché
 
 Onglet **« Meilleur bot par marché »** de la plateforme : pour chaque marché, la stratégie qui marche le mieux EN
