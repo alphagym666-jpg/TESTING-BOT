@@ -28,7 +28,7 @@ from .ftmo import FtmoRules
 from .manager import Director, _fmt
 
 PROFILES = {
-    "perso": {"nom": "Compte perso", "capital": 5_000.0, "risk_pct": 1.0, "day_budget": 5.0, "total_budget": 30.0,
+    "perso": {"nom": "Compte perso", "capital": 5_000.0, "risk_pct": 2.0, "day_budget": 5.0, "total_budget": 30.0,
               "dd_limit": 25.0, "day_limit": None, "max_fail": 5.0, "compound": True,
               "but": "meilleur rendement à long terme (intérêts composés) sans grosse baisse du compte"},
     "finance": {"nom": "Compte financé", "capital": 100_000.0, "risk_pct": 1.0, "day_budget": 2.5,
@@ -108,7 +108,9 @@ class AccountManager(Director):
     """Le Directeur, mais avec l'objectif d'un compte perso ou d'un compte financé."""
 
     def __init__(self, cfg, get_data, prof: dict, log=print):
-        cfg = replace(cfg, risk_pct=float(prof["risk_pct"]), day_budget=float(prof["day_budget"]),
+        r = float(prof["risk_pct"])
+        levels = tuple(sorted({*cfg.risk_levels, *(x for x in (1.25, 1.5, 1.75, 2.0, 2.5, 3.0) if x <= r), r}))
+        cfg = replace(cfg, risk_pct=r, risk_levels=levels, day_budget=float(prof["day_budget"]),
                       total_budget=float(prof["total_budget"]), max_fail=float(prof["max_fail"]),
                       ftmo=ftmo_like(prof), capital=float(prof["capital"]))
         super().__init__(cfg, get_data, log)

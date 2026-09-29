@@ -37,6 +37,9 @@ rem Exiger que chaque strategie batte le buy ^& hold (1 = oui)
 set BATTRE_BH=0
 rem Les autres comptes (options K, M, V) : capital du compte perso et du compte finance apres le challenge
 set CAPITAL_PERSO=5000
+rem Compte perso : risque max par trade et perte possible max par jour (en %%)
+set RISQUE_PERSO=2
+set PERTE_JOUR_PERSO=5
 set CAPITAL_FINANCE=100000
 rem Historique teste : 2 ans en M1 et M5, 5 ans en M15, M30, H1, H4 et D1 (automatique)
 rem =====================================================================================
@@ -73,7 +76,7 @@ echo   C. PAPER TRADING de la strategie combinee (un seul compte, 24h/24) + sign
 echo   E. Generer le BOT MT5 (LaboBot.mq5) : strategie combinee OU n'importe quelle strategie (fiche)
 echo.
 echo   --- LES AUTRES COMPTES (memes strategies, autre objectif) ---
-echo   K. Construire la strategie du COMPTE PERSO (%CAPITAL_PERSO% $, long terme) et du COMPTE FINANCE (apres le challenge)
+echo   K. Construire la strategie du COMPTE PERSO (%CAPITAL_PERSO% $, %RISQUE_PERSO%%%/trade, %PERTE_JOUR_PERSO%%%/jour max) et du COMPTE FINANCE (apres le challenge)
 echo   M. PLATEFORME + paper trading du COMPTE PERSO (http://localhost:8856)
 echo   V. PLATEFORME + paper trading du COMPTE FINANCE (3 %%/jour, 10 %% au total ; http://localhost:8857)
 echo.
@@ -250,7 +253,7 @@ pause & goto menu
 echo Le Directeur reprend les strategies deja trouvees et construit :
 echo  - le COMPTE PERSO : meilleur rendement a long terme (interets composes), au plus 5 %% de chances de baisser de 25 %%
 echo  - le COMPTE FINANCE : meilleur rendement par mois sans jamais perdre 3 %% dans une journee ni 10 %% au total
-python run.py directeur --comptes-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital-perso %CAPITAL_PERSO% --capital-finance %CAPITAL_FINANCE% --risk %RISK% --commission %COMMISSION% %FTMO%
+python run.py directeur --comptes-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital-perso %CAPITAL_PERSO% --risque-perso %RISQUE_PERSO% --perte-jour-perso %PERTE_JOUR_PERSO% --capital-finance %CAPITAL_FINANCE% --risk %RISK% --commission %COMMISSION% %FTMO%
 if exist "%RES%\compte_perso.html" start "" "%RES%\compte_perso.html"
 if exist "%RES%\compte_finance.html" start "" "%RES%\compte_finance.html"
 pause & goto menu

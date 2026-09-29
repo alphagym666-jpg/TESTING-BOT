@@ -41,5 +41,5 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
             acc = json.loads(f.read_text(encoding="utf-8"))
             assert acc["profil"] == name and acc["resultat"]["p_probleme"] <= 5 or acc.get("essai")
             assert acc["capital"] == (5000 if name == "perso" else 100_000) and acc["composer"] == (name == "perso")
-            assert all(c["risk_pct"] <= 1.0 for c in acc["composants"])
+            assert all(c["risk_pct"] <= (2.0 if name == "perso" else 1.0) for c in acc["composants"])
             assert (tmp_path / f"compte_{name}.html").exists()

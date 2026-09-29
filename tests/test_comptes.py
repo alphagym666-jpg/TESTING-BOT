@@ -30,6 +30,7 @@ def test_profile_rules_for_paper_and_bot():
     assert r.target1 == 0 and r.max_daily == 3 and r.max_total == 10 and r.best_day_pct == 0
     p = ftmo_like(profile("perso", capital=3000))
     assert p.target1 == 0 and p.max_total == 30 and profile("perso", capital=3000)["capital"] == 3000
+    assert profile("perso")["risk_pct"] == 2.0 and profile("perso")["day_budget"] == 5.0
 
 
 def _trades(mean, n=400, seed=0, start="2024-01-01"):
@@ -52,7 +53,8 @@ def test_account_manager_builds_safe_combination(tmp_path):
         keys = {c["strategie"] for c in comb["composants"]}
         assert "EURUSD_H1|c" not in keys                          # la perdante n'est jamais prise
         assert comb["resultat"]["p_probleme"] <= 5
-        assert all(c["risk_pct"] <= 1.0 for c in comb["composants"])
+        assert all(c["risk_pct"] <= profile(name)["risk_pct"] for c in comb["composants"])
+        assert (2.0 in m.levels()) == (name == "perso")          # compte perso : jusqu'à 2 % par trade
         assert comb["regles"]["day_budget"] == profile(name)["day_budget"]
 
 
@@ -105,4 +107,7 @@ def test_bot_for_account_profiles(tmp_path):
     assert "--profil finance" in (out / "LANCER_BOT.bat").read_text() and "--ftmo-target" not in (out / "LANCER_BOT.bat").read_text()
     comb.update(profil="perso", composer=True)
     out = generate_strategy_bot(comb, tmp_path, 5000, ftmo_like(profile("perso")), 1.0)
-    assert "InpComposer        = true;" in (out / "LaboBot.mq5").read_text(encoding="utf-8-sig")
+    comb["regles"]["day_budget"] = 5.0
+    out = generate_strategy_bot(comb, tmp_path, 5000, ftmo_like(profile("perso")), 2.0)
+    src = (out / "LaboBot.mq5").read_text(encoding="utf-8-sig")
+    assert "InpComposer        = true;" in src and "InpPerteJourMax    = 5;" in src   # tout fermé à -5 % du jour

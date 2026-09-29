@@ -511,8 +511,8 @@ Mêmes stratégies validées que pour le challenge, mais un autre objectif (modu
 |---|---|---|
 | Capital | 5 000 $ (`CAPITAL_PERSO` dans lancer.bat) | 100 000 $ (`CAPITAL_FINANCE`) |
 | But | meilleur rendement à long terme | meilleur rendement par mois |
-| Risque | suit le SOLDE (intérêts composés), 1 %/trade max | sur le capital de départ, 1 %/trade max |
-| Limites | perte possible max 5 %/jour, trading arrêté à -30 % | jamais -3 % dans une journée ni -10 % au total |
+| Risque | suit le SOLDE (intérêts composés), 2 %/trade max (`RISQUE_PERSO`) | sur le capital de départ, 1 %/trade max |
+| Limites | perte possible max 5 %/jour (`PERTE_JOUR_PERSO`, le bot ferme tout à -5 % et reprend demain), trading arrêté à -30 % | jamais -3 % dans une journée ni -10 % au total |
 | Sécurité exigée | au plus 5 % de chances de baisser de 25 % en un an | au plus 5 % de chances de toucher une limite en un an |
 | Plateforme | http://localhost:8856 | http://localhost:8857 |
 
@@ -527,7 +527,7 @@ Ligne de commande : `python run.py directeur --comptes-seulement` (rapide, avec 
 
 Attention :
 - Les rendements affichés viennent du passé. Le paper trading en direct doit les confirmer avant d'y mettre de l'argent.
-- Avec 5 000 $, 1 % = 50 $ par trade : sur certains marchés, le lot minimum (0,01) dépasse ce risque, et le trade est
+- Avec 5 000 $, 2 % = 100 $ par trade : sur certains marchés, le lot minimum (0,01) dépasse ce risque, et le trade est
   alors sauté (visible dans le journal).
 - Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
 

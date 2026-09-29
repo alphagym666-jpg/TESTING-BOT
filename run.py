@@ -178,7 +178,9 @@ def _run_director(cfg, get_data, a):
     from mt5lab.manager import Director
     cfg.comptes = not a.sans_comptes
     d = Director(cfg, get_data)
-    d.account_overrides = {"perso": {"capital": a.capital_perso}, "finance": {"capital": a.capital_finance}}
+    d.account_overrides = {"perso": {"capital": a.capital_perso, "risk_pct": a.risque_perso,
+                                     "day_budget": a.perte_jour_perso},
+                           "finance": {"capital": a.capital_finance}}
     if not a.comptes_seulement:
         d.run()
         return
@@ -526,6 +528,9 @@ def main():
     di.add_argument("--sans-comptes", action="store_true", help="ne pas construire le compte perso ni le compte financé")
     di.add_argument("--capital-perso", type=float, default=5_000, help="capital du compte perso (défaut 5000)")
     di.add_argument("--capital-finance", type=float, default=100_000, help="capital du compte financé (défaut 100000)")
+    di.add_argument("--risque-perso", type=float, default=2.0, help="compte perso : risque max par trade (défaut 2 %%)")
+    di.add_argument("--perte-jour-perso", type=float, default=5.0,
+                    help="compte perso : perte possible max par jour (défaut 5 %%)")
     di.add_argument("--out", default="results")
     add_ftmo_args(di)
     news_args(di)

@@ -108,6 +108,8 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
     rules = comb.get("regles", {})
     target = getattr(ftmo, "target1", 10.0)
     daily = getattr(ftmo, "max_daily", 3.0)
+    if comb.get("profil") == "perso" and rules.get("day_budget"):  # compte perso : tout fermer à -X % du jour
+        daily = float(rules["day_budget"]) + 0.2                      # (reprise le lendemain)
     total = getattr(ftmo, "max_total", 10.0)
     risk_max = max([float(c["risk_pct"]) for c in comb.get("composants", [])] or [1.0])
     template = Path(template or Path(__file__).resolve().parent.parent / "mql5" / "LaboBot.mq5")
