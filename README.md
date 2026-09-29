@@ -415,6 +415,24 @@ prochaine clôture de bougie avant de prendre un trade.
   elle continue à être suivie « à blanc » mais ne touche plus le compte. Elle est réactivée si ses 20 derniers
   trades redeviennent bons. Colonne « Contrôle » dans la plateforme ; le Directeur en tient compte.
 
+## Les nouveaux employés
+
+- **Analyse du direct** (menu **L**, onglet « Meilleurs setups du direct » de la plateforme, et dans le rapport du
+  Directeur) : les trades réellement pris par le paper trading sont analysés — classement des stratégies qui
+  tournent et meilleure combinaison (1 % max par trade, 2,5 % par jour, 10 % au total), avec un bouton pour en
+  faire un bot. Tant qu'il y a moins de 20 jours de données, c'est clairement indiqué.
+- **Auditeur anti-hasard** : chaque stratégie validée est attaquée : part du profit venant des 3 meilleurs trades,
+  risque que le résultat soit du hasard (rééchantillonnage), entrée retardée d'une bougie. Rejet si c'est grave.
+- **Météorologue** : type de marché du moment (tendance ou range, calme ou nerveux), sans regarder le futur. Les
+  agents peuvent l'utiliser comme filtre (meteo_*), chaque fiche dit dans quelle météo la stratégie gagne, et la
+  météo de chaque marché est affichée dans la plateforme.
+- **Surveillant** (menu **T**) : alertes sur le téléphone par Telegram (trades de la combinée et des bots,
+  challenge réussi/raté, MT5 déconnecté, bot silencieux, ordre non exécuté, glissement), rapport du soir dans
+  `rapports/`. Le bot MT5 écrit un journal d'exécution que le surveillant compare au paper trading.
+- **Ingénieur de vitesse** : backtests compilés avec numba (≈ 40 fois plus rapides, résultats identiques, installé
+  automatiquement ; sans numba tout marche quand même), calculs SMC vectorisés et mis en cache : une recherche
+  complète va environ 2,5 fois plus vite.
+
 ## Un bot MT5 pour N'IMPORTE QUELLE stratégie
 
 - Dans la plateforme de paper trading, onglet « Classement des stratégies » : bouton **Bot MT5** sur chaque ligne ;

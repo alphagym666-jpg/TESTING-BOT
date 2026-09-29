@@ -90,7 +90,11 @@ def williams_r(df: pd.DataFrame, n: int = 14) -> pd.Series:
 def cci(df: pd.DataFrame, n: int = 20) -> pd.Series:
     tp = (df["high"] + df["low"] + df["close"]) / 3
     m = tp.rolling(n, min_periods=n).mean()
-    md = tp.rolling(n, min_periods=n).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
+    md = pd.Series(np.nan, index=df.index)
+    if len(tp) >= n:
+        from numpy.lib.stride_tricks import sliding_window_view
+        win = sliding_window_view(tp.to_numpy(dtype=float), n)
+        md.iloc[n - 1:] = np.mean(np.abs(win - win.mean(axis=1, keepdims=True)), axis=1)
     return (tp - m) / (0.015 * md.replace(0, np.nan))
 
 
@@ -347,6 +351,31 @@ def elder_ray(df: pd.DataFrame, n: int = 13):
     return df["high"] - e, df["low"] - e
 
 
+_MEMO: dict = {}
+
+
+def memo_df(fn):
+    """Mémorise un calcul coûteux pour un même jeu de données et les mêmes réglages (l'ingénieur de vitesse)."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrap(df, *args, **kw):
+        if not len(df):
+            return fn(df, *args, **kw)
+        key = (fn.__name__, id(df), len(df), df.index[0], df.index[-1], args, tuple(sorted(kw.items())))
+        if key not in _MEMO:
+            if len(_MEMO) > 400:
+                _MEMO.clear()
+            res = fn(df, *args, **kw)
+            for arr in (res.values() if isinstance(res, dict) else res if isinstance(res, tuple) else ()):
+                if isinstance(arr, np.ndarray):
+                    arr.flags.writeable = False  # partagé entre stratégies : personne ne doit le modifier
+            _MEMO[key] = res
+        return _MEMO[key]
+    return wrap
+
+
+@memo_df
 def pivots(df: pd.DataFrame, n: int = 3):
     """Points pivots (swing high / swing low) CONFIRMÉS n bougies après, sans look-ahead.
 
@@ -354,17 +383,21 @@ def pivots(df: pd.DataFrame, n: int = 3):
       ph_conf[i] = valeur du swing high confirmé à la bougie i (nan sinon), idem pl_conf
       ph_at[i]   = index de la bougie du pivot confirmé à i (-1 sinon)
     """
-    h, l = df["high"].to_numpy(), df["low"].to_numpy()
+    h, l = df["high"].to_numpy(dtype=float), df["low"].to_numpy(dtype=float)
     N = len(df)
     ph_conf = np.full(N, np.nan)
     pl_conf = np.full(N, np.nan)
     ph_at = np.full(N, -1)
     pl_at = np.full(N, -1)
-    for i in range(2 * n, N):
-        p = i - n
-        wh, wl = h[p - n: i + 1], l[p - n: i + 1]
-        if h[p] == wh.max() and np.argmax(wh) == n:
-            ph_conf[i], ph_at[i] = h[p], p
-        if l[p] == wl.min() and np.argmin(wl) == n:
-            pl_conf[i], pl_at[i] = l[p], p
+    w = 2 * n + 1
+    if N < w:
+        return ph_conf, pl_conf, ph_at, pl_at
+    from numpy.lib.stride_tricks import sliding_window_view
+    wh, wl = sliding_window_view(h, w), sliding_window_view(l, w)   # fenêtre j = bougies j .. j+2n
+    top = np.argmax(wh, axis=1) == n                                # 1er maximum au centre de la fenêtre
+    bot = np.argmin(wl, axis=1) == n
+    j = np.arange(len(wh))
+    i_top, i_bot = j[top] + 2 * n, j[bot] + 2 * n                   # confirmé n bougies après le pivot
+    ph_conf[i_top], ph_at[i_top] = h[j[top] + n], j[top] + n
+    pl_conf[i_bot], pl_at[i_bot] = l[j[bot] + n], j[bot] + n
     return ph_conf, pl_conf, ph_at, pl_at

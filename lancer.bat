@@ -5,6 +5,8 @@ if not exist .venv\Scripts\activate.bat (
   pause & exit /b 1
 )
 call .venv\Scripts\activate.bat
+rem accelerateur de calcul (numba) : installe une seule fois si absent, sans bloquer si impossible
+python -c "import numba" 2>nul || (echo Installation de l'accelerateur de calcul numba... & pip install -q numba >nul 2>&1)
 
 rem ===================== REGLAGES (modifiables avec le Bloc-notes) =====================
 rem Marches : NASDAQ, GOLD, GER40, US30 sont reconnus automatiquement (US100.cash, XAUUSD, GER40.cash, US30.cash...)

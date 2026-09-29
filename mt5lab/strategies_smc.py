@@ -22,6 +22,7 @@ MODES = ["touche", "rejet", "sans_rejet", "cassure"]
 
 
 # ============================================================================ moteurs communs
+@ind.memo_df
 def structure(df: pd.DataFrame, n: int = 3) -> dict:
     """Structure de marché : BOS (break of structure) et CHoCH (change of character)."""
     ph, pl, ph_at, pl_at = ind.pivots(df, n)

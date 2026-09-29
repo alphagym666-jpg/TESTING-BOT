@@ -16,6 +16,8 @@ if not exist .venv %PY% -m venv .venv
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install -r requirements.txt || (echo Echec de l'installation des paquets. & pause & exit /b 1)
+echo Accelerateur de calcul (numba, optionnel : tout marche sans, en plus lent)...
+pip install numba || echo numba non installe : la recherche marchera quand meme, en plus lent.
 if not exist .env copy .env.example .env >nul
 echo.
 echo Installation terminee.

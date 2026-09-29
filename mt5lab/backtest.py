@@ -70,6 +70,152 @@ def _stop_distance(df: pd.DataFrame, cfg: RiskConfig, atr_arr: np.ndarray, i: in
     raise ValueError(cfg.sl_mode)
 
 
+def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cost_mult,
+          bar_cost, use_bar_cost, sw_long, sw_short, day_num, has_swap, news, has_news):
+    """Boucle de simulation (compilée par numba quand il est installé : même logique, bien plus rapide).
+    sl_mode : 0 atr, 1 pct, 2 swing ; rr <= 0 : sortie sur signal opposé ; mgmt : 0 aucune, 1 break-even, 2 trailing."""
+    n = len(o)
+    m = 0
+    for k in range(n):
+        if sig[k] != 0:
+            m += 1
+    out = np.empty((m, 8))
+    cnt = 0
+    k = 0
+    while k < n:
+        i = k
+        k += 1
+        if sig[i] == 0:
+            continue
+        e = i + 1
+        if e >= n or np.isnan(atr[i]):
+            continue
+        if has_news and news[e]:
+            continue
+        side = 1 if sig[i] > 0 else -1
+        entry = o[e]
+        if sl_mode == 0:
+            risk = sl_value * atr[i]
+        elif sl_mode == 1:
+            risk = entry * sl_value / 100.0
+        else:
+            nb = int(sl_value)
+            a = i - nb + 1
+            if a < 0:
+                a = 0
+            lo = l[a]
+            hi = h[a]
+            for q in range(a, i + 1):
+                if l[q] < lo:
+                    lo = l[q]
+                if h[q] > hi:
+                    hi = h[q]
+            d = (entry - lo) if side > 0 else (hi - entry)
+            risk = d if d > 0.25 * atr[i] else 0.25 * atr[i]
+        if not np.isfinite(risk) or risk <= 0:
+            continue
+        sl = entry - side * risk
+        has_tp = rr > 0
+        tp = entry + side * rr * risk if has_tp else 0.0
+        be_done = False
+        exit_px = np.nan
+        exit_bar = -1
+        last = e + max_hold
+        if last > n - 1:
+            last = n - 1
+        for j in range(e, last + 1):
+            hit_sl = (l[j] <= sl) if side > 0 else (h[j] >= sl)
+            hit_tp = has_tp and ((h[j] >= tp) if side > 0 else (l[j] <= tp))
+            if hit_sl:
+                if side > 0:
+                    exit_px = sl if sl < o[j] else o[j]
+                else:
+                    exit_px = sl if sl > o[j] else o[j]
+                exit_bar = j
+                break
+            if hit_tp:
+                exit_px = tp
+                exit_bar = j
+                break
+            if (not has_tp) and j > e and sig[j] == -side:
+                exit_px = c[j]
+                exit_bar = j
+                break
+            if mgmt == 1 and not be_done:
+                if (c[j] - entry) * side >= risk:
+                    sl = entry
+                    be_done = True
+            elif mgmt == 2 and np.isfinite(atr[j]):
+                trail = c[j] - side * sl_value * atr[j] if sl_mode == 0 else c[j] - side * risk
+                if side > 0:
+                    sl = sl if sl > trail else trail
+                else:
+                    sl = sl if sl < trail else trail
+        if exit_bar < 0:
+            exit_px = c[last]
+            exit_bar = last
+        tc = cost
+        if use_bar_cost and np.isfinite(bar_cost[e]):
+            tc = bar_cost[e]
+        tc = tc * cost_mult
+        swap = 0.0
+        if has_swap:
+            nights = day_num[exit_bar] - day_num[e]
+            swap = (sw_long[e] if side > 0 else sw_short[e]) * nights
+        out[cnt, 0] = i
+        out[cnt, 1] = e
+        out[cnt, 2] = exit_bar
+        out[cnt, 3] = side
+        out[cnt, 4] = entry
+        out[cnt, 5] = exit_px
+        out[cnt, 6] = risk
+        out[cnt, 7] = ((exit_px - entry) * side - tc + swap) / risk
+        cnt += 1
+        # pas de positions simultanées : on saute les signaux pendant le trade
+        if k < exit_bar:
+            k = exit_bar
+    return out[:cnt]
+
+
+try:  # l'INGÉNIEUR DE VITESSE : boucle compilée si numba est installé (pip install numba)
+    import numba as _numba
+    _core_fast = _numba.njit(cache=True, nogil=True)(_core)
+    NUMBA = True
+except Exception:  # pragma: no cover - sans numba : même calcul en Python
+    _core_fast = _core
+    NUMBA = False
+
+_ARR_CACHE: dict = {}
+
+
+def _arrays(df: pd.DataFrame) -> dict:
+    """Tableaux du DataFrame (prix, ATR, coûts, swaps, nouvelles) calculés une seule fois par jeu de données."""
+    key = (id(df), len(df), df.index[0] if len(df) else None, df.index[-1] if len(df) else None)
+    a = _ARR_CACHE.get(key)
+    if a is not None:
+        return a
+    n = len(df)
+    a = {"o": df["open"].to_numpy(dtype=float), "h": df["high"].to_numpy(dtype=float),
+         "l": df["low"].to_numpy(dtype=float), "c": df["close"].to_numpy(dtype=float),
+         "atr": ind.atr(df, 14).to_numpy(dtype=float)}
+    a["use_bar_cost"] = "cost" in df.columns
+    a["bar_cost"] = df["cost"].to_numpy(dtype=float) if a["use_bar_cost"] else np.zeros(1)
+    a["has_swap"] = "swap_long" in df.columns and isinstance(df.index, pd.DatetimeIndex)
+    if a["has_swap"]:
+        a["sw_long"] = df["swap_long"].to_numpy(dtype=float)
+        a["sw_short"] = df["swap_short"].to_numpy(dtype=float)
+        a["day_num"] = (df.index.normalize().asi8 // 86_400_000_000_000).astype(np.int64)
+    else:
+        a["sw_long"] = a["sw_short"] = np.zeros(1)
+        a["day_num"] = np.zeros(1, dtype=np.int64)
+    a["has_news"] = "news_block" in df.columns
+    a["news"] = df["news_block"].to_numpy(dtype=bool) if a["has_news"] else np.zeros(1, dtype=bool)
+    if len(_ARR_CACHE) > 64:
+        _ARR_CACHE.clear()
+    _ARR_CACHE[key] = a
+    return a
+
+
 def run_backtest(
     df: pd.DataFrame,
     signals: pd.Series,
@@ -88,86 +234,23 @@ def run_backtest(
     Colonnes « swap_long » / « swap_short » (prix par nuit) : swaps comptés pour chaque nuit passée en position.
     Colonne « news_block » : aucune entrée sur une bougie qui s'ouvre près d'une annonce économique importante.
     """
-    o = df["open"].to_numpy(dtype=float)
-    h = df["high"].to_numpy(dtype=float)
-    l = df["low"].to_numpy(dtype=float)
-    c = df["close"].to_numpy(dtype=float)
-    sig = signals.to_numpy()
-    atr_arr = ind.atr(df, 14).to_numpy()
-    n = len(df)
-    # coûts réels quand ils sont connus (données MT5) : spread de la bougie d'entrée + commission, et swaps par nuit
-    bar_cost = df["cost"].to_numpy(dtype=float) if "cost" in df.columns else None
-    has_swap = "swap_long" in df.columns and isinstance(df.index, pd.DatetimeIndex)
-    if has_swap:
-        sw_long = df["swap_long"].to_numpy(dtype=float)
-        sw_short = df["swap_short"].to_numpy(dtype=float)
-        day_num = (df.index.normalize().asi8 // 86_400_000_000_000)
-    # filtre des nouvelles : pas d'entrée dans la fenêtre autour d'une annonce à fort impact
-    news_block = df["news_block"].to_numpy(dtype=bool) if "news_block" in df.columns else None
-
+    a = _arrays(df)
+    sig = np.asarray(signals.to_numpy(), dtype=np.float64)
     if cfg.direction == "long":
-        sig = np.where(sig > 0, sig, 0)
+        sig = np.where(sig > 0, sig, 0.0)
     elif cfg.direction == "short":
-        sig = np.where(sig < 0, sig, 0)
-
-    trades = []
-    idx = np.flatnonzero(sig)
-    ptr = 0
-    while ptr < len(idx):
-        i = idx[ptr]
-        ptr += 1
-        e = i + 1
-        if e >= n or np.isnan(atr_arr[i]):
-            continue
-        if news_block is not None and news_block[e]:
-            continue
-        side = int(np.sign(sig[i]))
-        entry = o[e]
-        risk = _stop_distance(df, cfg, atr_arr, i, side, entry)
-        if not np.isfinite(risk) or risk <= 0:
-            continue
-        sl = entry - side * risk
-        tp = entry + side * cfg.rr * risk if cfg.rr else None
-        be_done = False
-        exit_px, exit_bar = None, None
-        last = min(n - 1, e + cfg.max_hold)
-        for j in range(e, last + 1):
-            hit_sl = (l[j] <= sl) if side > 0 else (h[j] >= sl)
-            hit_tp = tp is not None and ((h[j] >= tp) if side > 0 else (l[j] <= tp))
-            if hit_sl:  # pire cas si les deux sont touchés
-                # gap au-delà du stop : on sort à l'ouverture
-                exit_px = min(sl, o[j]) if side > 0 else max(sl, o[j])
-                exit_bar = j
-                break
-            if hit_tp:
-                exit_px, exit_bar = tp, j
-                break
-            if tp is None and j > e and sig[j] == -side:
-                exit_px, exit_bar = c[j], j
-                break
-            # gestion de position à la clôture de la bougie
-            if cfg.management == "breakeven" and not be_done:
-                if (c[j] - entry) * side >= risk:
-                    sl, be_done = entry, True
-            elif cfg.management == "trailing" and np.isfinite(atr_arr[j]):
-                trail = c[j] - side * cfg.sl_value * atr_arr[j] if cfg.sl_mode == "atr" else c[j] - side * risk
-                sl = max(sl, trail) if side > 0 else min(sl, trail)
-        if exit_px is None:
-            exit_px, exit_bar = c[last], last
-        trade_cost = (bar_cost[e] if bar_cost is not None and np.isfinite(bar_cost[e]) else cost) * cost_mult
-        swap = 0.0
-        if has_swap:  # swap positif = crédit, négatif = frais (convention MT5), une fois par nuit passée
-            nights = int(day_num[exit_bar] - day_num[e])
-            swap = (sw_long[e] if side > 0 else sw_short[e]) * nights
-        r = ((exit_px - entry) * side - trade_cost + swap) / risk
-        trades.append((i, e, exit_bar, side, entry, exit_px, risk, r))
-        # pas de positions simultanées : on saute les signaux pendant le trade
-        while ptr < len(idx) and idx[ptr] < exit_bar:
-            ptr += 1
-
-    res = summarize(np.array([t[-1] for t in trades]), np.array([t[2] - t[1] + 1 for t in trades]), risk_pct)
+        sig = np.where(sig < 0, sig, 0.0)
+    sl_mode = {"atr": 0, "pct": 1, "swing": 2}[cfg.sl_mode]
+    mgmt = {"none": 0, "breakeven": 1, "trailing": 2}[cfg.management]
+    t = _core_fast(a["o"], a["h"], a["l"], a["c"], sig, a["atr"], sl_mode, float(cfg.sl_value),
+                   float(cfg.rr) if cfg.rr else 0.0, mgmt, int(cfg.max_hold), float(cost), float(cost_mult),
+                   a["bar_cost"], a["use_bar_cost"], a["sw_long"], a["sw_short"], a["day_num"], a["has_swap"],
+                   a["news"], a["has_news"])
+    res = summarize(t[:, 7], (t[:, 2] - t[:, 1] + 1), risk_pct)
     if return_trades:
-        tdf = pd.DataFrame(trades, columns=["signal_bar", "entry_bar", "exit_bar", "side", "entry", "exit", "risk", "r"])
+        tdf = pd.DataFrame(t, columns=["signal_bar", "entry_bar", "exit_bar", "side", "entry", "exit", "risk", "r"])
+        for col in ("signal_bar", "entry_bar", "exit_bar", "side"):
+            tdf[col] = tdf[col].astype(int)
         if len(tdf):
             tdf["entry_time"] = df.index[tdf["entry_bar"]]
             tdf["exit_time"] = df.index[tdf["exit_bar"]]
