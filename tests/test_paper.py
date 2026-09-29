@@ -518,3 +518,34 @@ def test_surveillant_bot_watch_and_daily_report(setup, tmp_path):
                    "risque": "r", "r": 2.0, "pnl": 2000.0}]
     txt = daily_report(eng, "2026-09-28")
     assert "1 trades" in txt and "+2 000.00 $" in txt
+
+
+def test_real_account_decides_target_and_losses(setup):
+    """Avec le bot : si le VRAI compte est à +9 % alors que le paper est à +12 %, on continue à trader
+    normalement (pas de micro-trades) ; et les pertes du vrai compte comptent dans les limites."""
+    from types import SimpleNamespace
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    from mt5lab.pont import SignalBridge
+    mk, tmp = setup
+    cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+    conn = MT5Connector().connect(verbose=False)
+    eng = PaperEngine(conn, [Slot("c", "EURUSD", "H1", cand, group="g", risk_pct=1.0)], tmp / "paper", 1.0,
+                      groups={"g": {"capital": 100_000, "day_budget": 2.5, "total_budget": 10.0}},
+                      bridge=SignalBridge(tmp / "common" / "labo_signaux.csv"))
+    g = eng.groups["g"]
+    g.balance = 112_000.0
+    real = {"balance": 109_000.0}
+    eng.mt5.account_info = lambda: SimpleNamespace(balance=real["balance"], equity=real["balance"], login=1,
+                                                   server="Fake-Demo", currency="USD", trade_mode=0)
+    eng.real_account()
+    assert not eng._target_reached(g)            # le vrai compte n'est qu'à +9 %
+    real["balance"] = 110_500.0
+    assert eng._target_reached(g)
+    real["balance"] = 91_000.0                   # le vrai compte a perdu 9 % : plus de place pour un trade de 1 %
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    assert eng.slots["c"].position is None and g.skipped >= 1

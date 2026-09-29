@@ -320,6 +320,8 @@ class PaperEngine:
         self.bot_watch = BotWatcher(Path(bridge.path).parent / exec_log_name(Path(bridge.path).name), self.alert) \
             if bridge is not None else None
         self._report_day = datetime.now().strftime("%Y-%m-%d")
+        # compte MT5 RÉEL suivi par le bot : c'est LUI qui décide de l'objectif et des limites de perte
+        self.real_acc = {"day": "", "day_start": None, "best_day": 0.0}
         self.news, self.news_window = news, news_window  # pas d'entrée autour des annonces importantes
         self._currencies: dict[str, set] = {}
         self._side: int | None = None  # sens du trade en cours d'ouverture (règle des marchés corrélés)
@@ -393,6 +395,7 @@ class PaperEngine:
         self.recent = st.get("recent", [])
         self.events.extend(st.get("events", []))
         self.started = st.get("started", self.started)
+        self.real_acc.update(st.get("real_acc", {}))
         n_open = sum(s.position is not None for s in self.slots.values())
         print(f"[paper] reprise de l'état sauvegardé ({n_open} positions fictives ouvertes)")
 
@@ -419,7 +422,7 @@ class PaperEngine:
 
     def save(self):
         active = {sid: s for sid, s in self.slots.items() if s.trades or s.position or s.ftmo_status != "en cours"}
-        st = {"started": self.started, "last_bar": self.last_bar, "last_msc": self.last_msc,
+        st = {"started": self.started, "last_bar": self.last_bar, "last_msc": self.last_msc, "real_acc": self.real_acc,
               "recent": self.recent[-1000:], "events": list(self.events),
               "groups": {n: {k: getattr(g, k) for k in GROUP_SAVED} for n, g in self.groups.items()},
               "slots": {sid: {**{k: getattr(s, k) for k in SAVED},
@@ -488,15 +491,19 @@ class PaperEngine:
         if when[:10] != g.day:
             self._roll_day(g, g.balance, when)
         members = [x for x in self.slots.values() if x.group == g.name and x.position and not x.position.shadow]
+        # pertes du jour et totale : la PIRE des deux entre le paper trading et le vrai compte du bot
+        real = self.real_account()
+        day_loss = max(0.0, -g.day_realized, (real["day_start"] - real["solde"]) if real else 0.0)
+        total_loss = max(0.0, g.capital - g.balance, (g.capital - real["solde"]) if real else 0.0)
         ok = True
         if g.max_open is not None and len(members) >= g.max_open:
             ok = False
-        elif g.day_stop is not None and g.day_realized <= -g.day_stop * g.capital / 100:
+        elif g.day_stop is not None and day_loss >= g.day_stop * g.capital / 100:
             ok = False
         elif g.day_budget is not None:
             open_risk = sum(x.position.risk_money for x in members) * 1.1
             new_risk = self.risk_budget(s) * 1.1
-            if (max(0.0, -g.day_realized) + open_risk + new_risk) / g.capital * 100 > g.day_budget + 1e-9:
+            if (day_loss + open_risk + new_risk) / g.capital * 100 > g.day_budget + 1e-9:
                 ok = False
         if ok and g.max_corr is not None and self._side is not None:
             from .data import correlation_of
@@ -508,7 +515,7 @@ class PaperEngine:
         if ok and g.total_budget is not None:  # même si tous les stops sautent, la perte totale reste sous le plafond
             open_risk = sum(x.position.risk_money for x in members) * 1.1
             new_risk = self.risk_budget(s) * 1.1
-            if (max(0.0, g.capital - g.balance) + open_risk + new_risk) / g.capital * 100 > g.total_budget + 1e-9:
+            if (total_loss + open_risk + new_risk) / g.capital * 100 > g.total_budget + 1e-9:
                 ok = False
         if not ok:
             g.skipped += 1
@@ -639,15 +646,45 @@ class PaperEngine:
         """Les ordres du bot MT5 ne concernent que les composants actifs de la stratégie combinée."""
         return self.bridge is not None and bool(s.group) and not (s.position is not None and s.position.shadow)
 
+    def real_account(self) -> dict | None:
+        """Le VRAI compte MT5 où tourne le bot (solde, équité, début de journée, meilleure journée), ou None sans bot.
+        Le paper trading et le vrai compte ne donnent jamais exactement le même résultat (spread, glissement,
+        arrondi des lots, vitesse d'exécution) : l'objectif et les pertes max se décident sur le VRAI compte."""
+        if self.bridge is None:
+            return None
+        try:
+            a = self.mt5.account_info()
+            bal, eq = float(a.balance), float(a.equity)
+        except Exception:
+            return None
+        r = self.real_acc
+        today = datetime.now().strftime("%Y-%m-%d")
+        if r["day"] != today:
+            if r["day_start"] is not None:
+                r["best_day"] = max(r["best_day"], bal - r["day_start"])
+            r["day"], r["day_start"] = today, bal
+            self._dirty = True
+        return {"solde": bal, "equite": eq, "day_start": r["day_start"], "best_day": r["best_day"]}
+
     def target_needed(self, acc) -> float:
         """Objectif réel en % : +10 %, ou plus si la meilleure journée dépasse 50 % du profit (règle du meilleur jour).
-        La journée en cours compte aussi."""
-        best = max(acc.best_day, acc.balance - acc.day_start if acc.day else 0.0)
+        La journée en cours compte aussi. Avec le bot : calculé sur le VRAI compte MT5."""
+        real = self.real_account() if isinstance(acc, Group) else None
+        if real:
+            best = max(real["best_day"], real["solde"] - real["day_start"])
+        else:
+            best = max(acc.best_day, acc.balance - acc.day_start if acc.day else 0.0)
         return self.ftmo.target_needed(self.ftmo.target1, best / acc.capital * 100)
 
     def _target_reached(self, acc) -> bool:
-        """Objectif FTMO atteint mais challenge pas encore validé (jours de trading minimum pas atteints)."""
-        return acc.ftmo_status == "en cours" and (acc.balance - acc.capital) / acc.capital * 100 >= self.target_needed(acc)
+        """Objectif FTMO atteint mais challenge pas encore validé (jours de trading minimum pas atteints).
+        Avec le bot : c'est le solde du VRAI compte qui compte (s'il est à +9 % quand le paper est à +10 %, on
+        continue à trader normalement)."""
+        if acc.ftmo_status != "en cours" and not (isinstance(acc, Group) and self.bridge is not None):
+            return False
+        real = self.real_account() if isinstance(acc, Group) else None
+        bal = real["solde"] if real else acc.balance
+        return (bal - acc.capital) / acc.capital * 100 >= self.target_needed(acc)
 
     def _swap(self, symbol: str, p: Position, price: float, when: str) -> float:
         """Swaps (frais ou crédit de nuit) pour chaque nuit passée en position, comme chez le courtier."""
@@ -966,6 +1003,11 @@ class PaperEngine:
                 "risque_ouvert_pct": round(open_risk / g.capital * 100, 2),
                 "pire_jour_pct": round(g.worst_day_pct, 2), "dd_max": round(g.max_dd_pct, 2), "trades": g.trades,
                 "objectif_requis_pct": round(self.target_needed(g), 2),
+                "reel": (lambda r: None if not r else {
+                    "solde": round(r["solde"], 2), "equite": round(r["equite"], 2),
+                    "profit_pct": round((r["solde"] - g.capital) / g.capital * 100, 2),
+                    "jour_pct": round((r["equite"] - r["day_start"]) / g.capital * 100, 2),
+                    "ecart_paper": round(g.balance - r["solde"], 2)})(self.real_account()),
                 "gagnants": g.wins, "r_total": round(g.sum_r, 2), "pnl": round(g.pnl, 2), "ftmo": g.ftmo_status,
                 "ftmo_quand": g.ftmo_when, "jours_trades": len(g.trade_days), "refuses": g.skipped,
                 "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open,

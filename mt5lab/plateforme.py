@@ -335,6 +335,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
   ${g.refuses} signaux refusés par les règles de risque</p>
   <div class="tiles">
    <div class="tile"><div class="mut">Équité</div><div class="v">${fmt(g.equite,2)} $</div><div class="mut" style="font-size:12px">solde ${fmt(g.solde,2)} · latent ${fmt(g.latent,2,true)}</div></div>
+   ${g.reel?`<div class="tile" style="border-color:var(--accent)"><div class="mut">VRAI compte MT5 (bot) — c'est lui qui compte</div><div class="v">${fmt(g.reel.profit_pct,2,true)} %</div><div class="mut" style="font-size:12px">solde ${fmt(g.reel.solde,2)} $ · aujourd'hui ${fmt(g.reel.jour_pct,2,true)} % · écart avec le paper ${fmt(g.reel.ecart_paper,2,true)} $ · objectif ${fmt(g.objectif_requis_pct,2)} %</div></div>`:""}
    ${gauge(g.profit_pct,D.ftmo.target1,"Objectif FTMO",true)}
    ${gauge(g.jour_pct,r.budget_jour??D.ftmo.max_daily,"Aujourd'hui",true)}
    ${gauge(-g.risque_ouvert_pct,r.budget_jour??D.ftmo.max_daily,"Risque ouvert (si tous les stops sautent)",false)}
