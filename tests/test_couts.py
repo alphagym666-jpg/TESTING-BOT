@@ -141,3 +141,13 @@ def test_best_day_rule_raises_target():
     assert c["reussis"] == 1 and c["liste"][0]["jours"] == 6    # réussi quand le total dépasse 12 (6+1+1+2+1+1.5)
     c0 = count_challenges(daily, FtmoRules(best_day_pct=0))
     assert c0["liste"][0]["jours"] == 4
+
+
+def test_auditor_flags_luck_and_concentration():
+    from mt5lab.lab import audit_trades
+    solide = audit_trades(np.tile([1.0, -0.5, 0.8, -0.4, 1.2, 0.3], 10), 0.2)
+    assert solide["audit"] == "OK" and not solide["audit_grave"]
+    chanceux = audit_trades(np.array([15.0] + [-0.3] * 29), 0.1)          # tout vient d'un seul trade
+    assert chanceux["audit_grave"] and "3 trades" in chanceux["audit_detail"]
+    retard = audit_trades(np.tile([1.0, -0.5, 0.8, -0.4], 10), -0.05)      # ne tient pas une bougie de retard
+    assert retard["audit_grave"] and "retardée" in retard["audit_detail"]

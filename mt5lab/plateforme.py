@@ -363,8 +363,12 @@ function fillSelect(id,vals){const el=document.getElementById(id),cur=el.value,f
  el.innerHTML=first+[...vals].sort().map(v=>`<option${v===cur?" selected":""}>${esc(v)}</option>`).join("")}
 async function poll(){try{const r=await fetch("/api/etat",{cache:"no-store"});D=await r.json();
  dot.classList.remove("off");maj.textContent="en direct · "+D.maj;
- info.textContent=`${D.serveur} · capital fictif ${fmt(D.capital,0)} $ / compte · perte max ${D.risque_pct} % par trade · aucun ordre envoyé à MT5`;
- prix.innerHTML=Object.entries(D.prix).map(([s,p])=>`<span class="px"><b>${esc(s)}</b> ${Number(p.bid).toFixed(p.digits)} / ${Number(p.ask).toFixed(p.digits)} · spread ${p.spread}</span>`).join("");
+ info.textContent=`${D.serveur} · capital fictif ${fmt(D.capital,0)} $ / compte · perte max ${D.risque_pct} % par trade · aucun ordre envoyé à MT5 par la plateforme`
+  +(D.bot?` · Bot MT5 : ${D.bot.vivant?"actif (signe de vie "+D.bot.dernier_signe+")":"SILENCIEUX"}, ${D.bot.executes} ordres exécutés, ${D.bot.manques} manqués${D.bot.glissement_moyen_pts!=null?", glissement moyen "+D.bot.glissement_moyen_pts+" pts":""}`:"")
+  +(D.telegram?" · alertes Telegram actives":"");
+ prix.innerHTML=Object.entries(D.prix).map(([s,p])=>{const m=(D.meteo||{})[s]||{},tf=m.H1?"H1":Object.keys(m).find(k=>m[k]);
+  const w=tf&&m[tf]?` · <span title="Météo du marché (${tf}) selon le Météorologue">${esc(m[tf])}</span>`:"";
+  return `<span class="px"><b>${esc(s)}</b> ${Number(p.bid).toFixed(p.digits)} / ${Number(p.ask).toFixed(p.digits)} · spread ${p.spread}${w}</span>`}).join("");
  fillSelect("fSym",new Set([...D.comptes.map(x=>x.symbole),...Object.keys(D.prix)]));fillSelect("fTf",new Set(D.comptes.map(x=>x.tf).concat(D.positions.map(x=>x.tf))));
  render()}catch(e){dot.classList.add("off");maj.textContent="plateforme arrêtée (relancez le paper trading)"}}
 const dot=document.getElementById("dot"),maj=document.getElementById("maj"),info=document.getElementById("info"),prix=document.getElementById("prix");

@@ -89,9 +89,28 @@ void OnDeinit(const int reason)
 
 void OnTimer()
   {
+   static datetime last_ping = 0;
    Guards();
    ReadSignals();
    ShowStatus();
+   if(TimeLocal() - last_ping >= 60)   // signe de vie pour le surveillant de la plateforme
+     {
+      last_ping = TimeLocal();
+      LogExec("PING", "-", "", 0, 0, true, "");
+     }
+  }
+
+// journal d'exécution lu par le surveillant (glissement, ordres manqués, bot arrêté)
+void LogExec(string action, string key, string symbol, double price, double lots, bool ok, string msg)
+  {
+   int h = FileOpen("exec_" + InpFichier, FILE_READ | FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON |
+                    FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+      return;
+   FileSeek(h, 0, SEEK_END);
+   FileWriteString(h, IntegerToString((long)TimeGMT()) + ";" + action + ";" + key + ";" + symbol + ";" +
+                   DoubleToString(price, 8) + ";" + DoubleToString(lots, 2) + ";" + (ok ? "1" : "0") + ";" + msg + "\r\n");
+   FileClose(h);
   }
 
 //+------------------------------------------------------------------+
@@ -248,17 +267,17 @@ void Execute(string &f[])
 
    if(action == "OPEN")
      {
-      if(Stopped() || g_block_day)       { Print("LaboBot : signal ignoré (garde-fou actif) ", symbol); return; }
+      if(Stopped() || g_block_day)       { Print("LaboBot : signal ignoré (garde-fou actif) ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "garde-fou actif (perte du jour ou totale)"); return; }
       // objectif atteint : seulement les micro-trades (risque 0 = lot minimum) qui comptent les jours minimum FTMO
-      if(TargetReached() && risk > 0)    { Print("LaboBot : objectif atteint, plus de nouveau trade"); return; }
-      if(age > InpDelaiMaxSec)           { Print("LaboBot : signal trop vieux (", age, " s) ignoré ", symbol); return; }
+      if(TargetReached() && risk > 0)    { Print("LaboBot : objectif atteint, plus de nouveau trade"); LogExec("OPEN", key, symbol, 0, 0, false, "objectif atteint"); return; }
+      if(age > InpDelaiMaxSec)           { Print("LaboBot : signal trop vieux (", age, " s) ignoré ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "signal trop vieux"); return; }
       if(ticket > 0 || dist <= 0 || side == 0)
          return;
       double stops = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(symbol, SYMBOL_POINT);
-      if(dist <= stops)                  { Print("LaboBot : stop trop proche pour ", symbol); return; }
+      if(dist <= stops)                  { Print("LaboBot : stop trop proche pour ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "stop trop proche"); return; }
       double risk_money = InpCapital * MathMin(risk, InpRisqueMax) / 100.0;
       double lots = risk <= 0 ? SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN) : Lots(symbol, risk_money, dist, commission);
-      if(lots <= 0)                      { Print("LaboBot : lot trop petit pour le risque demandé ", symbol); return; }
+      if(lots <= 0)                      { Print("LaboBot : lot trop petit pour le risque demandé ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "lot trop petit"); return; }
       MqlTick tk;
       if(!SymbolInfoTick(symbol, tk))
          return;
@@ -270,6 +289,8 @@ void Execute(string &f[])
                          : trade.Sell(lots, symbol, 0, sl, tp, "LB" + key);
       Print("LaboBot : ", side > 0 ? "ACHAT " : "VENTE ", lots, " ", symbol, " SL ", sl, " TP ", tp, " -> ",
             ok ? "OK" : "ÉCHEC", " (", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription(), ")");
+      LogExec("OPEN", key, symbol, ok ? trade.ResultPrice() : 0, lots, ok,
+              IntegerToString(trade.ResultRetcode()) + " " + trade.ResultRetcodeDescription());
       return;
      }
    if(ticket == 0 || !PositionSelectByTicket(ticket))

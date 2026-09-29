@@ -335,7 +335,37 @@ FILTERS: dict[str, dict] = {
     "htf_H4_structure": {"minutes": 240, "method": "structure"},
     "htf_D1_structure": {"minutes": 1440, "method": "structure"},
     "htf_H4_supertrend": {"minutes": 240, "method": "supertrend"},
+    # le MÉTÉOROLOGUE : type de marché du moment (tendance / range) x (calme / nerveux)
+    "meteo_tendance_calme": {"regimes": ["tendance calme"]},
+    "meteo_tendance_nerveuse": {"regimes": ["tendance nerveuse"]},
+    "meteo_range_calme": {"regimes": ["range calme"]},
+    "meteo_range_nerveux": {"regimes": ["range nerveux"]},
+    "meteo_tendance": {"regimes": ["tendance calme", "tendance nerveuse"]},
+    "meteo_sans_tempete": {"regimes": ["tendance calme", "tendance nerveuse", "range calme"]},
 }
+
+REGIMES = ["tendance calme", "tendance nerveuse", "range calme", "range nerveux"]
+_REGIME_CACHE: dict = {}
+
+
+def market_regime(df: pd.DataFrame) -> pd.Series:
+    """La météo du marché à chaque bougie (connue à sa clôture, sans regarder le futur) :
+    tendance si ADX(14) > 22, sinon range ; nerveux si l'ATR est dans les 40 % les plus hauts des 500 dernières
+    bougies, sinon calme."""
+    key = (id(df), len(df), df.index[0], df.index[-1])
+    if key in _REGIME_CACHE:
+        return _REGIME_CACHE[key]
+    a, _, _ = ind.adx(df, 14)
+    atr = ind.atr(df, 14)
+    rank = atr.rolling(500, min_periods=100).rank(pct=True)
+    trend = np.where(a > 22, "tendance", "range")
+    nerv = np.where(rank > 0.6, "nerveux", "calme")
+    lab = [f"{t} {'nerveuse' if (t == 'tendance' and n == 'nerveux') else n}" for t, n in zip(trend, nerv)]
+    out = pd.Series(lab, index=df.index).where(a.notna() & rank.notna())
+    if len(_REGIME_CACHE) > 100:
+        _REGIME_CACHE.clear()
+    _REGIME_CACHE[key] = out
+    return out
 
 _HTF_CACHE: dict = {}
 
@@ -404,6 +434,8 @@ def apply_filter(df: pd.DataFrame, sig: pd.Series, name: str) -> pd.Series:
     elif name.startswith("chop_"):
         ch = ind.choppiness(df, p["n"])
         ok_long = ok_short = (ch < p["max"]) if name == "chop_trending" else (ch > p["min"])
+    elif name.startswith("meteo_"):
+        ok_long = ok_short = market_regime(df).isin(p["regimes"])
     elif name.startswith("htf_"):
         if not bar_minutes(df) < p["minutes"]:  # le timeframe supérieur doit être plus grand que celui du graphique
             return sig

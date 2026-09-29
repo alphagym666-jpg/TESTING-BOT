@@ -92,3 +92,15 @@ def test_higher_timeframe_filters_have_no_lookahead(flt):
         part = apply_filter(df.iloc[:cut], sig.iloc[:cut], flt)
         assert (full.iloc[:cut].to_numpy() == part.to_numpy()).all(), (flt, cut)
     assert (full != 0).sum() < (sig != 0).sum()  # le filtre retire bien des signaux
+
+
+def test_market_regime_is_causal_and_filters():
+    from mt5lab.data import synthetic
+    from mt5lab.strategies import REGIMES, apply_filter, market_regime
+    df = synthetic(1500, seed=2)
+    a = market_regime(df).iloc[:1000]
+    b = market_regime(df.iloc[:1000])
+    assert a.fillna("").equals(b.fillna("")) and set(a.dropna()) <= set(REGIMES)
+    sig = pd.Series(1, index=df.index, dtype=np.int8)
+    f = apply_filter(df, sig, "meteo_tendance")
+    assert 0 < f.sum() < len(df)

@@ -17,6 +17,12 @@ from .evaluator import describe
 
 FILTER_TEXT = {
     "none": "Aucun filtre.",
+    "meteo_tendance_calme": "Seulement quand le marché est en TENDANCE CALME (ADX > 22, volatilité normale).",
+    "meteo_tendance_nerveuse": "Seulement quand le marché est en TENDANCE NERVEUSE (ADX > 22, forte volatilité).",
+    "meteo_range_calme": "Seulement quand le marché est en RANGE CALME (ADX <= 22, volatilité normale).",
+    "meteo_range_nerveux": "Seulement quand le marché est en RANGE NERVEUX (ADX <= 22, forte volatilité).",
+    "meteo_tendance": "Seulement quand le marché est en tendance (ADX > 22), calme ou nerveuse.",
+    "meteo_sans_tempete": "Jamais quand le marché est en range nerveux (sans direction et très agité).",
     "trend_ema200": "Achats seulement si la clôture est au-dessus de l'EMA 200 ; ventes seulement en dessous.",
     "trend_ema50": "Achats seulement si la clôture est au-dessus de l'EMA 50 ; ventes seulement en dessous.",
     "adx_strong": "Seulement si l'ADX(14) est au-dessus de 25 (marché en tendance).",

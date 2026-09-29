@@ -492,3 +492,29 @@ def test_install_bot_in_mt5_folder(tmp_path):
     ok, msg = install_in_mt5(src, fake, "LaboBot_XAUUSD_M5_1.mq5")
     assert (tmp_path / "data" / "MQL5" / "Experts" / "LaboBot" / "LaboBot_XAUUSD_M5_1.mq5").exists()
     assert not ok and "MetaEditor" in msg
+
+
+def test_surveillant_bot_watch_and_daily_report(setup, tmp_path):
+    """Surveillant : ordre exécuté (glissement), ordre manqué -> alerte, bot silencieux -> alerte, rapport du soir."""
+    from mt5lab.surveillant import BotWatcher, Notifier, daily_report
+    alerts = []
+    log = tmp_path / "exec_labo_signaux.csv"
+    w = BotWatcher(log, alerts.append, silent_after=0.2, missed_after=0.1)
+    w.signal_open("k1", "EURUSD H1 test", 1.10000)
+    log.write_text("1;OPEN;k1;EURUSD;1.10020;0.50;1;10009 done\n1;PING;-\n")
+    w.poll(lambda sym: 1e-5)
+    assert w.executed == 1 and w.status()["glissement_moyen_pts"] == pytest.approx(20, abs=0.1) and w.status()["vivant"]
+    w.signal_open("k2", "EURUSD H1 autre", 1.1)
+    import time as _t
+    _t.sleep(0.3)
+    w.poll()
+    assert any("NON exécuté" in a for a in alerts) and any("signe de vie" in a for a in alerts)
+    n = Notifier(token="", chat_id="")
+    n.send("x")
+    assert not n.active and list(n.sent) == ["x"]
+    mk, tmp = setup
+    eng = _engine(tmp)
+    eng.recent = [{"fermeture": "2026-09-28 12:00:00", "symbole": "EURUSD", "timeframe": "H1", "strategie": "s",
+                   "risque": "r", "r": 2.0, "pnl": 2000.0}]
+    txt = daily_report(eng, "2026-09-28")
+    assert "1 trades" in txt and "+2 000.00 $" in txt

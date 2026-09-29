@@ -51,6 +51,40 @@ ESSAI = "À L'ESSAI"
 ESSAI_MAX = 10
 
 
+def audit_trades(r: np.ndarray, delayed_avg_r: float | None, n_boot: int = 2000, seed: int = 0) -> dict:
+    """L'AUDITEUR anti-hasard : essaie de démolir une stratégie validée.
+    - concentration : part du profit apportée par les 3 meilleurs trades (tout dépend-il de quelques coups ?) ;
+    - rééchantillonnage : on retire au hasard des trades des milliers de fois ; % des cas où l'espérance <= 0 ;
+    - entrée retardée d'une bougie : si la stratégie ne gagne plus, elle est trop fragile pour le réel."""
+    r = np.asarray(r, dtype=float)
+    out = {"audit": "OK", "audit_detail": "", "audit_grave": False}
+    if len(r) < 5:
+        return out
+    gains = r[r > 0].sum()
+    top3 = float(np.sort(r)[-3:].clip(min=0).sum() / r.sum() * 100) if r.sum() > 0 else 100.0
+    rng = np.random.default_rng(seed)
+    boot = rng.choice(r, size=(n_boot, len(r)), replace=True).mean(axis=1)
+    p_hasard = float((boot <= 0).mean() * 100)
+    notes, grave = [], False
+    if r.sum() > 0 and top3 > 80:
+        notes.append(f"{top3:.0f} % du profit vient de 3 trades")
+        grave = True
+    elif r.sum() > 0 and top3 > 50:
+        notes.append(f"{top3:.0f} % du profit vient de 3 trades")
+    if p_hasard > 5:
+        notes.append(f"{p_hasard:.0f} % de risque que ce soit du hasard")
+        grave = grave or p_hasard > 10
+    if delayed_avg_r is not None and delayed_avg_r <= 0:
+        notes.append(f"entrée retardée d'une bougie : {delayed_avg_r:+.2f}R")
+        grave = True
+    out.update(audit="GRAVE" if grave else ("fragile" if notes else "OK"),
+               audit_detail=" ; ".join(notes) or f"solide (hasard {p_hasard:.1f} %, 3 meilleurs trades {top3:.0f} %)",
+               audit_grave=grave, audit_hasard_pct=round(p_hasard, 1), audit_top3_pct=round(top3, 0),
+               audit_retard_r=None if delayed_avg_r is None else round(delayed_avg_r, 3))
+    del gains
+    return out
+
+
 def mark_trials(board: pd.DataFrame, n_max: int = ESSAI_MAX) -> pd.DataFrame:
     """Parmi les stratégies rejetées, garde les n_max meilleures qui GAGNENT quand même hors-échantillon
     (>= 20 trades, R moyen > 0, profit factor >= 1,05) : verdict « À L'ESSAI (paper seulement) ».
@@ -483,6 +517,24 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                              risk_pct=cfg.risk_pct, return_trades=True)
         if not len(tr):
             continue
+        if f.verdict == "APPROUVÉ":  # l'auditeur anti-hasard passe sur chaque stratégie validée
+            _, trd = run_backtest(df_oos, sig.shift(1).fillna(0).astype(sig.dtype).iloc[split:],
+                                  RiskConfig(**f.candidate["risk"]), cost=cost, risk_pct=cfg.risk_pct, return_trades=True)
+            f.audit = audit_trades(tr["r"].to_numpy(), float(trd["r"].mean()) if len(trd) else None)
+            # le météorologue : dans quel type de marché cette stratégie gagne-t-elle ?
+            from .strategies import market_regime
+            reg = market_regime(df).reindex(pd.DatetimeIndex(tr["entry_time"])).to_numpy() \
+                if isinstance(df.index, pd.DatetimeIndex) else None
+            if reg is not None:
+                parts = []
+                for name in ("tendance calme", "tendance nerveuse", "range calme", "range nerveux"):
+                    rr_ = tr["r"].to_numpy()[reg == name]
+                    if len(rr_) >= 5:
+                        parts.append(f"{name} {rr_.mean():+.2f}R ({len(rr_)})")
+                f.audit["meteo"] = " ; ".join(parts)
+            if f.audit["audit_grave"]:
+                f.verdict = f"rejeté : audit anti-hasard ({f.audit['audit_detail']})"
+                journal.log("Auditeur anti-hasard", f"JE REJETTE {describe(f.candidate)[:80]} : {f.audit['audit_detail']}")
         bh[f.key] = float((np.prod(1 + np.clip(tr["r"].to_numpy() * cfg.bh_risk_pct / 100, -0.99, None)) - 1) * 100)
         tr = tr[["entry_time", "exit_time", "r", "side"]].assign(key=candidate_key(f.candidate))
         oos_trades.append(tr)
@@ -544,6 +596,8 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                ("ftmo_pass", "ftmo_p1", "ftmo_p2", "ftmo_jours_p1", "ftmo_jours_p2", "ftmo_echec_p1")},
             **counts.get(f.key, {}),
             "rendement_oos_pct_risque_bh": round(bh[f.key], 1) if f.key in bh else None,
+            "audit": getattr(f, "audit", {}).get("audit"), "audit_detail": getattr(f, "audit", {}).get("audit_detail"),
+            "meteo": getattr(f, "audit", {}).get("meteo"),
             "buy_hold_oos_pct": round(bh_pct, 1), "buy_hold_dd_oos_pct": round(bh_dd, 1),
             "bat_buy_hold": (bh[f.key] > max(bh_pct, 0.0)) if f.key in bh else None,
             "candidate": json.dumps(f.candidate),

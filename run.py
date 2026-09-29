@@ -300,6 +300,17 @@ def cmd_paper(a):
         eng.run(a.poll, server_port=a.port or None, open_browser=not a.no_browser)
 
 
+def cmd_telegram(a):
+    from mt5lab.data import load_env
+    from mt5lab.surveillant import Notifier
+    load_env()
+    n = Notifier(min_gap=0)
+    if not n.active:
+        raise SystemExit("Ajoutez TELEGRAM_TOKEN et TELEGRAM_CHAT_ID dans le fichier .env (voir README).")
+    n._post("✅ Le surveillant du Labo MT5 est bien relié à votre téléphone.")
+    print("Message de test envoyé : regardez Telegram.")
+
+
 def cmd_direct(a):
     from mt5lab.direct import run_direct
     run_direct(Path(a.results), ftmo_rules(a), a.risk, a.perte_max_jour, a.perte_max_totale)
@@ -464,6 +475,9 @@ def main():
     news_args(di)
     period_args(di)
     di.set_defaults(func=cmd_directeur)
+
+    tg = sub.add_parser("telegram", help="envoyer un message de test sur Telegram")
+    tg.set_defaults(func=cmd_telegram)
 
     dr = sub.add_parser("direct", help="analyse des trades du paper trading : meilleurs setups et meilleure combinaison")
     dr.add_argument("--results", default="results")

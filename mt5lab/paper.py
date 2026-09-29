@@ -314,6 +314,12 @@ class PaperEngine:
                  news=None, news_window: int = 30, bridge=None):
         self.c = conn
         self.bridge = bridge  # pont vers le bot MT5 (pont.SignalBridge) : seulement pour la stratégie combinée
+        # le surveillant : notifications (Telegram si configuré), contrôle du bot MT5, rapport du soir
+        from .surveillant import BotWatcher, Notifier, exec_log_name
+        self.notifier = Notifier()
+        self.bot_watch = BotWatcher(Path(bridge.path).parent / exec_log_name(Path(bridge.path).name), self.alert) \
+            if bridge is not None else None
+        self._report_day = datetime.now().strftime("%Y-%m-%d")
         self.news, self.news_window = news, news_window  # pas d'entrée autour des annonces importantes
         self._currencies: dict[str, set] = {}
         self._side: int | None = None  # sens du trade en cours d'ouverture (règle des marchés corrélés)
@@ -348,7 +354,8 @@ class PaperEngine:
         self.last_bar: dict[str, str] = {}   # "SYM|TF" -> heure de la dernière bougie clôturée traitée
         self.last_msc: dict[str, int] = {}   # symbole -> dernier tick traité (ms)
         self.recent: list[dict] = []
-        self.total_trades = 0  # tous les trades jamais clôturés (gardés pour toujours dans trades.csv)
+        self.total_trades = 0
+        self.meteo: dict = {}  # symbole -> {timeframe: type de marché}  # tous les trades jamais clôturés (gardés pour toujours dans trades.csv)
         self.events: deque = deque(maxlen=400)
         self.started = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._load_state()
@@ -540,9 +547,19 @@ class PaperEngine:
             acc.ftmo_status, acc.ftmo_when = "RÉUSSI", when
         return acc.ftmo_status != "en cours"
 
+    def alert(self, text: str, when: str | None = None):
+        """Alerte du surveillant : journal de la plateforme + téléphone (Telegram si configuré)."""
+        when = when or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.events.append({"t": when, "type": "SURVEILLANT", "symbole": "", "tf": "", "texte": text})
+        self._dirty = True
+        print(f"[surveillant] {when} {text}")
+        self.notifier.send(f"🛰 {text}")
+
     def update_ftmo(self, s: Slot, equity: float, when: str):
         if self._ftmo_check(s, equity, when, s.position is None):
             self.event(when, "FTMO", s, f"challenge {s.ftmo_status} : {describe(s.candidate)} [{s.cfg.label()}]")
+            if s.ftmo_status == "RÉUSSI" or s.group:
+                self.notifier.send(f"🏁 Challenge {s.ftmo_status} : {s.symbol} {s.timeframe} {describe(s.candidate)[:80]}")
 
     def update_groups(self):
         """Suivi FTMO des stratégies combinées, positions ouvertes comprises."""
@@ -559,6 +576,7 @@ class PaperEngine:
             if when and self._ftmo_check(g, g.balance + fl, when, not any(x.position and not x.position.shadow for x in members)):
                 self.events.append({"t": when, "type": "FTMO", "symbole": "COMBINÉE", "tf": "",
                                     "texte": f"stratégie combinée « {g.name} » : challenge {g.ftmo_status}"})
+                self.notifier.send(f"🏁 Stratégie combinée « {g.name} » : challenge {g.ftmo_status}")
                 self._dirty = True
 
     def floating(self, s: Slot, tick) -> float:
@@ -601,7 +619,12 @@ class PaperEngine:
         g = None if shadow else self.groups.get(s.group)
         if g is not None and when[:10] not in g.trade_days:
             g.trade_days.append(when[:10])
+        if s.group and not shadow:
+            self.notifier.send(f"📈 {'ACHAT' if side > 0 else 'VENTE'} {s.symbol} {s.timeframe} à {price:g} | "
+                               f"{describe(s.candidate)[:70]}")
         if self._bot(s):
+            from .pont import slot_key
+            self.bot_watch.signal_open(slot_key(s.id), f"{s.symbol} {s.timeframe} {describe(s.candidate)[:60]}", price)
             g0 = self.groups.get(s.group)
             base = min(g0.balance, g0.capital) if g0 else min(s.balance, s.capital)
             self.bridge.open(s.id, s.symbol, side, dist, s.cfg.rr,
@@ -693,6 +716,9 @@ class PaperEngine:
         if len(self.recent) > 6000:
             self.recent = self.recent[-5000:]
         g = None if p.shadow else self.groups.get(s.group)
+        if g is not None:
+            self.notifier.send(f"{'✅' if pnl > 0 else '❌'} Fermeture {s.symbol} {s.timeframe} ({reason}) : {r:+.2f}R, "
+                               f"{pnl:+,.2f} $".replace(",", " "))
         if g is not None:  # le compte partagé de la stratégie combinée encaisse aussi le trade
             self._roll_day(g, g.balance, when)
             g.balance += pnl
@@ -802,6 +828,11 @@ class PaperEngine:
     def on_bar(self, symbol: str, tf: str, closed: pd.DataFrame):
         tick = self.mt5.symbol_info_tick(symbol)
         close = float(closed["close"].iloc[-1])
+        try:  # le météorologue : type de marché du moment, affiché dans la plateforme
+            from .strategies import market_regime
+            self.meteo.setdefault(symbol, {})[tf] = market_regime(closed).iloc[-1]
+        except Exception:
+            pass
         atr_arr = ind.atr(closed, 14).to_numpy()
         atr_last = float(atr_arr[-1])
         cache: dict[str, int | None] = {}  # un signal n'est calculé qu'une fois pour toutes ses variantes de R:R
@@ -844,6 +875,17 @@ class PaperEngine:
                 self._open(s, sig, closed, tick, atr_arr)
 
     def step(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != self._report_day:  # rapport du soir de la journée qui vient de finir
+            try:
+                from .surveillant import daily_report, write_daily_report
+                write_daily_report(self, self._report_day)
+                self.notifier.send(daily_report(self, self._report_day))
+            except Exception as exc:
+                print(f"[surveillant] rapport du jour impossible : {exc}")
+            self._report_day = today
+        if self.bot_watch is not None:
+            self.bot_watch.poll(lambda sym: getattr(self.c.symbol_info(sym), "point", None))
         for sym in sorted({s.symbol for s in self.slots.values()}):
             self.process_ticks(sym)
         for (sym, tf) in sorted(self.by_bar):
@@ -948,7 +990,10 @@ class PaperEngine:
             "serveur": getattr(acc, "server", ""), "prix": prices,
             "capital": next(iter(self.slots.values())).capital if self.slots else 0,
             "risque_pct": self.risk_pct, "ftmo": asdict(self.ftmo), "ftmo_label": self.ftmo.label(),
+            "meteo": {k: {t: (x if isinstance(x, str) else None) for t, x in v.items()} for k, v in self.meteo.items()},
             "n_comptes": len(self.slots), "n_actifs": len(slot_rows), "n_trades_total": self.total_trades,
+            "bot": self.bot_watch.status() if self.bot_watch is not None else None,
+            "telegram": self.notifier.active,
             "n_marches": len({(s.symbol, s.timeframe) for s in self.slots.values()}),
             "comptes": slot_rows[:max_slots], "positions": open_rows, "groupes": group_rows,
             "trades": self.recent[-max_trades:][::-1], "evenements": list(self.events)[::-1][:200],
@@ -1004,6 +1049,7 @@ class PaperEngine:
     def _reconnect(self):
         """MT5 fermé ou déconnecté : on attend qu'il revienne, sans perdre l'état."""
         self.save()
+        self.alert("MT5 est déconnecté : le paper trading attend qu'il revienne.")
         while True:
             try:
                 self.mt5.shutdown()
@@ -1012,6 +1058,7 @@ class PaperEngine:
             try:
                 self.c.connect(verbose=False)
                 print(f"[paper] {datetime.now():%H:%M} reconnecté à MT5, je reprends")
+                self.alert("MT5 est reconnecté : le paper trading reprend.")
                 return
             except Exception as exc:
                 print(f"[paper] {datetime.now():%H:%M} MT5 injoignable ({str(exc).splitlines()[0]}), "

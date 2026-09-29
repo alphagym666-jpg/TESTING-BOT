@@ -60,6 +60,7 @@ echo   --- LE DIRECTEUR (4 chefs, 20 agents + les 2 GENIES Einstein et Hawking) 
 echo   D. PASSER LE CHALLENGE FTMO LE PLUS VITE : le Directeur fait tout (recherche, melange de
 echo      tous les marches et timeframes, reglages du risque), puis lance le paper trading du resultat
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
+echo   T. Alertes sur le TELEPHONE (Telegram) : explications + message de test
 echo   L. MEILLEURS SETUPS DU DIRECT : analyse des trades du paper trading + meilleure combinaison
 echo   G. Voir les DECOUVERTES DES GENIES (Einstein et Hawking : leurs lois mathematiques)
 echo   F. Ouvrir les FICHES detaillees des strategies (pour le paper trading et le bot)
@@ -102,6 +103,7 @@ if /i "%CHOIX%"=="N" goto nouvelles
 if /i "%CHOIX%"=="R" goto rapportdir
 if /i "%CHOIX%"=="G" goto genies
 if /i "%CHOIX%"=="L" goto direct
+if /i "%CHOIX%"=="T" goto telegram
 if /i "%CHOIX%"=="F" goto fiches
 if /i "%CHOIX%"=="C" goto papercomb
 if /i "%CHOIX%"=="E" goto bot
@@ -170,6 +172,24 @@ echo puis construit la strategie combinee. Comptez de quelques minutes a plusieu
 python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
 if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
 if exist "%RES%\strategie_combinee.json" goto papercomb
+pause & goto menu
+
+:telegram
+cls
+echo Le SURVEILLANT peut envoyer sur votre telephone : trades de la strategie combinee et des bots, challenge
+echo reussi ou rate, MT5 deconnecte, bot MT5 silencieux ou ordre non execute, et le rapport du soir.
+echo.
+echo  1. Installez Telegram sur le telephone.
+echo  2. Cherchez @BotFather, envoyez /newbot, donnez un nom : il vous donne un TOKEN (ex. 123456:ABC-xyz).
+echo  3. Ouvrez la conversation avec VOTRE nouveau bot et envoyez-lui "bonjour".
+echo  4. Cherchez @userinfobot sur Telegram : il vous donne votre ID (un nombre).
+echo  5. Ouvrez le fichier .env de ce dossier avec le Bloc-notes et ajoutez 2 lignes :
+echo        TELEGRAM_TOKEN=le token de l'etape 2
+echo        TELEGRAM_CHAT_ID=le nombre de l'etape 4
+echo  6. Revenez ici : un message de test va partir. Relancez ensuite le paper trading.
+echo.
+pause
+python run.py telegram
 pause & goto menu
 
 :direct

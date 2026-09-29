@@ -820,6 +820,8 @@ class Director:
                     "R moyen OOS": r.get("avgR_oos"), "Profit factor OOS": r.get("pf_oos"),
                     "Gain par mois (%)": r.get("gain_mois_pct"), "Drawdown max OOS (%)": r.get("dd_oos_pct"),
                     "Réussite FTMO seule (%)": r.get("ftmo_pass"),
+                    "Auditeur anti-hasard": _txt(r.get("audit_detail")) or None,
+                    "Météo du marché (R moyen hors-échantillon par type de marché)": _txt(r.get("meteo")) or None,
                     "Gain sur la période de test à 1 %/trade (%)": r.get("rendement_oos_pct_risque_bh"),
                     "Buy & hold sur la même période (%)": r.get("buy_hold_oos_pct"),
                     "Challenges réussis / ratés (tout l'historique)": _pair(r, "total"),
