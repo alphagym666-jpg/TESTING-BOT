@@ -220,6 +220,25 @@ void ReadSignals()
      }
   }
 
+// ferme une position et attend (2 s max) que MT5 ne la liste plus : sinon un OPEN qui suit tout de suite
+// (signal opposé) croit que la position existe encore et ne fait rien
+bool CloseAndWait(ulong ticket)
+  {
+   if(!PositionSelectByTicket(ticket))
+      return true;
+   for(int attempt = 0; attempt < 3; attempt++)
+     {
+      trade.PositionClose(ticket);
+      for(int i = 0; i < 20; i++)
+        {
+         if(!PositionSelectByTicket(ticket))
+            return true;
+         Sleep(100);
+        }
+     }
+   return !PositionSelectByTicket(ticket);
+  }
+
 ulong FindPosition(string symbol, string key)
   {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -271,16 +290,23 @@ void Execute(string &f[])
       // objectif atteint : seulement les micro-trades (risque 0 = lot minimum) qui comptent les jours minimum FTMO
       if(TargetReached() && risk > 0)    { Print("LaboBot : objectif atteint, plus de nouveau trade"); LogExec("OPEN", key, symbol, 0, 0, false, "objectif atteint"); return; }
       if(age > InpDelaiMaxSec)           { Print("LaboBot : signal trop vieux (", age, " s) ignoré ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "signal trop vieux"); return; }
-      if(ticket > 0 || dist <= 0 || side == 0)
-         return;
+      if(dist <= 0 || side == 0)         { LogExec("OPEN", key, symbol, 0, 0, false, "signal invalide"); return; }
+      if(ticket > 0)
+        {
+         // signal opposé : l'ancienne position de ce composant (CLOSE juste avant) peut encore être listée
+         // par MT5 quelques instants -> on la ferme et on attend qu'elle disparaisse, puis on ouvre la nouvelle
+         if(PositionSelectByTicket(ticket) && ((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) == (side > 0)))
+           { LogExec("OPEN", key, symbol, 0, 0, false, "déjà en position dans ce sens"); return; }
+         if(!CloseAndWait(ticket))
+           { LogExec("OPEN", key, symbol, 0, 0, false, "ancienne position impossible à fermer"); return; }
+        }
       double stops = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(symbol, SYMBOL_POINT);
       if(dist <= stops)                  { Print("LaboBot : stop trop proche pour ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "stop trop proche"); return; }
       double risk_money = InpCapital * MathMin(risk, InpRisqueMax) / 100.0;
       double lots = risk <= 0 ? SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN) : Lots(symbol, risk_money, dist, commission);
       if(lots <= 0)                      { Print("LaboBot : lot trop petit pour le risque demandé ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "lot trop petit"); return; }
       MqlTick tk;
-      if(!SymbolInfoTick(symbol, tk))
-         return;
+      if(!SymbolInfoTick(symbol, tk))    { LogExec("OPEN", key, symbol, 0, 0, false, "pas de prix"); return; }
       double entry = side > 0 ? tk.ask : tk.bid;
       double sl = NormalizeDouble(entry - side * dist, digits);
       double tp = rr > 0 ? NormalizeDouble(entry + side * rr * dist, digits) : 0;
@@ -300,8 +326,8 @@ void Execute(string &f[])
    double open_px = PositionGetDouble(POSITION_PRICE_OPEN);
    if(action == "CLOSE")
      {
-      trade.PositionClose(ticket);
-      Print("LaboBot : fermeture ", symbol, " (signal de la stratégie)");
+      bool closed = CloseAndWait(ticket);
+      Print("LaboBot : fermeture ", symbol, " (signal de la stratégie) -> ", closed ? "OK" : "ÉCHEC");
      }
    else if(action == "MOVE" || action == "BE")
      {

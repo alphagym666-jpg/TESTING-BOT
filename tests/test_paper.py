@@ -398,6 +398,9 @@ def test_generate_bot_fills_inputs(tmp_path):
     assert "InpCapital         = 200000;" in src and "InpRisqueMax       = 0.75;" in src
     assert "InpPerteJourMax    = 2.8;" in src and "XAUUSD H1" in src
     assert "OnTimer" in src and "ACCOUNT_TRADE_MODE_REAL" in src
+    # signal opposé (CLOSE puis OPEN du même composant) : l'ancienne position est fermée AVANT d'ouvrir la nouvelle
+    assert "bool CloseAndWait(ulong ticket)" in src and src.count("CloseAndWait(ticket)") == 2
+    assert "if(ticket > 0 || dist <= 0 || side == 0)" not in src
     assert (out / "LISEZMOI_BOT.txt").exists()
 
 
