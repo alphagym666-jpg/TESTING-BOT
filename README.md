@@ -503,6 +503,20 @@ baisse), à 1 % de risque par trade. Avec `--battre-buy-hold` (question de l'opt
 pas mieux n'est pas validée. Le rapport du Directeur montre aussi le gain de la stratégie combinée à côté du buy &
 hold de ses marchés.
 
+## Coûts réels mesurés en direct et frein de bonne journée
+
+- **Coûts réels** : à chaque lancement de la recherche (lab) ou du Directeur, le programme lit tous les
+  `trades.csv` du paper trading (spread réel à l'entrée) et le fichier `glissements.csv` du bot MT5 (écart entre le
+  prix du signal et le prix obtenu). Dès qu'un marché a au moins 10 mesures, le spread réel (s'il est plus large que
+  celui de l'historique) et le glissement (x2 : entrée + sortie) sont **ajoutés au coût de chaque trade testé**.
+  Résultat dans `results/couts_reels.json`. Une stratégie qui ne gagne que sur papier est donc éliminée.
+  Pour l'ignorer : `--sans-couts-reels`.
+- **Frein de bonne journée** : le Directeur teste « après +X % gagnés dans la journée (X de 1,5 à 5 %), plus de
+  nouveau trade » ou « risque divisé par 2 » jusqu'au lendemain. Il ne le garde que s'il fait passer le challenge
+  plus vite ou plus sûrement (utile pour la règle du meilleur jour ≤ 50 % du profit). La règle choisie est affichée
+  dans `directeur.html`, sur la plateforme (avec « ACTIF aujourd'hui ») et appliquée par le paper trading et le bot
+  (avec le bot : le plus haut gain du jour entre le paper et le VRAI compte).
+
 ## Hypothèses du backtest
 
 - Entrée à l'ouverture de la bougie qui suit le signal (aucun regard dans le futur, vérifié par les tests).

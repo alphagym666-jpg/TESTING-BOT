@@ -85,7 +85,7 @@ def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> 
 
 def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_open: int | None = None,
                      default_w: float = 0.5, day_budget: float | None = None, safety: float = 1.1,
-                     max_corr: int | None = None) -> pd.DataFrame:
+                     max_corr: int | None = None, day_lock: dict | None = None) -> pd.DataFrame:
     """Règles de risque du Directeur, appliquées dans l'ordre chronologique des entrées :
 
     - day_budget : un trade n'est pris que si  perte déjà réalisée aujourd'hui + risque des positions ouvertes
@@ -96,9 +96,11 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
     - max_open   : pas plus de max_open positions ouvertes en même temps
     - max_corr   : pas plus de max_corr positions ouvertes sur des marchés corrélés dans le même sens
                    (colonnes « cluster » et « expo » = sens du trade x sens du marché dans son groupe)
+    - day_lock   : FREIN DE BONNE JOURNÉE {"seuil": 1.5, "facteur": 0} : une fois +seuil % réalisés dans la journée,
+                   plus de nouveau trade (facteur 0) ou risque multiplié par facteur jusqu'au lendemain
     """
     if trades is None or not len(trades) or (day_stop is None and max_open is None and day_budget is None
-                                              and max_corr is None):
+                                              and max_corr is None and not day_lock):
         return trades
     import heapq
     t = trades.copy()
@@ -107,6 +109,7 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
     t["e_dt"], t["x_dt"] = to_dt(t["entry_time"]), to_dt(t["exit_time"])
     t = t.sort_values("e_dt").reset_index(drop=True)
     keep = np.zeros(len(t), dtype=bool)
+    new_w = t["w"].to_numpy(dtype=float).copy()
     open_heap: list[tuple] = []          # (heure de sortie, P&L en %, risque en %, groupe corrélé, exposition)
     has_corr = max_corr is not None and "cluster" in t.columns and "expo" in t.columns
     realized: dict = {}                  # jour -> P&L réalisé %
@@ -117,6 +120,11 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
         today = realized.get(row.e_dt.normalize(), 0.0)
         if day_stop is not None and today <= -day_stop:
             continue
+        w = row.w
+        if day_lock and today >= float(day_lock["seuil"]):
+            if float(day_lock.get("facteur", 0)) <= 0:
+                continue
+            w = row.w * float(day_lock["facteur"])
         if max_open is not None and len(open_heap) >= max_open:
             continue
         if has_corr and row.cluster and row.expo and \
@@ -124,11 +132,13 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
             continue
         if day_budget is not None:
             open_risk = sum(o[2] for o in open_heap) * safety
-            if max(0.0, -today) + open_risk + row.w * safety > day_budget + 1e-9:
+            if max(0.0, -today) + open_risk + w * safety > day_budget + 1e-9:
                 continue
         keep[i] = True
-        heapq.heappush(open_heap, (row.x_dt, row.r * row.w, row.w,
+        new_w[i] = w
+        heapq.heappush(open_heap, (row.x_dt, row.r * w, w,
                                    row.cluster if has_corr else "", row.expo if has_corr else 0))
+    t["w"] = new_w
     return t.loc[keep].drop(columns=["e_dt", "x_dt"]).reset_index(drop=True)
 
 
@@ -152,6 +162,14 @@ def pilot_factor(pilot: dict | None, cum_before, prev_day):
     else:
         cond = cum_before != cum_before
     return np.where(cond, f, 1.0)
+
+
+def lock_text(lock: dict | None) -> str:
+    if not lock:
+        return "aucun"
+    f = float(lock.get("facteur", 0))
+    return (f"plus de nouveau trade une fois +{float(lock['seuil']):g} % gagnés dans la journée" if f <= 0 else
+            f"risque x{f:g} une fois +{float(lock['seuil']):g} % gagnés dans la journée")
 
 
 def pilot_text(pilot: dict | None) -> str:

@@ -35,7 +35,8 @@ from .backtest import RR_LEVELS, RiskConfig, run_backtest
 from .compare import build_comparison
 from .data import DEFAULT_YEARS
 from .evaluator import candidate_key, compute_signal, describe
-from .ftmo import FtmoRules, apply_risk_rules, count_challenges, daily_table, pilot_text, simulate, to_dt
+from .ftmo import (FtmoRules, apply_risk_rules, count_challenges, daily_table, lock_text, pilot_text, simulate,
+                   to_dt)
 from .lab import LAB_VERSION, LabConfig, run_lab
 from .strategies import REGISTRY, apply_filter
 
@@ -419,7 +420,8 @@ class Director:
         """Niveaux de risque autorisés : <= risque max, et un seul stop (+10 % de frais) doit tenir dans le budget du jour."""
         return sorted(l for l in self.cfg.risk_levels if l <= self.cfg.risk_pct and l * 1.1 <= self.cfg.day_budget + 1e-9)
 
-    def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500, max_corr=None, pilot=None):
+    def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500, max_corr=None, pilot=None,
+              day_lock=None):
         lo = max(windows[k][0] for k in keys)
         hi = min(windows[k][1] for k in keys)
         if (hi - lo).days < self.cfg.min_window_days:
@@ -431,7 +433,7 @@ class Director:
             x = pd.to_datetime(t["exit_time"].astype(str), format="mixed")
             parts.append(t[(e >= lo) & (x <= hi)])
         merged = apply_risk_rules(pd.concat(parts, ignore_index=True), day_stop, max_open, self.cfg.risk_pct,
-                                  day_budget=self.cfg.day_budget, max_corr=max_corr)
+                                  day_budget=self.cfg.day_budget, max_corr=max_corr, day_lock=day_lock)
         daily = daily_table(merged, self.cfg.risk_pct, lo, hi)
         res = simulate(daily, self.cfg.ftmo, n, seed=0, pilot=pilot)
         res["fenetre"] = (str(lo.date()), str(hi.date()))
@@ -469,7 +471,8 @@ class Director:
             t = t[self.in_session(t["entry_time"], sess["debut"], sess["fin"])]
         rules = comb["regles"]
         t = apply_risk_rules(t, rules.get("day_stop"), rules.get("max_open"), self.cfg.risk_pct,
-                             day_budget=rules.get("day_budget"), max_corr=rules.get("max_correles"))
+                             day_budget=rules.get("day_budget"), max_corr=rules.get("max_correles"),
+                             day_lock=rules.get("frein"))
         c = count_challenges(daily_table(t, self.cfg.risk_pct, lo, hi), self.cfg.ftmo, rules.get("pilote"))
         c["periode"] = f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}"
         return c
@@ -528,6 +531,23 @@ class Director:
             f"~{_fmt(expected_days(best), '{:.0f}')} jours attendus, échec {_fmt(best['ftmo_echec_p1'])} %")
         return best, rules, weights
 
+    LOCKS = [{"seuil": s, "facteur": f} for s in (1.5, 2.0, 3.0, 4.0, 5.0) for f in (0.0, 0.5)]
+
+    def _tune_lock(self, keys, weights, rules, best, trades, windows, say):
+        """Frein de bonne journée : après +X % dans la journée, plus de trade (ou risque réduit) jusqu'au lendemain.
+        Protège la règle du meilleur jour (50 %) et évite de redonner les gains. Gardé seulement s'il aide."""
+        found = None
+        for lk in self.LOCKS:
+            res = self._eval(keys, weights, rules["day_stop"], rules["max_open"], trades, windows,
+                             max_corr=rules.get("max_correles"), pilot=rules.get("pilote"), day_lock=lk)
+            if self._better(res, best):
+                best, found = res, lk
+        if found is None:
+            return best, rules
+        say(f"Frein de bonne journée : {lock_text(found)} -> challenge réussi en "
+            f"~{_fmt(expected_days(best), '{:.0f}')} jours attendus, échec {_fmt(best['ftmo_echec_p1'])} %")
+        return best, {**rules, "frein": found}
+
     def build_combined(self, allr: pd.DataFrame, pool=None, quiet=False) -> dict:
         trades, windows, info = pool or self._pool(allr)
         say = (lambda m: None) if quiet else self.say
@@ -560,7 +580,7 @@ class Director:
                     for lvl in sorted({min(0.5, top), top}):  # prudent, puis au risque max autorisé
                         w = {**weights, k: lvl}
                         res = self._eval(keys + [k], w, rules["day_stop"], rules["max_open"], trades, windows,
-                                     max_corr=rules.get("max_correles"), pilot=rules.get("pilote"))
+                                     max_corr=rules.get("max_correles"), pilot=rules.get("pilote"), day_lock=rules.get("frein"))
                         if self._better(res, best) and (pick_res is None or self._better(res, pick_res)):
                             pick, pick_res, pick_w = k, res, lvl
                 if pick:
@@ -589,7 +609,7 @@ class Director:
                 for w in sorted(self.levels(), reverse=True):
                     trial = {**weights, k: round(w, 4)}
                     res = self._eval(keys, trial, rules["day_stop"], rules["max_open"], trades, windows,
-                                     max_corr=rules.get("max_correles"), pilot=rules.get("pilote"))
+                                     max_corr=rules.get("max_correles"), pilot=rules.get("pilote"), day_lock=rules.get("frein"))
                     if self._better(res, best):
                         best, weights = res, trial
             # d) retirer ce qui ne sert plus
@@ -598,7 +618,7 @@ class Director:
                     break
                 rest = [x for x in keys if x != k]
                 res = self._eval(rest, weights, rules["day_stop"], rules["max_open"], trades, windows,
-                                     max_corr=rules.get("max_correles"), pilot=rules.get("pilote"))
+                                     max_corr=rules.get("max_correles"), pilot=rules.get("pilote"), day_lock=rules.get("frein"))
                 if res and not self._better(best, res):
                     keys.remove(k)
                     weights.pop(k, None)
@@ -614,10 +634,11 @@ class Director:
                      f"~{_fmt(best['ftmo_jours_p1'], '{:.0f}')} jours")
         if keys:
             best, rules, weights = self._tune_pilot(keys, weights, rules, best, trades, windows, info, say)
+            best, rules = self._tune_lock(keys, weights, rules, best, trades, windows, say)
         if not keys:
             return {}
         final = self._eval(keys, weights, rules["day_stop"], rules["max_open"], trades, windows, n=5000,
-                           max_corr=rules.get("max_correles"), pilot=rules.get("pilote"))
+                           max_corr=rules.get("max_correles"), pilot=rules.get("pilote"), day_lock=rules.get("frein"))
         comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": weights[k],
                   "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False),
@@ -742,7 +763,7 @@ class Director:
                     continue
                 w = {k: min(v, lv[-1]) for k, v in weights.items()}  # chaque risque doit tenir dans le budget
                 r = self._eval(keys, w, rules.get("day_stop"), rules.get("max_open"), *pool[:2], n=5000,
-                               max_corr=rules.get("max_correles"), pilot=rules.get("pilote"))
+                               max_corr=rules.get("max_correles"), pilot=rules.get("pilote"), day_lock=rules.get("frein"))
                 if r is not None and self._better(r, res):
                     res, comb = r, (keys, w, rules)
             if comb is None:
@@ -862,6 +883,7 @@ class Director:
                      "Perte totale max (%)": rg.get("total_budget"), "Positions ouvertes max": rg.get("max_open"),
                      "Positions max sur marchés corrélés (même sens)": rg.get("max_correles"),
                      "Pilote de risque du challenge": pilot_text(rg.get("pilote")),
+                     "Frein de bonne journée": lock_text(rg.get("frein")),
                      "Arrêt après perte réalisée du jour (%)": rg.get("day_stop")}
             for i, comp in enumerate(self.combined.get("composants", []), 1):
                 add(comp["candidate"], comp["symbole"], comp["timeframe"], f"stratégie combinée n°{i}",
@@ -1025,7 +1047,8 @@ def write_report(d: Director):
             ("Arrêt journalier", "aucun" if rules.get("day_stop") is None else f"après -{rules['day_stop']:g} %"),
             ("Positions ouvertes max", str(rules.get("max_open") or "illimité")),
             ("Marchés corrélés dans le même sens (max)", str(rules.get("max_correles") or "illimité")),
-            ("Pilote de risque du challenge", pilot_text(rules.get("pilote")))])
+            ("Pilote de risque du challenge", pilot_text(rules.get("pilote"))),
+            ("Frein de bonne journée", lock_text(rules.get("frein")))])
     comp_rows = "".join(
         f"<tr><td>{i}</td><td>{esc(x['symbole'])}</td><td>{esc(x['timeframe'])}</td><td>{esc(x['strategie'])}</td>"
         f"<td>{esc(x['risque_config'])}{' <i>(variante R:R)</i>' if x.get('variante_rr') else ''}</td>"

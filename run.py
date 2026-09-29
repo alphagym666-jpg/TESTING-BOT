@@ -70,6 +70,8 @@ def news_args(p):
 def period_args(p):
     p.add_argument("--sans-genies", action="store_true", help="sans les 2 génies (Einstein, Hawking)")
     p.add_argument("--generations-genies", type=int, default=12, help="générations d'évolution des formules des génies")
+    p.add_argument("--sans-couts-reels", action="store_true",
+                   help="ne pas ajouter les coûts mesurés en direct (spread réel + glissement du bot)")
     p.add_argument("--sans-inter-marches", action="store_true",
                    help="ne pas donner aux inventeurs les prix des autres marchés")
     p.add_argument("--depuis", default=None,
@@ -93,6 +95,17 @@ def with_ext(df, sym, tf, symbols, raw, a):
         except Exception as exc:
             print(f"[inter-marchés] {o} {tf} indisponible : {exc}")
     return add_ext(df, others) if others else df
+
+
+def real_costs(conn, a):
+    """Calibration des coûts réels (spread du paper trading + glissement du bot) ajoutée aux tests."""
+    if getattr(a, "sans_couts_reels", False) or getattr(a, "cost", None) is not None:
+        return
+    from mt5lab.couts_reels import calibrate
+    conn.calib = calibrate(Path(a.out))
+    n = sum(1 for c in conn.calib.values() if c["spread_pts"] is not None or c["glissement_pts"] is not None)
+    print(f"[coûts réels] {n} marchés calibrés avec les trades du direct" if n else
+          "[coûts réels] pas encore assez de trades en direct pour calibrer les coûts (minimum 10 par marché)")
 
 
 def since(df, a):
@@ -144,6 +157,7 @@ def cmd_directeur(a):
     comm = parse_commission(a.commission)
     news = load_news_arg(a)
     with MT5Connector() as conn:
+        real_costs(conn, a)
         raw_cache: dict = {}
 
         def raw(sym, tf):
@@ -188,6 +202,7 @@ def cmd_lab(a):
         comm = parse_commission(a.commission)
         news = load_news_arg(a)
         with MT5Connector() as conn:
+            real_costs(conn, a)
             raw_cache: dict = {}
 
             def raw(s, t):

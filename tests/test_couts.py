@@ -151,3 +151,17 @@ def test_auditor_flags_luck_and_concentration():
     assert chanceux["audit_grave"] and "3 trades" in chanceux["audit_detail"]
     retard = audit_trades(np.tile([1.0, -0.5, 0.8, -0.4], 10), -0.05)      # ne tient pas une bougie de retard
     assert retard["audit_grave"] and "retardée" in retard["audit_detail"]
+
+
+def test_enrich_adds_real_costs_measured_live():
+    conn = MT5Connector.__new__(MT5Connector)
+    info = SimpleNamespace(point=1e-5, trade_tick_value=1.0, trade_tick_size=1e-5, swap_mode=0, visible=True,
+                           currency_base="EUR", currency_profit="USD")
+    conn.symbol_info = lambda s: info
+    conn.resolve = lambda s: s
+    conn.calib = {"EURUSD": {"spread_pts": 14, "glissement_pts": 3}}
+    idx = pd.date_range("2024-01-01", periods=3, freq="h")
+    df = pd.DataFrame({"open": 1.1, "high": 1.1, "low": 1.1, "close": 1.1, "volume": 1, "spread": [10, 10, 20]},
+                      index=idx)
+    out = conn.enrich(df, "EURUSD")
+    assert np.allclose(out["cost"], (np.array([10, 10, 20]) + 4 + 6) * 1e-5)   # +4 de spread, +2x3 de glissement

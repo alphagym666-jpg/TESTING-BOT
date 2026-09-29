@@ -60,8 +60,10 @@ class Notifier:
 class BotWatcher:
     """Lit le journal d'exécution du bot MT5 (exec_<fichier des signaux>) et le compare au paper trading."""
 
-    def __init__(self, path: Path, alert, silent_after: float = 180.0, missed_after: float = 120.0):
+    def __init__(self, path: Path, alert, silent_after: float = 180.0, missed_after: float = 120.0,
+                 slip_log: Path | None = None):
         self.path = Path(path)
+        self.slip_log = Path(slip_log) if slip_log else None   # glissements.csv : sert à calibrer les coûts réels
         self.alert = alert
         self.silent_after, self.missed_after = silent_after, missed_after
         self.pos = 0
@@ -100,6 +102,7 @@ class BotWatcher:
                         if p and price > 0:
                             pt = (point_of(symbol) if point_of else None) or 1.0
                             self.slippages.append(abs(price - p[2]) / pt)
+                            self._log_slip(symbol, self.slippages[-1])
                     else:
                         self.missed += 1
                         self.alert(f"Le bot MT5 a REFUSÉ un ordre ({symbol}) : {f[7] if len(f) > 7 else ''}")
@@ -113,6 +116,16 @@ class BotWatcher:
         if self.last_seen and now - self.last_seen > self.silent_after and not self._silent_alerted:
             self._silent_alerted = True
             self.alert("Le bot MT5 ne donne plus signe de vie depuis 3 minutes (MT5 fermé ? bot retiré du graphique ?).")
+
+    def _log_slip(self, symbol: str, pts: float):
+        if self.slip_log is None:
+            return
+        try:
+            self.slip_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.slip_log, "a", encoding="utf-8") as fh:
+                fh.write(f"{datetime.now():%Y-%m-%d %H:%M:%S};{symbol};{pts:.1f}\n")
+        except OSError:
+            pass
 
     def status(self) -> dict:
         sl = list(self.slippages)

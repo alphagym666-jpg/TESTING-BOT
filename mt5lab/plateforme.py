@@ -110,7 +110,7 @@ def make_bot(engine, url: str) -> dict:
         comb["composants"] = [single_strategy(x.candidate, x.symbol, x.timeframe, x.risk_pct or engine.risk_pct)
                               ["composants"][0] for x in members]
         comb["regles"].update({"day_stop": g.day_stop, "max_open": g.max_open, "max_correles": g.max_corr,
-                               "pilote": g.pilot})
+                               "pilote": g.pilot, "frein": g.day_lock})
         if g.session:
             comb["horaire"] = {"nom": f"{g.session[0]:g}h-{g.session[1]:g}h", "debut": g.session[0],
                                "fin": g.session[1], "decalage_serveur": g.session[2]}
@@ -332,6 +332,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
   return `<h3 style="margin:6px 0 8px;font-size:16px">${esc(g.nom)} ${st} <button class="botbtn" data-groupe="${esc(g.nom)}">Créer le bot MT5 de cette stratégie combinée</button></h3>
   <p class="note">Un seul compte de ${fmt(g.capital,0)} $ partagé par ${g.composants.length} composants · perte possible max
   ${r.budget_jour==null?"—":fmt(r.budget_jour,1)+" %"} par jour · positions max ${r.max_positions??"illimité"} · marchés corrélés dans le même sens max ${r.max_correles??"illimité"} ·
+  ${r.frein?`frein de bonne journée : ${esc(r.frein)}${r.frein_actif?' <b>(ACTIF aujourd\'hui)</b>':""} ·`:""}
   ${g.refuses} signaux refusés par les règles de risque</p>
   <div class="tiles">
    <div class="tile"><div class="mut">Équité</div><div class="v">${fmt(g.equite,2)} $</div><div class="mut" style="font-size:12px">solde ${fmt(g.solde,2)} · latent ${fmt(g.latent,2,true)}</div></div>

@@ -293,6 +293,13 @@ class MT5Connector:
             sp = df["spread"].astype(float)
             med = float(sp[sp > 0].median()) if (sp > 0).any() else 0.0
             df["cost"] = np.maximum(sp, med) * info.point + comm
+            # coûts RÉELS mesurés en direct (paper trading + bot MT5) : ajoutés s'ils sont plus élevés
+            from .couts_reels import extra_points
+            calib = getattr(self, "calib", None)
+            extra, why = extra_points(calib, self.resolve(symbol), med) if calib else (0.0, "")
+            if extra > 0:
+                df["cost"] = df["cost"] + extra * info.point
+                print(f"[coûts réels] {symbol} : +{extra:g} points par trade ({why})")
         sl, ss = self.swap_in_price(symbol, float(df["close"].iloc[-1]))
         if sl or ss:
             df["swap_long"], df["swap_short"] = sl, ss

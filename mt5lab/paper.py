@@ -28,7 +28,7 @@ import pandas as pd
 from . import indicators as ind
 from .backtest import RR_LEVELS, RiskConfig, _stop_distance
 from .evaluator import compute_signal, describe, signal_key
-from .ftmo import FtmoRules
+from .ftmo import FtmoRules, lock_text
 from .strategies import REGISTRY, apply_filter, expand_grid
 
 TRADE_FIELDS = ["strategie_id", "symbole", "timeframe", "strategie", "risque", "sens", "lots", "ouverture",
@@ -112,6 +112,7 @@ class Group:
     max_corr: int | None = None       # positions max sur des marchés corrélés dans le même sens (NASDAQ + US30...)
     session: tuple | None = None      # (début, fin, décalage serveur) : entrées seulement dans cet horaire local
     pilot: dict | None = None         # pilote de risque du challenge (ftmo.pilot_factor)
+    day_lock: dict | None = None      # frein de bonne journée {"seuil": %, "facteur": 0 = stop, 0.5 = risque /2}
     best_day: float = 0.0             # meilleure journée (argent)
     prev_day_pnl: float = 0.0
     balance: float = 100_000.0
@@ -132,7 +133,8 @@ class Group:
 
 
 GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
-                                                                "total_budget", "max_corr", "session", "pilot")]
+                                                                "total_budget", "max_corr", "session", "pilot",
+                                                                "day_lock")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -206,7 +208,7 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
     groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0),
                      "max_corr": rules.get("max_correles"), "session": _session_of(d),
-                     "pilot": rules.get("pilote")}}
+                     "pilot": rules.get("pilote"), "day_lock": rules.get("frein")}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
           f"(perte possible max {rules.get('day_budget')} %/jour)")
     return slots, groups
@@ -317,7 +319,8 @@ class PaperEngine:
         # le surveillant : notifications (Telegram si configuré), contrôle du bot MT5, rapport du soir
         from .surveillant import BotWatcher, Notifier, exec_log_name
         self.notifier = Notifier()
-        self.bot_watch = BotWatcher(Path(bridge.path).parent / exec_log_name(Path(bridge.path).name), self.alert) \
+        self.bot_watch = BotWatcher(Path(bridge.path).parent / exec_log_name(Path(bridge.path).name), self.alert,
+                                    slip_log=Path(out_dir) / "glissements.csv") \
             if bridge is not None else None
         self._report_day = datetime.now().strftime("%Y-%m-%d")
         # compte MT5 RÉEL suivi par le bot : c'est LUI qui décide de l'objectif et des limites de perte
@@ -343,7 +346,7 @@ class PaperEngine:
             cap = g.get("capital", 100_000.0)
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
                                       g.get("total_budget"), g.get("max_corr"), g.get("session"), g.get("pilot"),
-                                      balance=cap, peak=cap, day_start=cap)
+                                      g.get("day_lock"), balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -476,8 +479,18 @@ class PaperEngine:
                 pl = {**g.pilot, "cible": self.ftmo.target1}
                 pct *= float(pilot_factor(pl, (g.day_start - g.capital) / g.capital * 100,
                                           g.prev_day_pnl / g.capital * 100))
+            if self._locked(g):  # frein de bonne journée : risque réduit jusqu'à demain
+                pct *= float(g.day_lock.get("facteur", 0))
             return min(g.balance, g.capital) * pct / 100
         return min(s.balance, s.capital) * pct / 100
+
+    def _locked(self, g: Group) -> bool:
+        """Frein de bonne journée : +seuil % gagnés aujourd'hui (paper ou vrai compte, le plus haut des deux)."""
+        if not g.day_lock:
+            return False
+        real = self.real_account()
+        gain = max(g.day_realized, (real["solde"] - real["day_start"]) if real else g.day_realized)
+        return gain >= float(g.day_lock["seuil"]) * g.capital / 100
 
     def group_allows(self, s: Slot, when: str) -> bool:
         """Règles de risque de la stratégie combinée, vérifiées avant chaque nouveau trade."""
@@ -500,6 +513,8 @@ class PaperEngine:
             ok = False
         elif g.day_stop is not None and day_loss >= g.day_stop * g.capital / 100:
             ok = False
+        elif g.day_lock and float(g.day_lock.get("facteur", 0)) <= 0 and self._locked(g):
+            ok = False  # frein de bonne journée : la journée est déjà bonne, on garde le gain jusqu'à demain
         elif g.day_budget is not None:
             open_risk = sum(x.position.risk_money for x in members) * 1.1
             new_risk = self.risk_budget(s) * 1.1
@@ -1012,6 +1027,7 @@ class PaperEngine:
                 "ftmo_quand": g.ftmo_when, "jours_trades": len(g.trade_days), "refuses": g.skipped,
                 "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open,
                            "budget_total": g.total_budget, "max_correles": g.max_corr,
+                           "frein": lock_text(g.day_lock) if g.day_lock else None, "frein_actif": self._locked(g),
                            "horaire": None if not g.session else f"{g.session[0]:g}h-{g.session[1]:g}h"},
                 "composants": [{"symbole": x.symbol, "tf": x.timeframe, "strategie": describe(x.candidate),
                                 "risque": x.cfg.label(), "risque_pct": x.risk_pct, "trades": x.trades,
