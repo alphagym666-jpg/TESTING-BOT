@@ -99,9 +99,14 @@ def best_per_market(engine, min_trades: int = MIN_TRADES_MARKET) -> dict:
     """Onglet « Meilleur bot par marché » : pour chaque marché, la stratégie du paper trading qui a le mieux marché
     EN DIRECT (prix réels), à mettre sur ce marché dans MT5. Classement par solidité (t = R moyen / écart x racine
     du nombre de trades), puis R total. Exclus : stratégies en pause, perdantes ou avec trop peu de trades."""
+    import time as _time
+
     import pandas as pd
 
     from .direct import strategy_table
+    cache = getattr(engine, "_marches_cache", None)   # 60 000 comptes : on ne recalcule qu'une fois par minute
+    if cache and cache[0] == engine.total_trades and _time.time() - cache[1] < 60:
+        return cache[2]
     path = engine.out / "trades.csv"
     t = pd.read_csv(path) if path.exists() and path.stat().st_size else pd.DataFrame(engine.recent)
     slots = engine.slots
@@ -111,6 +116,14 @@ def best_per_market(engine, min_trades: int = MIN_TRADES_MARKET) -> dict:
         t = t[t["strategie_id"].isin(slots.keys())].copy()
         t["r"] = pd.to_numeric(t["r"], errors="coerce")
         t = t.dropna(subset=["r"])
+    most = t.groupby("symbole")["strategie_id"].agg(lambda x: int(x.value_counts().max())) if len(t) else {}
+    if len(t):
+        n_by = t["strategie_id"].map(t["strategie_id"].value_counts())
+        t = t[n_by >= min_trades]   # seulement les stratégies qui ont assez de trades : beaucoup plus rapide
+    for sym, mx in dict(most).items():
+        m = markets.setdefault(sym, {"symbole": sym, "bot": None, "reserve": None, "candidats": 0})
+        if mx < min_trades:
+            m["raison"] = f"pas encore {min_trades} trades en direct (max {mx})"
     if len(t):
         tab = strategy_table(t, min_trades)
         for sym, g in tab.groupby("symbole"):
@@ -129,14 +142,14 @@ def best_per_market(engine, min_trades: int = MIN_TRADES_MARKET) -> dict:
             m["bot"] = rows[0] if rows else None
             m["reserve"] = rows[1] if len(rows) > 1 else None
             if not rows:
-                m["raison"] = (f"aucune stratégie gagnante avec au moins {min_trades} trades en direct"
-                               if (g["trades"] >= min_trades).any() else
-                               f"pas encore {min_trades} trades en direct (max {int(g['trades'].max())})")
+                m["raison"] = f"aucune stratégie gagnante (et pas en pause) avec au moins {min_trades} trades en direct"
     out = sorted(markets.values(), key=lambda m: (m["bot"] is None, -(m["bot"] or {}).get("t", 0)))
     n = sum(1 for m in out if m["bot"])
-    return {"marches": out, "min_trades": min_trades,
-            "message": f"{n} marché(s) sur {len(out)} ont un bot conseillé d'après le direct" if out else
-                       "Aucun marché suivi par ce paper trading."}
+    res = {"marches": out, "min_trades": min_trades,
+           "message": f"{n} marché(s) sur {len(out)} ont un bot conseillé d'après le direct" if out else
+                      "Aucun marché suivi par ce paper trading."}
+    engine._marches_cache = (engine.total_trades, _time.time(), res)
+    return res
 
 
 def make_bot(engine, url: str) -> dict:
@@ -278,9 +291,10 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 <script>
 const TABS=[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
 ["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
-let A=null,aTime=0;
-async function loadAnalyse(force){if(!force&&A&&Date.now()-aTime<60000)return;aTime=Date.now();
- try{A=await (await fetch("/api/analyse",{cache:"no-store"})).json()}catch(e){A={message:"Analyse impossible : "+e,classement:[]}}render()}
+let A=null,aTime=0,aBusy=false;  // une seule demande à la fois (sinon elles s'empilent et rien ne finit)
+async function loadAnalyse(force){if(aBusy||(!force&&A&&Date.now()-aTime<60000))return;aBusy=true;aTime=Date.now();
+ try{A=await (await fetch("/api/analyse",{cache:"no-store"})).json()}catch(e){A={message:"Analyse impossible : "+e,classement:[]}}
+ aBusy=false;aTime=Date.now();render()}
 function viewAn(){if(!A){loadAnalyse(true);return `<div class="empty">Analyse des trades du direct en cours…</div>`}loadAnalyse(false);
  const c=A.combinaison,r=c?c.resultat:null;
  const comb=c?`<div class="tiles"><div class="tile"><div class="mut">Gain en direct de la combinaison</div><div class="v">${fmt(r.rendement_pct,2,true)} %</div></div>
@@ -297,9 +311,10 @@ function viewAn(){if(!A){loadAnalyse(true);return `<div class="empty">Analyse de
   table("anr",[["Marché","symbole"],["TF","timeframe"],["Bot","strategie_id",botBtn],["Stratégie","strategie"],["Réglage","risque"],["Trades","trades",null,1],
    ["Réussite","reussite_pct",v=>fmt(v,0)+" %",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["t (solidité)","t",v=>fmt(v,2),1],
    ["Jours","jours",null,1],["Meilleur jour (part du profit)","meilleur_jour_part",v=>v==null?"—":fmt(v,0)+" %",1]],filt(A.classement||[],"symbole","timeframe"))}
-let M=null,mTime=0;
-async function loadMarches(force){if(!force&&M&&Date.now()-mTime<60000)return;mTime=Date.now();
- try{M=await (await fetch("/api/marches",{cache:"no-store"})).json()}catch(e){M={message:"Classement impossible : "+e,marches:[]}}render()}
+let M=null,mTime=0,mBusy=false;
+async function loadMarches(force){if(mBusy||(!force&&M&&Date.now()-mTime<60000))return;mBusy=true;mTime=Date.now();
+ try{M=await (await fetch("/api/marches",{cache:"no-store"})).json()}catch(e){M={message:"Classement impossible : "+e,marches:[]}}
+ mBusy=false;mTime=Date.now();render()}
 function viewMk(){if(!M){loadMarches(true);return `<div class="empty">Classement des marchés en cours…</div>`}loadMarches(false);
  const card=m=>{const b=m.bot,r=m.reserve;
   if(!b)return `<div class="tile"><div class="v" style="font-size:18px">${esc(m.symbole)}</div><div class="mut">Aucun bot conseillé : ${esc(m.raison||"")}</div></div>`;

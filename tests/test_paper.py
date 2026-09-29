@@ -579,10 +579,12 @@ def test_best_bot_per_market(setup):
                 w.writerow({"strategie_id": sid, "symbole": "EURUSD", "timeframe": "H1", "strategie": sid,
                             "risque": "x", "ouverture": f"2026-09-{1 + i:02d} 10:00", "fermeture": f"2026-09-{1 + i:02d} 12:00",
                             "r": r})
+    eng.total_trades = sum(len(v) for v in r_of.values())      # nouveaux trades : le classement est recalculé
     res = best_per_market(eng)
     m = res["marches"][0]
     assert len(r_of["bon"]) >= MIN_TRADES_MARKET
     assert m["symbole"] == "EURUSD" and m["bot"]["strategie_id"] == "bon" and m["reserve"]["strategie_id"] == "moyen"
     eng.slots["bon"].paused = True                                 # en pause : plus conseillé
+    eng._marches_cache = None
     assert best_per_market(eng)["marches"][0]["bot"]["strategie_id"] == "moyen"
     assert mk.sent == []
