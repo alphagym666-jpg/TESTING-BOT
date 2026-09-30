@@ -19,6 +19,8 @@
 //|  - perte totale >= InpPerteTotaleMax % : tout est fermé, arrêt   |
 //|  - objectif atteint (InpObjectif %) : plus de nouveau trade      |
 //|  - signal trop vieux (PC en veille, redémarrage) : ignoré        |
+//|  - un seul graphique par bot : une 2e copie refuse de démarrer   |
+//|    (sinon chaque ordre serait passé deux fois)                   |
 //|                                                                  |
 //| Installation : voir LISEZMOI_BOT.txt                              |
 //+------------------------------------------------------------------+
@@ -45,6 +47,8 @@ string   g_gv_seq, g_gv_stop;
 datetime g_day = 0;
 double   g_day_start = 0;
 string   g_gv_best;
+string   g_gv_alive, g_gv_chart;
+bool     g_file_ok = false;
 
 double BestDay() { return GlobalVariableCheck(g_gv_best) ? GlobalVariableGet(g_gv_best) : 0.0; }
 bool     g_block_day = false;
@@ -67,6 +71,22 @@ int OnInit()
    g_gv_seq  = "LaboBot_seq_" + IntegerToString(InpMagic);
    g_gv_stop = "LaboBot_arret_" + IntegerToString(InpMagic);
    g_gv_best = "LaboBot_meilleurjour_" + IntegerToString(InpMagic);
+   g_gv_alive = "LaboBot_vivant_" + IntegerToString(InpMagic);
+   g_gv_chart = "LaboBot_graphique_" + IntegerToString(InpMagic);
+   // un seul graphique par bot : une copie qui tourne déjà ailleurs (signe de vie récent) -> on refuse
+   if(GlobalVariableCheck(g_gv_alive) && GlobalVariableCheck(g_gv_chart)
+      && TimeLocal() - (datetime)GlobalVariableGet(g_gv_alive) <= 15
+      && GlobalVariableGet(g_gv_chart) != (double)ChartID())
+     {
+      Alert("LaboBot : ce bot (numéro magique ", InpMagic, ") tourne déjà sur un autre graphique. ",
+            "Gardez-le sur UN seul graphique, sinon chaque ordre serait passé deux fois.");
+      return(INIT_FAILED);
+     }
+   Heartbeat();
+   if(!FileIsExist(InpFichier, FILE_COMMON))
+      Print("LaboBot : ATTENTION, le fichier ", InpFichier, " n'existe pas (encore) dans le dossier commun de MT5. ",
+            "Lancez la plateforme qui envoie les signaux et vérifiez que le paramètre InpFichier porte le même nom ",
+            "que celui affiché par la plateforme (« signaux pour LaboBot écrits dans ... »).");
    // au premier lancement, on ne rejoue pas les anciens signaux du fichier
    if(GlobalVariableCheck(g_gv_seq))
       g_last_seq = (long)GlobalVariableGet(g_gv_seq);
@@ -77,6 +97,7 @@ int OnInit()
      }
    NewDay();
    EventSetTimer(1);
+   Print("LaboBot démarré : fichier des signaux ", InpFichier, " (numéro magique ", InpMagic, ")");
    Print("LaboBot démarré : capital ", InpCapital, ", risque max ", InpRisqueMax, " %/trade, perte max ",
          InpPerteJourMax, " %/jour et ", InpPerteTotaleMax, " % au total.");
    return(INIT_SUCCEEDED);
@@ -85,12 +106,19 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   // libère la place « un seul graphique » si c'est bien cette copie qui la tenait
+   if(GlobalVariableCheck(g_gv_chart) && GlobalVariableGet(g_gv_chart) == (double)ChartID())
+     {
+      GlobalVariableDel(g_gv_chart);
+      GlobalVariableDel(g_gv_alive);
+     }
    Comment("");
   }
 
 void OnTimer()
   {
    static datetime last_ping = 0;
+   Heartbeat();
    Guards();
    ReadSignals();
    ShowStatus();
@@ -99,6 +127,13 @@ void OnTimer()
       last_ping = TimeLocal();
       LogExec("PING", "-", "", 0, 0, true, "");
      }
+  }
+
+// signe de vie entre copies du bot (voir OnInit : un seul graphique par bot)
+void Heartbeat()
+  {
+   GlobalVariableSet(g_gv_alive, (double)TimeLocal());
+   GlobalVariableSet(g_gv_chart, (double)ChartID());
   }
 
 // journal d'exécution lu par le surveillant (glissement, ordres manqués, bot arrêté)
@@ -193,6 +228,7 @@ void CloseAll(string why)
 void ReadSignals()
   {
    int h = FileOpen(InpFichier, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   g_file_ok = h != INVALID_HANDLE;
    if(h == INVALID_HANDLE)
       return;
    string lines[];
@@ -360,6 +396,7 @@ void ShowStatus()
            "\nTotal : ", DoubleToString((eq - InpCapital) / InpCapital * 100.0, 2), " %   (arrêt à -",
            DoubleToString(InpPerteTotaleMax, 1), " %)",
            "\nObjectif à atteindre : +", DoubleToString(TargetNeeded(), 2), " % (règle du meilleur jour comprise)",
+           "\nFichier écouté : ", InpFichier, g_file_ok ? "" : "  (INTROUVABLE : la plateforme écrit-elle ce fichier ?)",
            "\nPositions du bot : ", n,
            "\nDernier signal reçu : ", g_last_signal > 0 ? TimeToString(g_last_signal) : "aucun",
            "\nLe paper trading de la stratégie combinée (option C) doit tourner pour envoyer les signaux.");

@@ -34,3 +34,25 @@ def test_calibration_from_paper_and_bot(tmp_path):
     assert extra == 10 + 2 * 5 and "glissement" in why
     assert extra_points(cal, "EURUSD", 10)[0] == 0 and extra_points(None, "XAUUSD", 20)[0] == 0
     assert extra_points(cal, "XAUUSD", 40)[0] == 10   # spread historique déjà plus large : seul le glissement
+
+
+def test_bot_watcher_alerte_si_aucun_signe_de_vie(tmp_path):
+    """Bot posé avec un ancien InpFichier : il n'écrit jamais dans exec_<fichier> -> alerte claire, une seule fois."""
+    import time as _t
+    alerts = []
+    bw = BotWatcher(tmp_path / "exec_labo_signaux_18334626.csv", alerts.append, silent_after=0.1, missed_after=0.05)
+    bw.signal_open("k1", "XAUUSD M30 test", 4187.32)
+    _t.sleep(0.15)
+    bw.poll()
+    bw.poll()
+    assert sum("AUCUN signe de vie" in a for a in alerts) == 1
+    assert any("NON exécuté" in a and "InpFichier = labo_signaux_18334626.csv" in a for a in alerts)
+    assert bw.status()["fichier"] == "labo_signaux_18334626.csv" and not bw.status()["vivant"]
+
+
+def test_labobot_un_seul_graphique_et_fichier_affiche():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "mql5" / "LaboBot.mq5").read_text(encoding="utf-8-sig")
+    assert "tourne déjà sur un autre graphique" in src and "return(INIT_FAILED)" in src
+    assert 'Print("LaboBot démarré : fichier des signaux ", InpFichier' in src
+    assert "FileIsExist(InpFichier, FILE_COMMON)" in src and "Fichier écouté" in src

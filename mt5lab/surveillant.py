@@ -73,6 +73,12 @@ class BotWatcher:
         self.missed = 0
         self.executed = 0
         self._silent_alerted = False
+        # le bot n'écrit dans CE journal que si son paramètre InpFichier est le bon fichier de signaux :
+        # aucun signe de vie depuis le lancement = bot absent, Algo Trading coupé ou mauvais fichier
+        self.started = time.time()
+        self._never_alerted = False
+        name = self.path.name
+        self.signal_file = name[len("exec_"):] if name.startswith("exec_") else name
         if self.path.exists():  # on ne relit pas l'historique au démarrage
             self.pos = self.path.stat().st_size
 
@@ -111,11 +117,24 @@ class BotWatcher:
             if now - t0 > self.missed_after:
                 self.pending.pop(key)
                 self.missed += 1
-                self.alert(f"Ordre NON exécuté par le bot MT5 : {label}. Vérifiez que MT5 est ouvert, que le bot est "
-                           "sur un graphique et que le bouton Algo Trading est vert.")
+                if self.last_seen is None:
+                    self.alert(f"Ordre NON exécuté par le bot MT5 : {label}. Le bot n'a jamais donné signe de vie : "
+                               f"{self._check_hint()}")
+                else:
+                    self.alert(f"Ordre NON exécuté par le bot MT5 : {label}. Vérifiez que MT5 est ouvert, que le bot "
+                               "est sur un graphique et que le bouton Algo Trading est vert.")
+        if self.last_seen is None and not self._never_alerted and now - self.started > self.silent_after:
+            self._never_alerted = True
+            self.alert("Le bot MT5 n'a donné AUCUN signe de vie depuis le lancement de la plateforme : "
+                       + self._check_hint())
         if self.last_seen and now - self.last_seen > self.silent_after and not self._silent_alerted:
             self._silent_alerted = True
             self.alert("Le bot MT5 ne donne plus signe de vie depuis 3 minutes (MT5 fermé ? bot retiré du graphique ?).")
+
+    def _check_hint(self) -> str:
+        return (f"vérifiez que MT5 est ouvert, que le bouton Algo Trading est vert, et que le bot est sur un graphique "
+                f"avec le paramètre InpFichier = {self.signal_file} (clic droit sur le graphique > Liste des experts "
+                f"> Propriétés > Paramètres). Un bot posé avant une mise à jour peut garder un ancien fichier.")
 
     def _log_slip(self, symbol: str, pts: float):
         if self.slip_log is None:
@@ -131,7 +150,7 @@ class BotWatcher:
         sl = list(self.slippages)
         return {"vivant": bool(self.last_seen and time.time() - self.last_seen < self.silent_after),
                 "dernier_signe": datetime.fromtimestamp(self.last_seen).strftime("%H:%M:%S") if self.last_seen else None,
-                "executes": self.executed, "manques": self.missed,
+                "executes": self.executed, "manques": self.missed, "fichier": self.signal_file,
                 "glissement_moyen_pts": round(sum(sl) / len(sl), 1) if sl else None}
 
 

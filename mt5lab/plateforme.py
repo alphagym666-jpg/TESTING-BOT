@@ -507,7 +507,7 @@ function fillSelect(id,vals){const el=document.getElementById(id),cur=el.value,f
 async function poll(){try{const r=await fetch("/api/etat",{cache:"no-store"});D=await r.json();
  dot.classList.remove("off");maj.textContent="en direct · "+D.maj;
  info.textContent=`${D.serveur} · capital fictif ${fmt(D.capital,0)} $ / compte · perte max ${D.risque_pct} % par trade · aucun ordre envoyé à MT5 par la plateforme`
-  +(D.bot?` · Bot MT5 : ${D.bot.vivant?"actif (signe de vie "+D.bot.dernier_signe+")":"SILENCIEUX"}, ${D.bot.executes} ordres exécutés, ${D.bot.manques} manqués${D.bot.glissement_moyen_pts!=null?", glissement moyen "+D.bot.glissement_moyen_pts+" pts":""}`:"")
+  +(D.bot?` · Bot MT5 : ${D.bot.vivant?"actif (signe de vie "+D.bot.dernier_signe+")":(D.bot.dernier_signe?"SILENCIEUX depuis "+D.bot.dernier_signe:"AUCUN signe de vie (InpFichier = "+D.bot.fichier+" ?)")}, ${D.bot.executes} ordres exécutés, ${D.bot.manques} manqués${D.bot.glissement_moyen_pts!=null?", glissement moyen "+D.bot.glissement_moyen_pts+" pts":""}`:"")
   +(D.telegram?" · alertes Telegram actives":"");
  prix.innerHTML=Object.entries(D.prix).map(([s,p])=>{const m=(D.meteo||{})[s]||{},tf=m.H1?"H1":Object.keys(m).find(k=>m[k]);
   const w=tf&&m[tf]?` · <span title="Météo du marché (${tf}) selon le Météorologue">${esc(m[tf])}</span>`:"";
