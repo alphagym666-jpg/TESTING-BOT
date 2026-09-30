@@ -181,6 +181,9 @@ def _run_director(cfg, get_data, a):
     d.account_overrides = {"perso": {"capital": a.capital_perso, "risk_pct": a.risque_perso,
                                      "day_budget": a.perte_jour_perso},
                            "finance": {"capital": a.capital_finance}}
+    if a.rapport_seulement:
+        d.rebuild_report()
+        return
     if not a.comptes_seulement:
         d.run()
         return
@@ -525,6 +528,8 @@ def main():
     di.add_argument("--demo", action="store_true", help="données synthétiques (sans MT5)")
     di.add_argument("--comptes-seulement", action="store_true",
                     help="seulement le compte perso et le compte financé, avec la recherche déjà faite (rapide)")
+    di.add_argument("--rapport-seulement", action="store_true",
+                    help="refaire seulement directeur.html et les fiches (boutons Bot MT5 compris), sans recalculer")
     di.add_argument("--sans-comptes", action="store_true", help="ne pas construire le compte perso ni le compte financé")
     di.add_argument("--capital-perso", type=float, default=5_000, help="capital du compte perso (défaut 5000)")
     di.add_argument("--capital-finance", type=float, default=100_000, help="capital du compte financé (défaut 100000)")

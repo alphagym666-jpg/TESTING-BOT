@@ -170,6 +170,7 @@ def analyse(root: str | Path, rules: FtmoRules = FtmoRules(), risk_pct: float = 
 
 
 def write_report(result: dict, path: Path) -> Path:
+    from .boutons import button, script, slim
     esc = html.escape
     rows = "".join(
         f"<tr><td>{i}</td><td>{esc(str(r['symbole']))} {esc(str(r['timeframe']))}</td><td>{esc(str(r['strategie'])[:110])}</td>"
@@ -190,7 +191,9 @@ def write_report(result: dict, path: Path) -> Path:
         comb_html = (f"<p><b>Gain en direct : {res['rendement_pct']:+.2f} %</b> · pire journée {res['pire_jour']:.2f} % · "
                      f"{res['trades']} trades · challenges enchaînés : {res['reussis']} réussis / {res['rates']} ratés · "
                      f"{esc(ftmo)}</p><ol>{items}</ol><p class='mut'>Enregistrée dans strategie_combinee_direct.json : "
-                     "suivez-la en paper trading (menu C avec --combinee-fichier) ou créez son bot.</p>")
+                     "suivez-la en paper trading (menu C avec --combinee-fichier) ou créez son bot.</p>"
+                     + (f"<p>{button(slim(comb), 'Créer le bot MT5 de cette combinaison')}</p>"
+                        if all(c.get("candidate") for c in comb["composants"]) else ""))
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Analyse du direct</title>
 <style>body{{font:14px system-ui,sans-serif;margin:24px;color:#1b1f24;background:#fafaf8}}table{{border-collapse:collapse;width:100%}}
 td,th{{border-bottom:1px solid #e3e3df;padding:6px 8px;text-align:left}}th{{background:#f1f1ee}}.mut{{color:#666}}
@@ -201,7 +204,7 @@ td,th{{border-bottom:1px solid #e3e3df;padding:6px 8px;text-align:left}}th{{back
 <h2>Meilleure combinaison des stratégies qui tournent</h2>{comb_html}
 <h2>Classement des stratégies en direct</h2>
 <table><tr><th>#</th><th>Marché</th><th>Stratégie</th><th>Réglage</th><th>Trades</th><th>Réussite</th><th>R moyen</th>
-<th>R total</th><th>t</th><th>Jours</th><th>Meilleur jour (part du profit)</th></tr>{rows}</table></body></html>"""
+<th>R total</th><th>t</th><th>Jours</th><th>Meilleur jour (part du profit)</th></tr>{rows}</table>{script(Path(path).parent)}</body></html>"""
     path.write_text(page, encoding="utf-8")
     return path
 

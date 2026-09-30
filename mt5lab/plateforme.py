@@ -65,6 +65,20 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"message": f"Classement impossible : {exc}", "marches": []}, ensure_ascii=False)
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
+        elif path == "/api/botfichier":  # bouton « Bot MT5 » des rapports (comparaison, Directeur, fiches...)
+            try:
+                body = json.dumps(bot_from_report(self.server.engine, self.path), ensure_ascii=False)
+                code = 200
+            except PermissionError as exc:
+                body, code = json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False), 403
+            except Exception as exc:
+                body, code = json.dumps({"ok": False, "message": f"Impossible de créer le bot : {exc}"},
+                                        ensure_ascii=False), 200
+            if code == 403:
+                self.send_error(403)
+            else:  # le rapport est un fichier (origine « null ») : il faut l'autoriser à lire la réponse
+                self._send(body.encode("utf-8"), "application/json; charset=utf-8",
+                           {"Access-Control-Allow-Origin": "*"})
         elif path == "/api/bot":
             try:
                 body = json.dumps(make_bot(self.server.engine, self.path), ensure_ascii=False)
@@ -156,7 +170,7 @@ def make_bot(engine, url: str) -> dict:
     """Bouton « Bot MT5 » : prépare le bot d'une stratégie (?id=...) ou de la stratégie combinée (?groupe=...)."""
     from urllib.parse import parse_qs, urlparse
 
-    from .pont import generate_strategy_bot, install_in_mt5, single_strategy
+    from .pont import single_strategy
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
     if q.get("analyse"):  # la meilleure combinaison trouvée par l'analyse du direct
@@ -189,7 +203,46 @@ def make_bot(engine, url: str) -> dict:
     prof = getattr(engine, "profile", None)
     if prof:  # compte perso / financé : le bot garde le même profil (pas d'objectif, intérêts composés...)
         comb.update(profil=prof["cle"], composer=bool(prof.get("compound")))
-    out = generate_strategy_bot(comb, root, capital, engine.ftmo, risk)
+    return _build_bot(engine, comb, root, capital, engine.ftmo, risk)
+
+
+def bot_from_report(engine, url: str) -> dict:
+    """Bouton « Bot MT5 » d'un rapport : la stratégie (seule ou combinée) arrive dans la demande, avec le jeton
+    secret du projet (sinon refus : un site web ne peut pas créer de bot à votre place)."""
+    import hmac
+    import re
+    from urllib.parse import parse_qs, urlparse
+
+    from .boutons import REPO, token
+    q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+    if not hmac.compare_digest(q.get("t", ""), token()):
+        raise PermissionError("jeton invalide")
+    comb = json.loads(q.get("c", "{}"))
+    comps = comb.get("composants") or []
+    if not comps or not all(isinstance(c, dict) and {"symbole", "timeframe", "candidate"} <= c.keys() for c in comps):
+        return {"ok": False, "message": "Stratégie incomplète : impossible de créer ce bot."}
+    res = q.get("r", "results")
+    root = REPO / res if re.fullmatch(r"\w[\w.-]*", res) and (REPO / res).is_dir() else engine.out.parent
+    risk = max(float(c.get("risk_pct") or 1.0) for c in comps)
+    ftmo, capital = engine.ftmo, float(comb.get("capital") or 100_000)
+    if comb.get("profil") in ("perso", "finance"):  # compte perso / financé : ses propres règles
+        from .comptes import ftmo_like, profile
+        p = profile(comb["profil"], capital=comb.get("capital"))
+        ftmo, capital = ftmo_like(p), float(p["capital"])
+        comb["composer"] = bool(p["compound"])
+    elif getattr(engine, "profile", None) is not None:  # plateforme d'un compte perso : règles FTMO par défaut
+        from .ftmo import FtmoRules
+        ftmo = FtmoRules()
+    out = _build_bot(engine, comb, root, capital, ftmo, risk)
+    if comb.get("essai"):
+        out["message"] = ("ATTENTION : stratégie À L'ESSAI (non validée) : testez-la en paper trading / compte démo "
+                          "avant tout.\n\n" + out["message"])
+    return out
+
+
+def _build_bot(engine, comb, root, capital, ftmo, risk) -> dict:
+    from .pont import generate_strategy_bot, install_in_mt5
+    out = generate_strategy_bot(comb, root, capital, ftmo, risk)
     ok, inst = install_in_mt5(out / "LaboBot.mq5", engine.mt5, f"LaboBot_{out.name}.mq5")
     try:
         import os

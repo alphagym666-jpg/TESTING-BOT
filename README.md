@@ -443,6 +443,21 @@ prochaine clôture de bougie avant de prendre un trade.
   fichier de signaux et son propre numéro magique : plusieurs bots peuvent tourner sur le même compte),
   `LANCER_BOT.bat` (le paper trading de CETTE stratégie, qui envoie ses signaux au bot) et `LISEZMOI_BOT.txt`.
 
+
+### Bouton « Bot MT5 » dans tous les rapports
+
+Chaque stratégie affichée dans `comparaison.html`, `directeur.html`, `fiches_strategies.html`, `direct.html`,
+`compte_perso.html` et `compte_finance.html` a son bouton **Bot MT5**, ainsi que chaque stratégie combinée : la combinée
+du Directeur, chaque horaire, le portefeuille du Chef FTMO, la combinaison du direct et les 2 comptes.
+
+Un rapport est un simple fichier : pour créer le bot, **une plateforme doit être ouverte** (option 6, 9 ou C).
+Le bouton lui demande de créer le dossier `results/bots/<nom>/`, puis d'installer et compiler le bot dans MT5.
+La demande est protégée par un jeton secret (fichier `.bot_token` du projet) : un site web ne peut pas le faire à
+votre place.
+
+Pour ajouter les boutons aux pages déjà faites : option **R** (directeur.html), **F** (fiches) ou **5** (comparaison).
+Elles sont refaites en quelques secondes, sans relancer la recherche.
+
 ## Les 2 génies : Einstein et Hawking
 
 Deux génies travaillent **seuls**, sans chef ni Directeur. Ils ne combinent pas des indicateurs : ils **inventent

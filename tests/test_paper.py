@@ -588,3 +588,40 @@ def test_best_bot_per_market(setup):
     eng._marches_cache = None
     assert best_per_market(eng)["marches"][0]["bot"]["strategie_id"] == "moyen"
     assert mk.sent == []
+
+
+def test_bot_button_in_reports_goes_through_platform(setup):
+    """Bouton « Bot MT5 » des rapports (fichiers) : la plateforme crée le bot seulement avec le jeton du projet."""
+    import json as _json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from mt5lab.boutons import button, combined, script, single, token
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    from mt5lab.plateforme import bot_from_report, start_server
+    mk, tmp = setup
+    cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+    eng = PaperEngine(MT5Connector().connect(verbose=False), [Slot("solo", "EURUSD", "H1", cand)],
+                      tmp / "results" / "paper", 1.0)
+    comb = combined([{"symbole": "XAUUSD", "timeframe": "M30", "candidate": _json.dumps(cand), "risk_pct": 0.5},
+                     {"symbole": "EURUSD", "timeframe": "M15", "candidate": cand, "risk_pct": 0.5}], "Portefeuille")
+    html_btn = button(comb)
+    assert 'class="labbot"' in html_btn and "XAUUSD" in html_btn and token() in script(tmp / "results")
+    q = lambda t, c: "/api/botfichier?" + urllib.parse.urlencode({"t": t, "r": "inconnu", "c": _json.dumps(c)})
+    with pytest.raises(PermissionError):
+        bot_from_report(eng, q("mauvais", comb))
+    r = bot_from_report(eng, q(token(), comb))
+    saved = _json.loads((Path(r["dossier"]) / "strategie.json").read_text(encoding="utf-8"))
+    assert r["ok"] and [c["timeframe"] for c in saved["composants"]] == ["M30", "M15"]
+    assert not bot_from_report(eng, q(token(), {"composants": [{"symbole": "X"}]}))["ok"]
+    # par HTTP, depuis un rapport ouvert comme fichier : réponse lisible (CORS) ; sans jeton : refus
+    start_server(eng, 8874, open_browser=False)
+    one = single(cand, "EURUSD", "H1", 1.0)
+    with urllib.request.urlopen("http://127.0.0.1:8874" + q(token(), one)) as resp:
+        assert resp.headers["Access-Control-Allow-Origin"] == "*" and _json.loads(resp.read())["ok"]
+    with pytest.raises(urllib.error.HTTPError):
+        urllib.request.urlopen("http://127.0.0.1:8874" + q("x" * 32, one))
+    assert mk.sent == []

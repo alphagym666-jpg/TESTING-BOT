@@ -118,7 +118,7 @@ def build_comparison(results_dir: Path, capital: float = 100_000, rules: FtmoRul
             "candidate"]
     port, port_res = portfolio(results_dir, allr, rules, risk_pct)
     allr[cols].to_csv(results_dir / "comparaison.csv", index=False)
-    _write_html(results_dir / "comparaison.html", allr, capital, rules, port, port_res)
+    _write_html(results_dir / "comparaison.html", allr, capital, rules, port, port_res, risk_pct)
     ok = allr[allr["_ok"]]
     print(f"\n===== COMPARAISON : {len(ok)} stratégies approuvées sur "
           f"{allr[['symbole', 'timeframe']].drop_duplicates().shape[0]} marchés × timeframes =====")
@@ -148,7 +148,15 @@ def _fmt(v, f="{:+.2f}"):
     return "" if pd.isna(v) else f.format(v)
 
 
-def _table(df, capital, esc):
+def _bot(r, risk_pct):
+    from .boutons import button, single
+    try:
+        return button(single(r["candidate"], r["symbole"], r["timeframe"], risk_pct))
+    except Exception:
+        return ""
+
+
+def _table(df, capital, esc, risk_pct=1.0):
     rows = ""
     for i, (_, r) in enumerate(df.iterrows(), 1):
         g = r["gain_mois_pct"]
@@ -157,14 +165,15 @@ def _table(df, capital, esc):
                  f"<td class='{'pos' if g > 0 else 'neg'}'>{_fmt(r['gain_mois_usd'], '{:+,.0f}')} $</td>"
                  f"<td>{_fmt(r['trades_mois'], '{:.1f}')}</td><td>{_fmt(r['wr_oos'], '{:.0f}')} %</td>"
                  f"<td>{_fmt(r['avgR_oos'])}</td><td>{_fmt(r['pf_oos'], '{:.2f}')}</td>"
-                 f"<td>{_fmt(r['dd_oos_pct'], '{:.1f}')} %</td><td>{_fmt(r['trades_oos'], '{:.0f}')}</td></tr>")
+                 f"<td>{_fmt(r['dd_oos_pct'], '{:.1f}')} %</td><td>{_fmt(r['trades_oos'], '{:.0f}')}</td>"
+                 f"<td>{_bot(r, risk_pct)}</td></tr>")
     head = ("<tr><th>#</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th><th>Gain / mois</th>"
             f"<th>$ / mois (sur {capital:,.0f})</th><th>Trades / mois</th><th>Réussite</th><th>R moyen</th><th>PF</th>"
-            "<th>DD max</th><th>Trades testés</th></tr>")
+            "<th>DD max</th><th>Trades testés</th><th>Bot</th></tr>")
     return f"<div class='scroll'><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>"
 
 
-def _ftmo_table(df, esc):
+def _ftmo_table(df, esc, risk_pct=1.0):
     rows = ""
     for i, (_, r) in enumerate(df.iterrows(), 1):
         rows += (f"<tr><td>{i}</td><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{esc(r['strategie'])}</td>"
@@ -173,15 +182,16 @@ def _ftmo_table(df, esc):
                  f"<td>{_fmt(r['ftmo_reussis_total'], '{:.0f}')} / {_fmt(r['ftmo_rates_total'], '{:.0f}')}</td>"
                  f"<td>{_fmt(r['ftmo_reussis_oos'], '{:.0f}')} / {_fmt(r['ftmo_rates_oos'], '{:.0f}')}</td>"
                  f"<td>{_fmt(r['gain_mois_pct'])} %</td><td>{_fmt(r['trades_mois'], '{:.1f}')}</td>"
-                 f"<td>{_fmt(r['dd_oos_pct'], '{:.1f}')} %</td></tr>")
+                 f"<td>{_fmt(r['dd_oos_pct'], '{:.1f}')} %</td><td>{_bot(r, risk_pct)}</td></tr>")
     head = ("<tr><th>#</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th><th>Réussite challenge</th>"
             "<th>Jours de bourse (médiane)</th><th>Échec</th><th>Challenges réussis / ratés (tout l'historique)</th>"
-            "<th>Réussis / ratés (hors-échantillon)</th><th>Gain / mois</th><th>Trades / mois</th><th>DD max</th></tr>")
+            "<th>Réussis / ratés (hors-échantillon)</th><th>Gain / mois</th><th>Trades / mois</th><th>DD max</th><th>Bot</th></tr>")
     return f"<div class='scroll'><table><thead>{head}</thead><tbody>{rows}</tbody></table></div>"
 
 
 def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules | None = None,
-                port: pd.DataFrame | None = None, port_res: dict | None = None):
+                port: pd.DataFrame | None = None, port_res: dict | None = None, risk_pct: float = 1.0):
+    from .boutons import button, combined, script
     rules = rules or FtmoRules()
     esc = html.escape
     ok = allr[allr["_ok"]]
@@ -229,8 +239,11 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules
         prow = "".join(f"<tr><td><b>{r['ordre']}</b></td><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td>"
                        f"<td>{esc(r['strategie'])}</td><td>{esc(r['risque'])}</td><td>{_fmt(r['ftmo_pass'], '{:.0f}')} %</td>"
                        f"<td class='pos'>{_fmt(r['reussite_portefeuille'], '{:.1f}')} %</td>"
-                       f"<td>{_fmt(r['jours_portefeuille'], '{:.0f}')}</td></tr>"
+                       f"<td>{_fmt(r['jours_portefeuille'], '{:.0f}')}</td><td>{_bot(r, risk_pct)}</td></tr>"
                        for _, r in port.iterrows())
+        port_bot = button(combined([{**r, "risk_pct": risk_pct} for _, r in port.iterrows()],
+                                   "Portefeuille du Chef FTMO"), "Créer le bot MT5 de ce portefeuille (les "
+                          f"{len(port)} stratégies ensemble)")
         ftmo_html += (f"<div class='cards'><div class='card'><span class='mut'>Portefeuille du Chef FTMO</span>"
                       f"<b>{len(port)} stratégies tradées ensemble</b></div><div class='card'><span class='mut'>Réussite du challenge "
                       f"avec les {len(port)} ensemble</span>"
@@ -239,13 +252,13 @@ def _write_html(path: Path, allr: pd.DataFrame, capital: float, rules: FtmoRules
                       f"</div><div class='card'><span class='mut'>Échec (règle de perte touchée)</span>"
                       f"<b>{_fmt(port_res['ftmo_echec_p1'], '{:.0f}')} %</b></div></div>"
                       f"<p class='mut'>Stratégies tradées ENSEMBLE, chacune à son risque par trade. La perte du jour compte "
-                      f"toutes les positions ouvertes comme si elles étaient à leur stop.</p>"
+                      f"toutes les positions ouvertes comme si elles étaient à leur stop.</p><p>{port_bot}</p>"
                       f"<div class='scroll'><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Risque</th>"
                       f"<th>Réussite de cette stratégie seule</th><th>Réussite du portefeuille après ajout</th>"
-                      f"<th>Jours pour +{rules.target1:g} % après ajout</th></tr></thead><tbody>{prow}</tbody></table></div>")
+                      f"<th>Jours pour +{rules.target1:g} % après ajout</th><th>Bot seul</th></tr></thead><tbody>{prow}</tbody></table></div>")
     ftmo_html += ("<h3>Meilleures stratégies seules pour le challenge</h3><p class='mut'>Chaque stratégie tradée "
                   "SEULE. Le portefeuille ci-dessus combine plusieurs de ces stratégies, d'où une réussite plus élevée.</p>")
-    ftmo_html += _ftmo_table(ftmo_ok.head(20), esc) if len(ftmo_ok) else \
+    ftmo_html += _ftmo_table(ftmo_ok.head(20), esc, risk_pct) if len(ftmo_ok) else \
         "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"
     ftmo_html += ("<p class='mut'>Réussite = % de challenges réussis sur des milliers de simulations construites à partir des "
                   "journées réelles hors-échantillon. Suppose que la stratégie continue de se comporter comme sur cette "
@@ -260,14 +273,14 @@ la recherche), ramenés par mois pour comparer équitablement M1 et D1. Commissi
 <h2>Carte marché × timeframe (meilleure stratégie validée)</h2>
 <div class="scroll"><table>{grid}</table></div>
 <h2>Classement des stratégies validées, par gain mensuel</h2>
-{_table(ok.head(50), capital, esc) if len(ok) else "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"}
+{_table(ok.head(50), capital, esc, risk_pct) if len(ok) else "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"}
 <h2>Stratégies qui marchent sur plusieurs marchés / timeframes (plus robustes)</h2>
 {"<div class='scroll'><table><thead><tr><th>Stratégie</th><th>Validée</th><th>Marchés</th><th>Timeframes</th><th>Gain moyen / mois</th></tr></thead><tbody>" + fam + "</tbody></table></div>" if fam else "<p class='mut'>—</p>"}
 <h2>Prometteuses mais NON validées</h2>
 <p class="mut">Gagnantes hors-échantillon mais recalées par les chefs (pas assez de trades, pas statistiquement significatif,
 fragiles aux coûts…). À surveiller en paper trading, pas à trader.</p>
-{_table(promising, capital, esc) if len(promising) else "<p class='mut'>—</p>"}
+{_table(promising, capital, esc, risk_pct) if len(promising) else "<p class='mut'>—</p>"}
 <p class="warn">Gain élevé ≠ meilleure stratégie : regardez aussi le drawdown, le nombre de trades et si elle marche sur plusieurs
 marchés. Les gains passés ne garantissent rien : validez en paper trading avant tout.</p>
-</main></body></html>"""
+</main>{script(path.parent)}</body></html>"""
     path.write_text(doc, encoding="utf-8")

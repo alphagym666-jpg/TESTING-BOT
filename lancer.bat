@@ -223,10 +223,12 @@ if exist "%RES%\directeur.html" (start "" "%RES%\directeur.html") else (echo Lan
 pause & goto menu
 
 :rapportdir
+if exist "%RES%\strategie_combinee.json" python run.py directeur --rapport-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --risk-max %DIR_RISQUE_MAX% %FTMO%
 if exist "%RES%\directeur.html" (start "" "%RES%\directeur.html") else (echo Lancez d'abord le Directeur : option D.)
 pause & goto menu
 
 :fiches
+if exist "%RES%\strategie_combinee.json" python run.py directeur --rapport-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --risk-max %DIR_RISQUE_MAX% %FTMO%
 if exist "%RES%\fiches_strategies.html" (start "" "%RES%\fiches_strategies.html") else (echo Lancez d'abord le Directeur : option D.)
 pause & goto menu
 

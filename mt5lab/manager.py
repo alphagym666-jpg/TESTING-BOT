@@ -939,6 +939,19 @@ class Director:
         return out
 
     # --------------------------------------------------------------------------- campagne
+    def rebuild_report(self):
+        """Refait seulement les pages (directeur.html + fiches) avec les résultats déjà calculés : rapide."""
+        allr = self.review()
+        self.combined = _load_json(self.cfg.out / "strategie_combinee.json") or {}
+        self.session_rows = self.combined.get("horaires", []) or []
+        self.scenario_rows = self.combined.get("scenarios", []) or []
+        self.accounts = {n: _load_json(self.cfg.out / f"strategie_combinee_{n}.json")
+                         for n in ("perso", "finance") if (self.cfg.out / f"strategie_combinee_{n}.json").exists()}
+        if len(allr):
+            self.build_cards()
+        write_report(self)
+        self.say(f"Pages refaites : {self.cfg.out / 'directeur.html'} et fiches_strategies.html")
+
     def run(self):
         t0 = time.time()
         self.pass1()
@@ -1003,6 +1016,8 @@ def _direct_html(d) -> str:
 
 def _accounts_html(d) -> str:
     from html import escape as esc
+
+    from .boutons import button, slim
     acc = getattr(d, "accounts", {}) or {}
     if not acc:
         return "<p class='mut'>Pas encore calculé (python run.py comptes, ou option K du menu).</p>"
@@ -1015,8 +1030,15 @@ def _accounts_html(d) -> str:
         out += (f"<p><b>{esc(c['nom'])}</b> ({esc(c['but'])}) : {len(c['composants'])} composants, rendement médian "
                 f"{_fmt(r['rendement_an_median'])} %/an ({_fmt(r['rendement_mois_median'], '{:.2f}')} %/mois), "
                 f"problème {_fmt(r['p_probleme'])} % de chances sur un an. "
-                f"<a href='compte_{esc(name)}.html'>Détails</a></p>")
+                f"<a href='compte_{esc(name)}.html'>Détails</a> {button(slim(c), 'Bot MT5 de ce compte')}</p>")
     return out
+
+
+def _load_json(path: Path) -> dict | None:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _bh_text(d, c) -> str:
@@ -1055,8 +1077,11 @@ def _pair(r, suffix: str) -> str | None:
 
 
 def write_report(d: Director):
+    from .boutons import button, script, single, slim
     esc = html.escape
     c = d.combined
+    R = d.cfg.risk_pct
+    bot1 = lambda sym, tf, cand: button(single(cand, sym, tf, R))  # bot d'UNE stratégie
     res = c.get("resultat", {}) if c else {}
     rules = c.get("regles", {}) if c else {}
     cards = ""
@@ -1081,7 +1106,8 @@ def write_report(d: Director):
     comp_rows = "".join(
         f"<tr><td>{i}</td><td>{esc(x['symbole'])}</td><td>{esc(x['timeframe'])}</td><td>{esc(x['strategie'])}</td>"
         f"<td>{esc(x['risque_config'])}{' <i>(variante R:R)</i>' if x.get('variante_rr') else ''}</td>"
-        f"<td><b>{x['risk_pct']:g} %</b></td><td>{_fmt(x['reussite_seule'])} %</td></tr>"
+        f"<td><b>{x['risk_pct']:g} %</b></td><td>{_fmt(x['reussite_seule'])} %</td>"
+        f"<td>{button(single(x['candidate'], x['symbole'], x['timeframe'], x['risk_pct']))}</td></tr>"
         for i, x in enumerate(c.get("composants", []) if c else [], 1))
     tfs = d.cfg.timeframes
     mtf = "".join(
@@ -1111,13 +1137,14 @@ def write_report(d: Director):
         f"<td class='pos'>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
         f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
         f"<td>{_fmt(r.get('reussis_hist'), '{:.0f}')} / {_fmt(r.get('rates_hist'), '{:.0f}')}</td>"
-        f"<td>{_fmt(r.get('trades'), '{:.0f}')}</td><td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td></tr>"
+        f"<td>{_fmt(r.get('trades'), '{:.0f}')}</td><td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td>"
+        f"<td>{button(slim(_load_json(d.cfg.out / r['fichier'])), 'Bot MT5')}</td></tr>"
         for r in d.session_rows)
     sess = ("<div class='scroll'><table><thead><tr><th>Horaire (heure locale)</th>"
             "<th>Challenge réussi en (jours attendus, reprises comprises)</th><th>Meilleure perte max / jour</th>"
             f"<th>Réussite</th><th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th>"
             "<th>Challenges réussis / ratés (OOS)</th><th>Réussis / ratés (tout l'historique)</th><th>Trades</th>"
-            f"<th>Pire journée</th><th>Composants</th></tr></thead><tbody>{sess_rows}</tbody></table></div>"
+            f"<th>Pire journée</th><th>Composants</th><th>Bot de cet horaire</th></tr></thead><tbody>{sess_rows}</tbody></table></div>"
             if sess_rows else "<p class='mut'>—</p>")
     rev = "".join(
         f"<tr><td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{r['validees']}</td>"
@@ -1141,11 +1168,12 @@ def write_report(d: Director):
                           f"<td>{esc(_pair(r, 'total') or '—')}</td><td>{esc(_pair(r, 'oos') or '—')}</td>"
                           f"<td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
                           f"<td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td><td>{_fmt(r['wr_oos'], '{:.0f}')} %</td>"
-                          f"<td>{_fmt(r['trades_mois'])}</td><td>{_fmt(r['dd_oos_pct'])} %</td></tr>")
+                          f"<td>{_fmt(r['trades_mois'])}</td><td>{_fmt(r['dd_oos_pct'])} %</td>"
+                          f"<td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     best_tbl = ("<div class='scroll'><table><thead><tr><th>#</th><th>Stratégie (lien vers la fiche)</th><th>Type</th>"
                 "<th>Marché</th><th>TF</th><th>Réglage</th><th>Réussite FTMO seule</th><th>Jours pour l'objectif</th>"
                 "<th>Challenges réussis / ratés (tout l'historique)</th><th>Challenges réussis / ratés (hors-échantillon)</th>"
-                "<th>Gain / mois</th><th>R moyen</th><th>Réussite</th><th>Trades / mois</th><th>DD max</th></tr></thead>"
+                "<th>Gain / mois</th><th>R moyen</th><th>Réussite</th><th>Trades / mois</th><th>DD max</th><th>Bot</th></tr></thead>"
                 f"<tbody>{best_rows}</tbody></table></div>") if best_rows else \
         "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"
     from .strategies import REGISTRY as _REG
@@ -1158,10 +1186,10 @@ def write_report(d: Director):
                      f"<td>{esc(str(r['risque']))}</td><td class='{'good' if r['_ok'] else ''}'>{esc(str(r['verdict']))}</td>"
                      f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
                      f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
-                     f"<td>{_fmt(r['ftmo_pass'])} %</td></tr>")
+                     f"<td>{_fmt(r['ftmo_pass'])} %</td><td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     cat_tbl = ("<div class='scroll'><table><thead><tr><th>#</th><th>Stratégie</th><th>Famille</th><th>Meilleur marché</th>"
                "<th>Meilleur réglage</th><th>Verdict</th><th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th>"
-               "<th>Gain / mois</th><th>Réussite FTMO seule</th></tr></thead>"
+               "<th>Gain / mois</th><th>Réussite FTMO seule</th><th>Bot</th></tr></thead>"
                f"<tbody>{cat_rows}</tbody></table></div>") if cat_rows else "<p class='mut'>—</p>"
     trial_rows = ""
     if len(d.allr):
@@ -1171,7 +1199,8 @@ def write_report(d: Director):
                            f"<td>{esc(r['symbole'])}</td><td>{esc(r['timeframe'])}</td><td>{esc(str(r['risque']))}</td>"
                            f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
                            f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td>"
-                           f"<td class='mut'>{esc(str(r['verdict']).split('—')[-1].strip())}</td></tr>")
+                           f"<td class='mut'>{esc(str(r['verdict']).split('—')[-1].strip())}</td>"
+                           f"<td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     gen_rows = ""
     for _, r in d.genius_rows().head(80).iterrows():
         gen_rows += (f"<tr><td><b>{esc(str(r['trouve_par']).replace('Génie 1 ', '').replace('Génie 2 ', ''))}</b></td>"
@@ -1179,14 +1208,15 @@ def write_report(d: Director):
                      f"<td>{esc(r['symbole'])} {esc(r['timeframe'])}</td><td>{esc(str(r['risque']))}</td>"
                      f"<td class='{'good' if r['_ok'] else ''}'>{esc(str(r['verdict']))}</td>"
                      f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
-                     f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td></tr>")
+                     f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td>"
+                     f"<td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     gen_tbl = ("<div class='scroll'><table><thead><tr><th>Génie</th><th>Loi (lien vers la fiche : formule et symboles)</th>"
                "<th>Marché</th><th>Réglage</th><th>Verdict hors-échantillon</th><th>Trades OOS</th><th>R moyen OOS</th>"
-               f"<th>PF OOS</th><th>Réussite FTMO seule</th></tr></thead><tbody>{gen_rows}</tbody></table></div>"
+               f"<th>PF OOS</th><th>Réussite FTMO seule</th><th>Bot</th></tr></thead><tbody>{gen_rows}</tbody></table></div>"
                if gen_rows else "<p class='mut'>Pas encore de découverte (relancez la recherche avec la nouvelle version).</p>")
     trial_tbl = ("<div class='scroll'><table><thead><tr><th>Stratégie</th><th>Marché</th><th>TF</th><th>Réglage</th>"
                  "<th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th><th>Réussite FTMO seule</th>"
-                 f"<th>Pourquoi pas validée</th></tr></thead><tbody>{trial_rows}</tbody></table></div>"
+                 f"<th>Pourquoi pas validée</th><th>Bot</th></tr></thead><tbody>{trial_rows}</tbody></table></div>"
                  if trial_rows else "<p class='mut'>Aucune.</p>")
     trial_banner = ('<p class="card" style="border-color:#d97706"><b>ATTENTION : stratégie combinée À L\'ESSAI.</b> '
                     "Aucune stratégie n'a passé toute la validation : celle-ci est faite de stratégies non validées mais "
@@ -1208,9 +1238,9 @@ def write_report(d: Director):
 <p class="mut">{esc(d.cfg.ftmo.label())} · risque par trade {min(d.cfg.risk_levels):g} à {d.cfg.risk_pct:g} % ·
 perte possible max {d.cfg.day_budget:g} % par jour · {len(d.cfg.symbols)} marchés × {len(tfs)} timeframes</p>
 <h2>La stratégie combinée</h2>
-{('<div class="cards">' + cards + '</div>') if c else '<p class="mut">Pas encore de stratégie combinée : aucune stratégie validée.</p>'}
+{('<div class="cards">' + cards + '</div><p>' + button(slim(c), "Bot MT5 de la stratégie combinée") + '</p>') if c else '<p class="mut">Pas encore de stratégie combinée : aucune stratégie validée.</p>'}
 {('<p class="mut">Composants tradés ENSEMBLE sur un seul compte. Période commune testée : ' + esc(' → '.join(res.get('fenetre', ('', '')))) + ', ' + str(res.get('trades', '')) + ' trades.</p>') if c else ''}
-{('<div class="scroll"><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque par trade</th><th>Réussite seule</th></tr></thead><tbody>' + comp_rows + '</tbody></table></div>') if c else ''}
+{('<div class="scroll"><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque par trade</th><th>Réussite seule</th><th>Bot seul</th></tr></thead><tbody>' + comp_rows + '</tbody></table></div>') if c else ''}
 <h2>Horaires : 24h/24 ou seulement le jour ?</h2>
 <p class="mut">Même travail refait avec des entrées permises seulement dans l'horaire (heure locale, serveur MT5 moins
 {d.cfg.server_offset:g} h). Les positions ouvertes gardent leur SL et TP chez le courtier après la fin de l'horaire.
@@ -1255,5 +1285,5 @@ qu'ils n'avaient pas vue. Chaque faille est aussi jouée comme stratégie et pas
 <h2>Journal du Directeur</h2><pre>{esc(chr(10).join(d.journal))}</pre>
 <p class="warn">Ces chiffres supposent que les stratégies continuent de se comporter comme sur la période que personne n'a vue
 pendant la recherche. Confirmez en paper trading (menu, option « stratégie combinée ») avant tout challenge réel.</p>
-</main></body></html>"""
+</main>{script(d.cfg.out)}</body></html>"""
     (d.cfg.out / "directeur.html").write_text(doc, encoding="utf-8")

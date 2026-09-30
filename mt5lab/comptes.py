@@ -196,14 +196,18 @@ def run_accounts(director: Director, allr: pd.DataFrame | None = None, names=("p
 
 
 def write_account_report(m: AccountManager, comb: dict) -> Path:
-    from .manager import CSS
     import html as _h
+
+    from .boutons import button, script, single, slim
+    from .manager import CSS
     p, r = m.prof, comb["resultat"]
     money = lambda v: f"{v:,.0f}".replace(",", " ")
     cap = float(p["capital"])
     rows = "".join(
         f"<tr><td>{_h.escape(c['symbole'])}</td><td>{c['timeframe']}</td><td>{_h.escape(c['strategie'])}</td>"
-        f"<td>{_h.escape(c['risque_config'])}</td><td>{c['risk_pct']:g} %</td></tr>" for c in comb["composants"])
+        f"<td>{_h.escape(c['risque_config'])}</td><td>{c['risk_pct']:g} %</td>"
+        f"<td>{button(single(c['candidate'], c['symbole'], c['timeframe'], c['risk_pct']))}</td></tr>"
+        for c in comb["composants"])
     rg = comb["regles"]
     from .ftmo import lock_text
     limit = (f"baisse de {p['dd_limit']:g} % depuis le plus haut (ou arrêt à -{p['total_budget']:g} %)" if p["compound"]
@@ -223,11 +227,12 @@ recherche, simulé sur 2 000 années possibles à partir des journées hors-éch
 <h2>Règles</h2><p>Perte possible max {rg.get('day_budget')} %/jour · arrêt journalier {rg.get('day_stop') or 'aucun'} ·
 positions max {rg.get('max_open') or 'illimité'} · marchés corrélés dans le même sens max {rg.get('max_correles') or 'illimité'} ·
 frein de bonne journée : {lock_text(rg.get('frein'))} · {"risque calculé sur le SOLDE (intérêts composés)" if p['compound'] else "risque calculé sur le capital de départ"}</p>
-<h2>Composants</h2><table><tr><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque/trade</th></tr>{rows}</table>
+<p>{button(slim(comb), "Créer le bot MT5 de ce compte")}</p>
+<h2>Composants</h2><table><tr><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque/trade</th><th>Bot seul</th></tr>{rows}</table>
 <p class="mut">Rien n'est garanti : ce sont des estimations sur le passé. Faites-la tourner en paper trading
 (menu lancer.bat) plusieurs semaines avant d'y mettre de l'argent.</p>"""
     path = m.cfg.out / f"compte_{p['cle']}.html"
     path.write_text(f"<!doctype html><html lang=fr><meta charset=utf-8><meta name=viewport content='width=device-width,"
-                    f"initial-scale=1'><title>{_h.escape(p['nom'])}</title><style>{CSS}</style><body>{body}</body></html>",
+                    f"initial-scale=1'><title>{_h.escape(p['nom'])}</title><style>{CSS}</style><body>{body}{script(m.cfg.out)}</body></html>",
                     encoding="utf-8")
     return path

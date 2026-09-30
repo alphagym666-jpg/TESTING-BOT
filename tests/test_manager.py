@@ -35,6 +35,7 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     # les autres comptes : compte perso (5 000 $) et compte financé, construits avec les mêmes stratégies
     html = (tmp_path / "directeur.html").read_text(encoding="utf-8")
     assert "compte perso et compte financé" in html
+    assert html.count('class="labbot"') >= 1 and "api/botfichier" in html   # boutons Bot MT5 partout
     for name in ("perso", "finance"):
         f = tmp_path / f"strategie_combinee_{name}.json"
         if f.exists():
@@ -43,3 +44,9 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
             assert acc["capital"] == (5000 if name == "perso" else 100_000) and acc["composer"] == (name == "perso")
             assert all(c["risk_pct"] <= (2.0 if name == "perso" else 1.0) for c in acc["composants"])
             assert (tmp_path / f"compte_{name}.html").exists()
+    # pages refaites sans rien recalculer (option R du menu) : mêmes boutons Bot MT5
+    (tmp_path / "directeur.html").unlink()
+    Director(cfg, get_data, log=lambda m: None).rebuild_report()
+    again = (tmp_path / "directeur.html").read_text(encoding="utf-8")
+    assert "labbot" in again and "24h/24 ou seulement le jour" in again
+    assert "labbot" in (tmp_path / "fiches_strategies.html").read_text(encoding="utf-8")

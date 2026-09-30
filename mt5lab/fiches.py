@@ -230,6 +230,7 @@ table{border-collapse:collapse;font-size:12.5px}td{padding:3px 12px 3px 0}
 
 
 def write_cards(cards: list[dict], out_dir: Path, title: str = "Fiches des stratégies") -> Path:
+    from .boutons import button, script, single
     out_dir = Path(out_dir)
     (out_dir / "fiches").mkdir(parents=True, exist_ok=True)
     esc = html.escape
@@ -264,7 +265,8 @@ def write_cards(cards: list[dict], out_dir: Path, title: str = "Fiches des strat
   + ''.join(f"<tr><td class='mut'>{esc(p['debut'])} → {esc(p['fin'])}</td><td>{p['trades']} trades</td>"
             f"<td>R moyen {p['r_moyen']:+.2f}</td><td>R total {p['r_total']:+.1f}</td></tr>" for p in c.get('periodes', []))
   + '</table></details>') if c.get('periodes') else ''}
-<p class="card" style="margin:10px 0"><b>Bot MT5 de cette stratégie</b> : menu <b>E</b>, puis collez l'identifiant
+<p class="card" style="margin:10px 0">{button(single(c['candidate'], c['marche'], c['timeframe'], c.get('risk_pct') or 1.0), "Créer le bot MT5 de cette stratégie")}
+<br><b>Autre moyen</b> : menu <b>E</b>, puis collez l'identifiant
 <code>{esc(c['id'])}</code> — ou <code>python run.py bot --fiche {esc(c['id'])}</code>. Vous obtenez un dossier avec
 LaboBot.mq5, LANCER_BOT.bat et le mode d'emploi. (Aussi : bouton « Bot MT5 » dans la plateforme de paper trading.)</p>
 <details open><summary>Pseudo-code (pour coder le bot)</summary><pre>{esc(c['pseudo_code'])}</pre></details>
@@ -279,7 +281,7 @@ règles d'entrée et de sortie, stop, objectif, gestion, taille de position, pse
 <ul class="toc">{toc}</ul>{body}
 <p class="mut">Pour la faire trader par le bot Python de la plateforme sur un compte DÉMO :
 python run.py live --symbol SYMBOLE --timeframe TF --strategies results/fiches/ID.json (simulation par défaut, --execute pour de vrais ordres).</p>
-</main></body></html>"""
+</main>{script(out_dir)}</body></html>"""
     path = out_dir / "fiches_strategies.html"
     path.write_text(doc, encoding="utf-8")
     return path
