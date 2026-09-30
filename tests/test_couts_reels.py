@@ -54,5 +54,7 @@ def test_labobot_un_seul_graphique_et_fichier_affiche():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "mql5" / "LaboBot.mq5").read_text(encoding="utf-8-sig")
     assert "tourne déjà sur un autre graphique" in src and "return(INIT_FAILED)" in src
+    # le verrou dépend du fichier de signaux (unique par stratégie), pas du numéro magique
+    assert '"LaboBot_vivant_" + InpFichier' in src and '"LaboBot_vivant_" + IntegerToString' not in src
     assert 'Print("LaboBot démarré : fichier des signaux ", InpFichier' in src
     assert "FileIsExist(InpFichier, FILE_COMMON)" in src and "Fichier écouté" in src

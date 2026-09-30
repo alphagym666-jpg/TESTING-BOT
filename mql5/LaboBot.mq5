@@ -19,8 +19,9 @@
 //|  - perte totale >= InpPerteTotaleMax % : tout est fermé, arrêt   |
 //|  - objectif atteint (InpObjectif %) : plus de nouveau trade      |
 //|  - signal trop vieux (PC en veille, redémarrage) : ignoré        |
-//|  - un seul graphique par bot : une 2e copie refuse de démarrer   |
-//|    (sinon chaque ordre serait passé deux fois)                   |
+//|  - une 2e copie du MÊME bot (même fichier de signaux) refuse de   |
+//|    démarrer (ordres en double) ; des stratégies différentes      |
+//|    tournent en même temps, chacune sur son graphique             |
 //|                                                                  |
 //| Installation : voir LISEZMOI_BOT.txt                              |
 //+------------------------------------------------------------------+
@@ -71,15 +72,17 @@ int OnInit()
    g_gv_seq  = "LaboBot_seq_" + IntegerToString(InpMagic);
    g_gv_stop = "LaboBot_arret_" + IntegerToString(InpMagic);
    g_gv_best = "LaboBot_meilleurjour_" + IntegerToString(InpMagic);
-   g_gv_alive = "LaboBot_vivant_" + IntegerToString(InpMagic);
-   g_gv_chart = "LaboBot_graphique_" + IntegerToString(InpMagic);
-   // un seul graphique par bot : une copie qui tourne déjà ailleurs (signe de vie récent) -> on refuse
+   // un bot = un fichier de signaux (unique pour chaque stratégie) : plusieurs stratégies différentes peuvent
+   // tourner en même temps, chacune sur son graphique ; seule une 2e copie du MÊME bot est refusée
+   g_gv_alive = "LaboBot_vivant_" + InpFichier;
+   g_gv_chart = "LaboBot_graphique_" + InpFichier;
    if(GlobalVariableCheck(g_gv_alive) && GlobalVariableCheck(g_gv_chart)
       && TimeLocal() - (datetime)GlobalVariableGet(g_gv_alive) <= 15
       && GlobalVariableGet(g_gv_chart) != (double)ChartID())
      {
-      Alert("LaboBot : ce bot (numéro magique ", InpMagic, ") tourne déjà sur un autre graphique. ",
-            "Gardez-le sur UN seul graphique, sinon chaque ordre serait passé deux fois.");
+      Alert("LaboBot : ce bot (fichier ", InpFichier, ") tourne déjà sur un autre graphique. ",
+            "Gardez-le sur UN seul graphique, sinon chaque ordre serait passé deux fois. ",
+            "(Des stratégies différentes, elles, peuvent tourner en même temps.)");
       return(INIT_FAILED);
      }
    Heartbeat();
