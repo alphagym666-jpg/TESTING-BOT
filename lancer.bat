@@ -27,6 +27,11 @@ rem Le Directeur : risque MAX par trade, et perte possible max par jour (il test
 set DIR_RISQUE_MAX=1.0
 set DIR_PERTE_JOUR=2.5
 set DIR_PERTE_TOTALE=10
+rem Option X (MAXIMUM) : tests par agent et par round, rounds, generations des inventeurs et des genies
+set MAX_TESTS=5000
+set MAX_ROUNDS=6
+set MAX_INVENTIONS=20
+set MAX_GENIES=30
 rem Horaire de la strategie combinee pour le paper trading (C) et le bot (E) :
 rem   vide = la meilleure trouvee par le Directeur ; sinon 24h24, 8h-17h ou 8h-13h (heure du Quebec)
 set HORAIRE=
@@ -51,7 +56,7 @@ if not "%DEPUIS%"=="" (set RES=results_depuis_%DEPUIS%& set PER=--depuis %DEPUIS
 if "%BATTRE_BH%"=="1" set PER=%PER% --battre-buy-hold
 cls
 echo ==================================================
-echo    Labo de strategies MT5 - Directeur, 4 chefs, 20 agents, 2 genies
+echo    Labo de strategies MT5 - Directeur, 4 chefs, 20 agents, 2 genies, le Conseil
 echo ==================================================
 echo   Marches : %SYMS%    Timeframes : %TFS%
 echo   Capital fictif : %CAPITAL%    Risque max par trade : %RISK%%%    Perte max par jour : %DIR_PERTE_JOUR%%%    Perte max totale : %DIR_PERTE_TOTALE%%%
@@ -67,6 +72,8 @@ echo.
 echo   --- LE DIRECTEUR (4 chefs, 20 agents + les 2 GENIES Einstein et Hawking) ---
 echo   D. PASSER LE CHALLENGE FTMO LE PLUS VITE : le Directeur fait tout (recherche, melange de
 echo      tous les marches et timeframes, reglages du risque), puis lance le paper trading du resultat
+echo   X. DIRECTEUR MAXIMUM : refait TOUTES les cases avec le maximum de tests par agent (%MAX_TESTS% par round,
+echo      %MAX_ROUNDS% rounds) + genies et Conseil au maximum. TRES long (une nuit ou plus), laissez MT5 ouvert
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
 echo   T. Alertes sur le TELEPHONE (Telegram) : explications + message de test
 echo   L. MEILLEURS SETUPS DU DIRECT : analyse des trades du paper trading + meilleure combinaison
@@ -112,6 +119,7 @@ if "%CHOIX%"=="8" goto paperok
 if /i "%CHOIX%"=="S" goto paperessai
 if "%CHOIX%"=="9" goto platform
 if /i "%CHOIX%"=="D" goto directeur
+if /i "%CHOIX%"=="X" goto directeurmax
 if /i "%CHOIX%"=="N" goto nouvelles
 if /i "%CHOIX%"=="R" goto rapportdir
 if /i "%CHOIX%"=="G" goto genies
@@ -180,6 +188,15 @@ pause & goto menu
 :compare
 python run.py compare --out %RES% --capital %CAPITAL% --risk %RISK% %FTMO%
 if exist "%RES%\comparaison.html" (start "" "%RES%\comparaison.html") else (echo Lancez d'abord une recherche.)
+pause & goto menu
+
+:directeurmax
+echo Directeur MAXIMUM : chaque agent fait %MAX_TESTS% tests par round, %MAX_ROUNDS% rounds, %MAX_INVENTIONS% generations
+echo d'inventions, %MAX_GENIES% generations pour les genies, et le Conseil sur chaque case. TOUT est refait.
+echo Comptez une nuit ou plus. Le PC doit rester allume (mise en veille bloquee pendant le calcul).
+python run.py directeur --refaire --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% --budget %MAX_TESTS% --rounds %MAX_ROUNDS% --invent-generations %MAX_INVENTIONS% --generations-genies %MAX_GENIES% %FTMO%
+if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
+if exist "%RES%\strategie_combinee.json" goto papercomb
 pause & goto menu
 
 :directeur

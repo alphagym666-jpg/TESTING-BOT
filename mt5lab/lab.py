@@ -39,6 +39,7 @@ class LabConfig:
     genie_generations: int = 12
     genie_pop: int = 60
     genie_ingredients: list = field(default_factory=list)  # stratégies des agents (recherche déjà faite)
+    conseil: bool = True        # le Conseil : les meilleures stratégies de la case votent ensemble
     beat_bh: bool = False       # exiger de battre le buy & hold (acheter et garder) sur la période de validation
     bh_risk_pct: float = 1.0    # risque par trade utilisé pour comparer au buy & hold
 
@@ -181,6 +182,8 @@ def team_of(agent_tag: str) -> str:
         return "Directeur"
     if "Génie" in agent_tag:
         return "Génies"
+    if "Conseil" in agent_tag:
+        return "Conseil"
     m = re.search(r"Agent\s+(\d+)", agent_tag)
     if not m:
         return ""
@@ -293,8 +296,14 @@ def run_genies(ev, extra, cfg: LabConfig, journal, rules, champions):
 
 
 def run_genies_only(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, cell_dir: Path) -> pd.DataFrame:
-    """Case déjà recherchée par les agents : seuls les 2 génies travaillent, puis leurs lois sont AJOUTÉES au
-    classement et aux trades de la case (rien n'est recalculé pour les agents)."""
+    return run_newcomers(df, cost, cfg, label, cell_dir, genies=True, conseil=False)
+
+
+def run_newcomers(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, cell_dir: Path, genies: bool = True,
+                  conseil: bool = True) -> pd.DataFrame:
+    """Case déjà recherchée par les agents : seuls les NOUVEAUX employés travaillent (les 2 génies et/ou le
+    Conseil), puis leurs stratégies sont AJOUTÉES au classement et aux trades de la case (rien n'est recalculé
+    pour les agents)."""
     import dataclasses
     cell_dir = Path(cell_dir)
     main_path = cell_dir / "classement.csv"
@@ -302,22 +311,29 @@ def run_genies_only(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, c
     ingredients = []
     if len(main) and "candidate" in main.columns:
         top = main[main["trades_oos"].notna()].sort_values("score_is", ascending=False) if "score_is" in main else main
-        ingredients = [json.loads(c) for c in top["candidate"].head(5)]
-    cfg2 = dataclasses.replace(cfg, rounds=0, invent=False, bank_teams=False, catalog=False, genies=True,
-                               genie_ingredients=ingredients, seeds=[])
-    board = run_lab(df, cost, cfg2, label, cell_dir / "genies")
-    g = board[board["equipe"].astype(str).eq("Génies")] if len(board) else board
+        if "equipe" in top.columns:  # le Conseil ne fait pas voter ses propres votes
+            top = top[~top["equipe"].astype(str).eq("Conseil")]
+        ingredients = [json.loads(c) for c in top["candidate"].head(8)]
+    cfg2 = dataclasses.replace(cfg, rounds=0, invent=False, bank_teams=False, catalog=False, genies=genies,
+                               conseil=conseil, genie_ingredients=ingredients, seeds=[])
+    teams = [t for t, on in (("Génies", genies), ("Conseil", conseil)) if on]
+    sub = cell_dir / ("genies" if teams == ["Génies"] else "nouveaux")
+    board = run_lab(df, cost, cfg2, label, sub)
+    g = board[board["equipe"].astype(str).isin(teams)] if len(board) else board
     if len(main) and "equipe" in main.columns:
-        main = main[~main["equipe"].astype(str).eq("Génies")]
+        main = main[~main["equipe"].astype(str).isin(teams)]
     merged = pd.concat([main, g], ignore_index=True, sort=False) if len(g) else main
     if len(merged):
         merged.to_csv(main_path, index=False)
-    gt = cell_dir / "genies" / "trades_oos.csv"
+    gt = sub / "trades_oos.csv"
     if gt.exists():
         mt = cell_dir / "trades_oos.csv"
         t = pd.concat([pd.read_csv(mt) if mt.exists() else pd.DataFrame(), pd.read_csv(gt)], ignore_index=True)
         t.drop_duplicates().to_csv(mt, index=False)
-    (cell_dir / "genies_fait.txt").write_text("les génies ont travaillé sur cette case\n", encoding="utf-8")
+    if genies:
+        (cell_dir / "genies_fait.txt").write_text("les génies ont travaillé sur cette case\n", encoding="utf-8")
+    if conseil:
+        (cell_dir / "conseil_fait.txt").write_text("le Conseil a travaillé sur cette case\n", encoding="utf-8")
     return g
 
 
@@ -440,6 +456,11 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
         cat_findings, cat_keys = optimize_catalog(ev, cfg, journal, rules) if cfg.catalog else ([], {})
         champions = sorted(lead_a.champions() + lead_b.champions(), key=lambda f: f.score, reverse=True)
         genie_findings, geniuses = run_genies(ev, extra, cfg, journal, rules, champions) if cfg.genies else ([], [])
+        conseil_findings = []
+        if cfg.conseil:
+            from .conseil import run_conseil
+            conseil_findings = run_conseil(ev, cfg, journal, rules, champions + cat_findings + genie_findings,
+                                           cfg.genie_ingredients)
 
         # chaque chef présente ses meilleurs candidats + TOUTES les inventions de ses agents
         short_a = lead_a.shortlist() + invented_a
@@ -475,6 +496,13 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
             lead_g = TeamLead("Contrôle des génies (plateforme)", "vérifier les lois des génies hors-échantillon",
                               [], ev, journal, rules)
             approved += [(f, lead_a) for f in lead_g.validate(short_g, rules.t_threshold(len(short_g)))]
+        # le Conseil : sa propre famille de validation, même exigence hors-échantillon que tout le monde
+        short_k = [f for f in conseil_findings if f.key not in seen and f.key not in {g.key for g in short_g}]
+        if short_k:
+            from .agents import TeamLead
+            lead_k = TeamLead("Contrôle du Conseil (plateforme)", "vérifier les votes du Conseil hors-échantillon",
+                              [], ev, journal, rules)
+            approved += [(f, lead_b) for f in lead_k.validate(short_k, rules.t_threshold(len(short_k)))]
         if cat_weak:  # résultats hors-échantillon affichés pour le classement, sans validation possible
             oos = {candidate_key(c): r for c, r in ev.evaluate([f.candidate for f in cat_weak], "oos")}
             for f in cat_weak:
@@ -482,7 +510,7 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
                 f.verdict = "rejeté : trop faible en in-sample"
         everything = list({f.key: f for f in list(lead_a.findings.values()) + list(lead_b.findings.values())
                            + invented_a + invented_b + short_c + short_d + cat_findings
-                           + genie_findings}.values())
+                           + genie_findings + conseil_findings}.values())
         n_evals = ev.n_evals
 
     # contre-expertise croisée : chaque chef vérifie les trouvailles de l'autre
@@ -625,6 +653,8 @@ def run_lab(df: pd.DataFrame, cost: float, cfg: LabConfig, label: str, out_dir: 
     board.to_csv(out_dir / "classement.csv", index=False)
     if cfg.genies and cfg.rounds > 0:
         (out_dir / "genies_fait.txt").write_text("les génies ont travaillé sur cette case\n", encoding="utf-8")
+    if cfg.conseil and cfg.rounds > 0:
+        (out_dir / "conseil_fait.txt").write_text("le Conseil a travaillé sur cette case\n", encoding="utf-8")
     best = [json.loads(c) for c in board.loc[board["verdict"] == "APPROUVÉ", "candidate"].head(cfg.top)] if len(board) else []
     (out_dir / "meilleures_strategies.json").write_text(json.dumps(best, indent=2, ensure_ascii=False))
     (out_dir / "journal_agents.txt").write_text("\n".join(journal.lines), encoding="utf-8")

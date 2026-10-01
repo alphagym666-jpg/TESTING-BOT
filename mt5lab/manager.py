@@ -74,6 +74,8 @@ class DirectorConfig:
     server_offset: float = 7.0         # heure du serveur MT5 - heure locale (FTMO vs Québec/New York : 7 h)
     seed: int = 7
     comptes: bool = True               # construire aussi le compte perso et le compte financé (comptes.py)
+    conseil: bool = True               # le Conseil : les meilleures stratégies de chaque case votent ensemble
+    genie_generations: int = 12        # générations d'évolution des formules des génies
 
 
 def _fmt(v, f="{:.1f}"):
@@ -99,6 +101,8 @@ def kind(r) -> str:
     name = _txt(r.get("strategie", ""))
     if equipe == "Génies" or name.startswith("LOI "):
         return "Loi d'un génie (Einstein / Hawking)"
+    if equipe == "Conseil" or name.startswith("CONSEIL"):
+        return "Vote du Conseil"
     if name.startswith("FAILLE") or equipe == "C":
         return "Faille des banques (équipe C)"
     if equipe == "D":
@@ -146,7 +150,7 @@ class Director:
                          seed=c.seed + seed, ftmo=c.ftmo, invent_generations=c.invent_generations * k,
                          invent_attempts=3 + (2 if intensive else 0), seeds=seeds or [], invent_bias=bias or [],
                          catalog=c.catalog, bank_teams=c.bank_teams, beat_bh=c.beat_bh, bh_risk_pct=c.risk_pct,
-                         genies=c.genies, genie_generations=12 + (8 if intensive else 0))
+                         genies=c.genies, genie_generations=c.genie_generations + (8 if intensive else 0), conseil=c.conseil)
 
     def run_cell(self, sym, tf, lab_cfg: LabConfig, why: str):
         try:
@@ -171,9 +175,10 @@ class Director:
             self.say(f"Analyse du direct impossible : {exc}")
             self.direct = {}
 
-    def run_genies_cell(self, sym, tf):
-        """Case déjà recherchée : seuls Einstein et Hawking y travaillent, leurs lois s'ajoutent au classement."""
-        from .lab import run_genies_only
+    def run_genies_cell(self, sym, tf, genies=True, conseil=False):
+        """Case déjà recherchée : seuls les nouveaux employés y travaillent (Einstein et Hawking, le Conseil) ;
+        leurs stratégies s'ajoutent au classement."""
+        from .lab import run_newcomers
         try:
             df, cost = self.data(sym, tf)
         except Exception as exc:
@@ -181,11 +186,11 @@ class Director:
             return
         if len(df) < self.cfg.min_bars:
             return
-        self.say(f"{sym} {tf} : les génies n'avaient pas encore travaillé sur cette case : Einstein et Hawking s'y "
-                 "mettent (le travail des agents est gardé)")
-        g = run_genies_only(df, cost, self.lab_cfg(), f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}")
+        who = " et ".join(x for x, on in (("Einstein et Hawking", genies), ("le Conseil", conseil)) if on)
+        self.say(f"{sym} {tf} : nouveaux employés sur cette case : {who} s'y mettent (le travail des agents est gardé)")
+        g = run_newcomers(df, cost, self.lab_cfg(), f"{sym}_{tf}", self.cfg.out / f"{sym}_{tf}", genies, conseil)
         n_ok = int(g["verdict"].eq("APPROUVÉ").sum()) if len(g) else 0
-        self.say(f"{sym} {tf} : {len(g)} lois découvertes par les génies, {n_ok} validées hors-échantillon")
+        self.say(f"{sym} {tf} : {len(g)} stratégies des nouveaux employés, {n_ok} validées hors-échantillon")
 
     @staticmethod
     def _version(path: Path) -> int:
@@ -221,8 +226,10 @@ class Director:
                                  "je la fais refaire")
                     elif got is not None and got >= need * 0.9:
                         self.say(f"{sym} {tf} : je reprends le travail déjà fait par les chefs ({got:.1f} ans testés)")
-                        if self.cfg.genies and not (path.parent / "genies_fait.txt").exists():
-                            self.run_genies_cell(sym, tf)
+                        g_new = self.cfg.genies and not (path.parent / "genies_fait.txt").exists()
+                        k_new = self.cfg.conseil and not (path.parent / "conseil_fait.txt").exists()
+                        if g_new or k_new:
+                            self.run_genies_cell(sym, tf, g_new, k_new)
                         continue
                     else:
                         self.say(f"{sym} {tf} : l'ancienne recherche ne couvrait que "
@@ -450,6 +457,7 @@ class Director:
         res = simulate(daily, self.cfg.ftmo, n, seed=0, pilot=pilot)
         res["fenetre"] = (str(lo.date()), str(hi.date()))
         res["trades"] = int(len(merged))
+        res["trades_mois"] = _per_month(len(merged), lo, hi)
         res["pire_jour"] = float(daily["worst"].min()) if len(daily) else 0.0
         res["rendement_pct"] = float(daily["pnl"].sum()) if len(daily) else 0.0
         res["jours_attendus"] = expected_days(res)
@@ -559,7 +567,8 @@ class Director:
         say(f"Frein de bonne journée : {lock_text(found)} -> {self._summary(best)}")
         return best, {**rules, "frein": found}
 
-    def build_combined(self, allr: pd.DataFrame, pool=None, quiet=False) -> dict:
+    def build_combined(self, allr: pd.DataFrame, pool=None, quiet=False, start=None) -> dict:
+        """start = (composants, risques, règles) : on part d'une combinaison existante au lieu de partir de zéro."""
         trades, windows, info = pool or self._pool(allr)
         say = (lambda m: None) if quiet else self.say
         if not trades:
@@ -576,6 +585,13 @@ class Director:
         weights: dict = {}
         rules = {"day_stop": None, "max_open": None, "max_correles": None}
         best = None
+        if start:
+            keys = [k for k in start[0] if k in info]
+            weights = {k: float(start[1][k]) for k in keys}
+            rules = {"day_stop": None, "max_open": None, "max_correles": None,
+                     **{k: v for k, v in (start[2] or {}).items() if k in ("day_stop", "max_open", "max_correles")}}
+            best = self._eval(keys, weights, rules["day_stop"], rules["max_open"], trades, windows,
+                              max_corr=rules.get("max_correles")) if keys else None
         day_stops = [None] + [x for x in (0.5, 0.75) if x < self.cfg.day_budget]
         for rnd in range(3):
             # a) ajouter les composants qui améliorent le tout
@@ -651,7 +667,8 @@ class Director:
         comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": weights[k],
                   "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False),
-                  "r_moyen_attendu": info[k].get("attendu_r"), "wr_attendu": info[k].get("attendu_wr")}
+                  "r_moyen_attendu": info[k].get("attendu_r"), "wr_attendu": info[k].get("attendu_wr"),
+                  "trades_mois": _comp_tpm(trades, windows, k)}
                  for k in keys]
         rules = {**rules, "day_budget": self.cfg.day_budget, "total_budget": self.cfg.total_budget}
         self._last_setup = (list(keys), dict(weights), dict(rules))
@@ -682,6 +699,7 @@ class Director:
         """Pour chaque horaire (24h/24, 8h-17h, 8h-13h...) : une stratégie combinée par scénario de perte max par
         jour. On garde, pour chaque horaire, celle qui passe le plus vite, puis la meilleure de tous les horaires."""
         pool0 = self._pool(allr)
+        self._pool0 = pool0
         if not pool0[0]:
             self.say("Pas encore de stratégie validée avec des trades : impossible de construire la stratégie combinée.")
             return {}
@@ -711,7 +729,8 @@ class Director:
             self.session_rows.append({
                 "horaire": name, "budget": best_b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
                 "attendus": expected_days(res),
-                "echec": res["ftmo_echec_p1"], "trades": res.get("trades"), "pire_jour": res["pire_jour"],
+                "echec": res["ftmo_echec_p1"], "trades": res.get("trades"), "trades_mois": res.get("trades_mois"),
+                "pire_jour": res["pire_jour"],
                 "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
                 "rates_oos": res.get("challenges_oos", {}).get("rates"),
                 "reussis_hist": hist.get("reussis") if hist else None, "rates_hist": hist.get("rates") if hist else None,
@@ -787,7 +806,8 @@ class Director:
                                     "reussite_seule": info[k]["seule_ftmo"],
                                     "variante_rr": info[k].get("variante", False),
                                     "r_moyen_attendu": info[k].get("attendu_r"),
-                                    "wr_attendu": info[k].get("attendu_wr")} for k in keys],
+                                    "wr_attendu": info[k].get("attendu_wr"),
+                                    "trades_mois": _comp_tpm(trades, windows, k)} for k in keys],
                     "cree_le": time.strftime("%Y-%m-%d %H:%M")}
             rows.append({"budget": b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
                                        "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
@@ -804,6 +824,100 @@ class Director:
                 best, best_b = comb, b
         self.cfg.day_budget = cap
         return best, best_b, rows
+
+    # --------------------------------------------------------------------------- 4 bis. le Chef des combinaisons
+    def _keys_of(self, comb: dict | None, info: dict) -> dict:
+        out = {}
+        for c in (comb or {}).get("composants", []):
+            cand = c["candidate"] if isinstance(c["candidate"], dict) else json.loads(c["candidate"])
+            k = f"{c['symbole']}_{c['timeframe']}|{candidate_key(cand)}"
+            if k in info:
+                out[k] = float(c.get("risk_pct") or min(0.5, self.cfg.risk_pct))
+        return out
+
+    def combine_combinations(self, allr: pd.DataFrame) -> list[dict]:
+        """LE CHEF DES COMBINAISONS : la stratégie combinée du Directeur + une autre combinaison (portefeuille du Chef
+        FTMO, autre horaire, combinaison du direct, ou toutes) seraient-elles encore meilleures ENSEMBLE ?
+        Il fusionne, puis retire / ajoute / règle le risque comme le Directeur. Gardé seulement si le challenge est
+        réussi plus vite (même limite d'échecs, mêmes règles de risque)."""
+        overall = self.combined
+        self.combo_rows = []
+        if not overall or not len(allr):
+            return []
+        pool0 = getattr(self, "_pool0", None) or self._pool(allr)
+        h = overall.get("horaire") or {}
+        pool = self._session_pool(pool0, h.get("debut"), h.get("fin"))
+        trades, windows, info = pool
+        base = self._keys_of(overall, info)
+        if not base:
+            return []
+        sources = []
+        for r in self.session_rows:
+            if r["horaire"] != h.get("nom"):
+                sources.append((f"combinée de l'horaire {r['horaire']}", _load_json(self.cfg.out / r["fichier"])))
+        pf = self.cfg.out / "portefeuille_ftmo.csv"
+        if pf.exists():
+            try:
+                p = pd.read_csv(pf)
+                sources.append(("portefeuille du Chef FTMO", {"composants": [
+                    {"symbole": r.symbole, "timeframe": r.timeframe, "candidate": json.loads(r.candidate)}
+                    for r in p.itertuples() if isinstance(getattr(r, "candidate", None), str)]}))
+            except Exception:
+                pass
+        sources.append(("combinaison du direct (paper trading)", _load_json(self.cfg.out / "strategie_combinee_direct.json")))
+        sources = [(n, c) for n, c in sources if self._keys_of(c, info)]
+        if len(sources) > 1:
+            every = {"composants": [x for _, c in sources for x in c["composants"]]}
+            sources.append(("toutes les combinaisons ensemble", every))
+        if not sources:
+            return []
+        cap = self.cfg.day_budget
+        self.cfg.day_budget = float(overall.get("scenario_choisi") or cap)
+        rg = overall.get("regles", {})
+        base_res = overall.get("resultat")
+        best, best_name = None, None
+        self.say(f"Chef des combinaisons : la combinée du Directeur ({len(base)} composants) est-elle meilleure avec "
+                 f"d'autres combinaisons ? J'essaie {len(sources)} mélanges.")
+        try:
+            for name, comb in sources:
+                other = self._keys_of(comb, info)
+                union = {**other, **base}  # les composants du Directeur gardent leur risque
+                new = self.build_combined(allr, pool, quiet=True, start=(list(union), union, rg))
+                res = new.get("resultat") if new else None
+                better = bool(res) and self._better(res, base_res)
+                self.combo_rows.append({
+                    "melange": f"Directeur + {name}", "ajoutes": len(set(other) - set(base)),
+                    "composants": len(new["composants"]) if new else 0,
+                    "attendus": expected_days(res) if res else None, "reussite": res.get("ftmo_pass") if res else None,
+                    "echec": res.get("ftmo_echec_p1") if res else None,
+                    "trades_mois": res.get("trades_mois") if res else None, "mieux": better})
+                self.say(f"  Directeur + {name} : " + (self._summary(res) + (" -> MIEUX" if better else " -> pas mieux")
+                                                        if res else "impossible (pas assez de période commune)"))
+                if better and self._better(res, best["resultat"] if best else None):
+                    best, best_name = new, name
+        finally:
+            self.cfg.day_budget = cap
+        if best:
+            best.update(horaire=overall.get("horaire"), scenario_choisi=overall.get("scenario_choisi"),
+                        scenarios=overall.get("scenarios"), horaires=overall.get("horaires"),
+                        nom="Stratégie combinée du Directeur (améliorée par le Chef des combinaisons)",
+                        amelioree_avec=best_name)
+            best["regles"]["day_budget"] = self.cfg.day_budget if not overall.get("scenario_choisi") \
+                else float(overall["scenario_choisi"])
+            if overall.get("essai"):
+                best["essai"] = True
+            hist = self.history_challenges(best)
+            if hist:
+                best["challenges_historique"] = hist
+            self.combined = best
+            self.say(f"Chef des combinaisons : OUI, avec {best_name} c'est meilleur -> {self._summary(best['resultat'])}. "
+                     "C'est maintenant LA stratégie combinée (paper trading option C et bot).")
+        else:
+            self.say("Chef des combinaisons : aucun mélange ne fait mieux que la combinée du Directeur seule.")
+        self.combined["melanges"] = self.combo_rows
+        (self.cfg.out / "strategie_combinee.json").write_text(
+            json.dumps(self.combined, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        return self.combo_rows
 
     # --------------------------------------------------------------------------- 5. test multi-timeframes
     def multi_tf_test(self):
@@ -945,6 +1059,7 @@ class Director:
         self.combined = _load_json(self.cfg.out / "strategie_combinee.json") or {}
         self.session_rows = self.combined.get("horaires", []) or []
         self.scenario_rows = self.combined.get("scenarios", []) or []
+        self.combo_rows = self.combined.get("melanges", []) or []
         self.accounts = {n: _load_json(self.cfg.out / f"strategie_combinee_{n}.json")
                          for n in ("perso", "finance") if (self.cfg.out / f"strategie_combinee_{n}.json").exists()}
         if len(allr):
@@ -961,6 +1076,8 @@ class Director:
             allr = self.review()
         if len(allr):
             self.scenarios(allr)
+            if self.combined:
+                self.combine_combinations(allr)
             if self.cfg.comptes:
                 from .comptes import run_accounts
                 self.accounts = run_accounts(self, allr, overrides=getattr(self, "account_overrides", None))
@@ -1034,11 +1151,46 @@ def _accounts_html(d) -> str:
     return out
 
 
+def _per_month(n, lo, hi) -> float:
+    """Nombre de trades ramené à un mois (30,4 jours) sur la période [lo, hi]."""
+    days = max(1.0, (pd.Timestamp(hi) - pd.Timestamp(lo)).days)
+    return round(float(n) / days * 30.44, 1)
+
+
+def _comp_tpm(trades, windows, k) -> float:
+    lo, hi = windows[k]
+    t = trades[k]
+    e = pd.to_datetime(t["entry_time"].astype(str), format="mixed")
+    return _per_month(int(((e >= lo) & (e <= hi)).sum()), lo, hi)
+
+
 def _load_json(path: Path) -> dict | None:
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def _combos_html(rows) -> str:
+    from html import escape as esc
+    if not rows:
+        return "<p class='mut'>Pas encore fait (relancez le Directeur, option D).</p>"
+    body = "".join(
+        f"<tr><td>{esc(r['melange'])}</td><td>{r['ajoutes']}</td><td>{r['composants']}</td>"
+        f"<td><b>{_fmt(r.get('attendus'), '{:.0f}')}</b></td><td>{_fmt(r.get('reussite'))} %</td>"
+        f"<td>{_fmt(r.get('echec'))} %</td><td>{_fmt(r.get('trades_mois'), '{:.0f}')}</td>"
+        f"<td class='{'good' if r['mieux'] else ''}'><b>{'OUI, meilleur' if r['mieux'] else 'non'}</b></td></tr>"
+        for r in rows)
+    return ("<div class='scroll'><table><thead><tr><th>Mélange</th><th>Stratégies apportées</th><th>Composants gardés</th>"
+            "<th>Challenge réussi en (jours attendus)</th><th>Réussite</th><th>Échec</th><th>Trades / mois</th>"
+            f"<th>Meilleur que la combinée seule ?</th></tr></thead><tbody>{body}</tbody></table></div>")
+
+
+def _tpm_text(res: dict) -> str:
+    v = res.get("trades_mois")
+    if v is None:
+        return "—"
+    return f"~{v:.0f} trades/mois (~{v / 21:.1f} par jour de bourse)"
 
 
 def _bh_text(d, c) -> str:
@@ -1096,6 +1248,7 @@ def write_report(d: Director):
             ("Gain sur la période de test (stratégie combinée)", f"{res.get('rendement_pct', float('nan')):+.1f} %"),
             ("Buy & hold sur la même période (moyenne des marchés utilisés)", _bh_text(d, c)),
             ("Composants", str(len(c["composants"]))),
+            ("TRADES PAR MOIS (environ, tous composants ensemble)", _tpm_text(res)),
             ("Pire journée (positions ouvertes au stop)", f"{res.get('pire_jour', 0):.2f} %"),
             ("Perte possible max par jour", f"{rules.get('day_budget', d.cfg.day_budget):g} %"),
             ("Arrêt journalier", "aucun" if rules.get("day_stop") is None else f"après -{rules['day_stop']:g} %"),
@@ -1106,7 +1259,7 @@ def write_report(d: Director):
     comp_rows = "".join(
         f"<tr><td>{i}</td><td>{esc(x['symbole'])}</td><td>{esc(x['timeframe'])}</td><td>{esc(x['strategie'])}</td>"
         f"<td>{esc(x['risque_config'])}{' <i>(variante R:R)</i>' if x.get('variante_rr') else ''}</td>"
-        f"<td><b>{x['risk_pct']:g} %</b></td><td>{_fmt(x['reussite_seule'])} %</td>"
+        f"<td><b>{x['risk_pct']:g} %</b></td><td>{_fmt(x['reussite_seule'])} %</td><td>{_fmt(x.get('trades_mois'))}</td>"
         f"<td>{button(single(x['candidate'], x['symbole'], x['timeframe'], x['risk_pct']))}</td></tr>"
         for i, x in enumerate(c.get("composants", []) if c else [], 1))
     tfs = d.cfg.timeframes
@@ -1137,13 +1290,14 @@ def write_report(d: Director):
         f"<td class='pos'>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
         f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
         f"<td>{_fmt(r.get('reussis_hist'), '{:.0f}')} / {_fmt(r.get('rates_hist'), '{:.0f}')}</td>"
-        f"<td>{_fmt(r.get('trades'), '{:.0f}')}</td><td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td>"
+        f"<td>{_fmt(r.get('trades'), '{:.0f}')}</td><td><b>{_fmt(r.get('trades_mois'))}</b></td>"
+        f"<td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td>"
         f"<td>{button(slim(_load_json(d.cfg.out / r['fichier'])), 'Bot MT5')}</td></tr>"
         for r in d.session_rows)
     sess = ("<div class='scroll'><table><thead><tr><th>Horaire (heure locale)</th>"
             "<th>Challenge réussi en (jours attendus, reprises comprises)</th><th>Meilleure perte max / jour</th>"
             f"<th>Réussite</th><th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th>"
-            "<th>Challenges réussis / ratés (OOS)</th><th>Réussis / ratés (tout l'historique)</th><th>Trades</th>"
+            "<th>Challenges réussis / ratés (OOS)</th><th>Réussis / ratés (tout l'historique)</th><th>Trades</th><th>Trades / mois</th>"
             f"<th>Pire journée</th><th>Composants</th><th>Bot de cet horaire</th></tr></thead><tbody>{sess_rows}</tbody></table></div>"
             if sess_rows else "<p class='mut'>—</p>")
     rev = "".join(
@@ -1240,7 +1394,13 @@ perte possible max {d.cfg.day_budget:g} % par jour · {len(d.cfg.symbols)} march
 <h2>La stratégie combinée</h2>
 {('<div class="cards">' + cards + '</div><p>' + button(slim(c), "Bot MT5 de la stratégie combinée") + '</p>') if c else '<p class="mut">Pas encore de stratégie combinée : aucune stratégie validée.</p>'}
 {('<p class="mut">Composants tradés ENSEMBLE sur un seul compte. Période commune testée : ' + esc(' → '.join(res.get('fenetre', ('', '')))) + ', ' + str(res.get('trades', '')) + ' trades.</p>') if c else ''}
-{('<div class="scroll"><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque par trade</th><th>Réussite seule</th><th>Bot seul</th></tr></thead><tbody>' + comp_rows + '</tbody></table></div>') if c else ''}
+{('<div class="scroll"><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque par trade</th><th>Réussite seule</th><th>Trades / mois</th><th>Bot seul</th></tr></thead><tbody>' + comp_rows + '</tbody></table></div>') if c else ''}
+<h2>Le Chef des combinaisons : la combinée serait-elle meilleure avec d'autres ?</h2>
+<p class="mut">Il mélange la stratégie combinée du Directeur avec chaque autre combinaison (autres horaires, portefeuille du
+Chef FTMO, combinaison du direct, toutes ensemble), puis retire ce qui ne sert à rien et règle le risque. Le mélange
+n'est gardé que s'il fait réussir le challenge plus vite, sans plus d'échecs.
+{esc(('Résultat : la stratégie combinée ci-dessus a été AMÉLIORÉE avec ' + c['amelioree_avec'] + '.') if c and c.get('amelioree_avec') else '')}</p>
+{_combos_html(getattr(d, 'combo_rows', []))}
 <h2>Horaires : 24h/24 ou seulement le jour ?</h2>
 <p class="mut">Même travail refait avec des entrées permises seulement dans l'horaire (heure locale, serveur MT5 moins
 {d.cfg.server_offset:g} h). Les positions ouvertes gardent leur SL et TP chez le courtier après la fin de l'horaire.

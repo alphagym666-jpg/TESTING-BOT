@@ -546,6 +546,27 @@ Attention :
   alors sauté (visible dans le journal).
 - Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
 
+## Le Conseil et le Chef des combinaisons (nouveaux employés)
+
+- **Le Conseil** (dans chaque recherche, et sur les cases déjà cherchées sans tout refaire) : il prend les
+  meilleures stratégies DIFFÉRENTES d'une case (choisies sur la période de recherche seulement) et les fait
+  **voter**. Le signal part seulement quand 2 (ou 3) d'entre elles donnent le même sens dans une fenêtre de 1, 3 ou
+  5 bougies. Moins de trades, mais souvent plus fiables. Les votes passent la même validation hors-échantillon
+  que tout le monde. Ils apparaissent comme « CONSEIL 2/3 … » dans les classements, avec leur fiche et leur bot.
+- **Le Chef des combinaisons** (après les scénarios du Directeur) : il mélange la stratégie combinée avec chaque
+  autre combinaison : autres horaires, portefeuille du Chef FTMO, combinaison du direct, puis toutes ensemble. Il
+  retire ensuite ce qui ne sert à rien et règle le risque. Si un mélange fait réussir le challenge plus vite, sans
+  plus d'échecs, il devient LA stratégie combinée (paper trading C et bot). Le tableau « Le Chef des combinaisons »
+  de directeur.html montre chaque essai : oui / non, jours attendus, trades par mois.
+- **Option X du menu (Directeur MAXIMUM)** : refait toutes les cases avec le maximum d'effort. Chaque agent fait
+  `MAX_TESTS` tests par round (5000, contre 1000 avec l'option D), sur `MAX_ROUNDS` rounds (6). Les inventeurs ont 20
+  générations, les génies 30, et le Conseil travaille sur chaque case. Comptez une nuit ou plus ; le PC ne se met pas
+  en veille pendant le calcul. Plus de tests trouvent plus de candidats, mais la validation hors-échantillon reste
+  la même : seules les stratégies qui tiennent sur des données jamais vues passent.
+- **Trades par mois** : affichés pour chaque stratégie combinée (carte « TRADES PAR MOIS » et tableau des horaires),
+  chaque composant, le portefeuille du Chef FTMO, les comptes perso / financé et, sur la plateforme, le rythme en
+  direct comparé au rythme attendu.
+
 ## Meilleur bot par marché
 
 Onglet **« Meilleur bot par marché »** de la plateforme : pour chaque marché, la stratégie qui marche le mieux EN

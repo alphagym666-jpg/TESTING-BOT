@@ -176,7 +176,10 @@ def cmd_directeur(a):
 
 def _run_director(cfg, get_data, a):
     from mt5lab.manager import Director
+    from mt5lab.paper import _keep_awake
     cfg.comptes = not a.sans_comptes
+    cfg.genie_generations = a.generations_genies
+    _keep_awake(True)  # Windows : pas de mise en veille pendant une longue campagne
     d = Director(cfg, get_data)
     d.account_overrides = {"perso": {"capital": a.capital_perso, "risk_pct": a.risque_perso,
                                      "day_budget": a.perte_jour_perso},

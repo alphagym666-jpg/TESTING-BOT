@@ -22,6 +22,10 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     saved = json.loads((tmp_path / "strategie_combinee.json").read_text(encoding="utf-8"))
     assert saved["scenario_choisi"] in (0.5, 1.0, 2.5)
     assert saved["regles"]["total_budget"] == 10.0
+    assert saved["resultat"]["trades_mois"] > 0 and all("trades_mois" in c for c in saved["composants"])
+    assert isinstance(saved.get("melanges"), list)      # le Chef des combinaisons est passé
+    assert "Chef des combinaisons" in (tmp_path / "directeur.html").read_text(encoding="utf-8")
+    assert "TRADES PAR MOIS" in (tmp_path / "directeur.html").read_text(encoding="utf-8")
     assert all(c["risk_pct"] <= 1.0 for c in saved["composants"])
     for row in saved["scenarios"]:
         assert row["pire_jour"] >= -row["budget"] * 1.05  # la pire journée respecte le plafond (à 5 % près : frais)

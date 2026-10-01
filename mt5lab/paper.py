@@ -114,6 +114,7 @@ class Group:
     pilot: dict | None = None         # pilote de risque du challenge (ftmo.pilot_factor)
     day_lock: dict | None = None      # frein de bonne journée {"seuil": %, "facteur": 0 = stop, 0.5 = risque /2}
     compound: bool = False            # compte perso : le risque suit le SOLDE (intérêts composés)
+    expected_tpm: float | None = None # trades par mois attendus (période de test de la recherche)
     best_day: float = 0.0             # meilleure journée (argent)
     prev_day_pnl: float = 0.0
     balance: float = 100_000.0
@@ -135,7 +136,7 @@ class Group:
 
 GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
                                                                 "total_budget", "max_corr", "session", "pilot",
-                                                                "day_lock", "compound")]
+                                                                "day_lock", "compound", "expected_tpm")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -210,7 +211,9 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0),
                      "max_corr": rules.get("max_correles"), "session": _session_of(d),
                      "pilot": rules.get("pilote"), "day_lock": rules.get("frein"),
-                     "compound": bool(d.get("composer"))}}
+                     "compound": bool(d.get("composer")),
+                     "expected_tpm": (d.get("resultat") or {}).get("trades_mois")
+                     or (sum(float(c.get("trades_mois") or 0) for c in d.get("composants", [])) or None)}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
           f"(perte possible max {rules.get('day_budget')} %/jour)")
     return slots, groups
@@ -348,7 +351,7 @@ class PaperEngine:
             cap = g.get("capital", 100_000.0)
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
                                       g.get("total_budget"), g.get("max_corr"), g.get("session"), g.get("pilot"),
-                                      g.get("day_lock"), bool(g.get("compound")), balance=cap, peak=cap, day_start=cap)
+                                      g.get("day_lock"), bool(g.get("compound")), g.get("expected_tpm"), balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -485,6 +488,14 @@ class PaperEngine:
                 pct *= float(g.day_lock.get("facteur", 0))
             return self._risk_base(g) * pct / 100
         return min(s.balance, s.capital) * pct / 100
+
+    def _per_month(self, n: int) -> float | None:
+        """Rythme en direct : trades ramenés à un mois depuis le début du paper trading (après 3 jours)."""
+        try:
+            days = (datetime.now() - datetime.strptime(self.started[:16], "%Y-%m-%d %H:%M")).total_seconds() / 86400
+        except ValueError:
+            return None
+        return round(n / days * 30.44, 1) if days >= 3 else None
 
     @staticmethod
     def _risk_base(g: Group) -> float:
@@ -1037,6 +1048,7 @@ class PaperEngine:
                     "ecart_paper": round(g.balance - r["solde"], 2)})(self.real_account()),
                 "gagnants": g.wins, "r_total": round(g.sum_r, 2), "pnl": round(g.pnl, 2), "ftmo": g.ftmo_status,
                 "ftmo_quand": g.ftmo_when, "jours_trades": len(g.trade_days), "refuses": g.skipped,
+                "trades_mois_attendus": g.expected_tpm, "trades_mois_direct": self._per_month(g.trades),
                 "regles": {"budget_jour": g.day_budget, "arret_jour": g.day_stop, "max_positions": g.max_open,
                            "budget_total": g.total_budget, "max_correles": g.max_corr,
                            "frein": lock_text(g.day_lock) if g.day_lock else None, "frein_actif": self._locked(g),
@@ -1153,6 +1165,8 @@ def _base_name(cand: dict) -> str:
         return s["name"]
     if s["type"] in ("rule", "formula"):
         return s.get("name", "INVENTION")
+    if s["type"] == "vote":
+        return s.get("name", "CONSEIL")
     return f"{s['a']['name']}+{s['b']['name']}"
 
 

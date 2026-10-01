@@ -263,6 +263,9 @@ class GeneticAgent(Agent):
                 c["signal"] = self._mutate_rule(sig)
             elif sig["type"] == "formula":  # loi d'un génie : on ne touche qu'au seuil
                 c["signal"] = {**sig, "k": self.rng.choice([0.5, 1.0, 1.5, 2.0, 2.5])}
+            elif sig["type"] == "vote":  # le Conseil : nombre de votes et fenêtre
+                c["signal"] = {**sig, "window": self.rng.choice([1, 2, 3, 5]),
+                               "min": self.rng.choice(range(2, len(sig["members"]) + 1))}
             else:
                 part = self.rng.choice(["a", "b"])
                 sig[part] = self._mutate_single(sig[part])

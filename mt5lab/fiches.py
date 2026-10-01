@@ -109,6 +109,13 @@ def logic_source(signal: dict) -> str:
         parts.append("# opérateurs : voir UNARY / BINARY dans mt5lab/genies.py\n# formule (arbre JSON) :\n# "
                      + json.dumps(signal["expr"], ensure_ascii=False, default=str))
         return "\n\n".join(dict.fromkeys(parts))
+    if signal["type"] == "vote":
+        from . import conseil
+        parts = [inspect.getsource(conseil.vote_signal)]
+        for i, m in enumerate(signal["members"], 1):
+            parts.append(f"# ----- membre {i} du Conseil (filtre {m.get('filter', 'none')}) -----\n"
+                         + logic_source(m["signal"]))
+        return "\n\n".join(parts)
     return logic_source(signal["a"]) + "\n\n# ----- combinée avec -----\n\n" + logic_source(signal["b"])
 
 
@@ -145,6 +152,14 @@ def entry_text(signal: dict) -> list[str]:
         else:
             lines.append(f"Sens inverse : VENTE quand z passe au-dessus de +{k:g} ; ACHAT quand z passe sous -{k:g}.")
         lines += [f"Symboles : {sym} = {txt}." for sym, txt in symbols_text(signal["expr"]).items()]
+        return lines
+    if signal["type"] == "vote":
+        lines = [f"Le Conseil : {len(signal['members'])} stratégies votent. Chacune vote pendant {signal.get('window', 3)} "
+                 f"bougie(s) après son signal.",
+                 f"ACHAT quand au moins {signal.get('min', 2)} membres votent ACHAT en même temps (et aucun VENTE) ; "
+                 "VENTE en miroir."]
+        for i, m in enumerate(signal["members"], 1):
+            lines.append(f"Membre {i} : {describe({'signal': m['signal'], 'filter': m.get('filter', 'none')})}")
         return lines
     return [f"Combinaison : signal de A « {describe({'signal': signal['a'], 'filter': 'none'})} », "
             f"validé seulement si B « {describe({'signal': signal['b'], 'filter': 'none'})} » a donné le même sens "

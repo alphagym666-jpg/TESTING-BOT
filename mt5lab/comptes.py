@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from .ftmo import FtmoRules
-from .manager import Director, _fmt
+from .manager import Director, _fmt, _per_month
 
 PROFILES = {
     "perso": {"nom": "Compte perso", "capital": 5_000.0, "risk_pct": 2.0, "day_budget": 5.0, "total_budget": 30.0,
@@ -127,6 +127,7 @@ class AccountManager(Director):
         daily, merged, lo, hi = got
         res = simulate_long(daily, self.prof, n=max(1000, n), seed=0)
         res.update(fenetre=(str(lo.date()), str(hi.date())), trades=int(len(merged)),
+                   trades_mois=_per_month(len(merged), lo, hi),
                    pire_jour=float(daily["worst"].min()) if len(daily) else 0.0,
                    rendement_pct=float(daily["pnl"].sum()) if len(daily) else 0.0,
                    ftmo_pass=res["rendement_an_median"])  # compatibilité avec le classement des composants
@@ -222,6 +223,7 @@ recherche, simulé sur 2 000 années possibles à partir des journées hors-éch
 <div class="card"><b>Mauvaise année (1 sur 10)</b><br>{_fmt(r['rendement_an_p10'])} %</div>
 <div class="card"><b>Année perdante</b><br>{_fmt(r['p_perte_an'])} % de chances</div>
 <div class="card"><b>Baisse max typique</b><br>{_fmt(r['dd_median'])} %</div>
+<div class="card"><b>Trades par mois (environ)</b><br>{_fmt(r.get('trades_mois'), '{:.0f}')}</div>
 <div class="card"><b>Chances de {limit}</b><br>{_fmt(r['p_probleme'])} % sur un an</div>
 </div>
 <h2>Règles</h2><p>Perte possible max {rg.get('day_budget')} %/jour · arrêt journalier {rg.get('day_stop') or 'aucun'} ·

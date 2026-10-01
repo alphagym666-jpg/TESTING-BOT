@@ -485,6 +485,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ${gauge(-g.dd_max,D.ftmo.max_total,"Drawdown max",false)}
   </div>
   <div class="tiles"><div class="tile"><div class="mut">Trades</div><div class="v">${g.trades}</div><div class="mut" style="font-size:12px">${g.trades?fmt(g.gagnants/g.trades*100,0)+" % gagnants":""}</div></div>
+   <div class="tile"><div class="mut">Trades par mois</div><div class="v">${g.trades_mois_direct==null?"—":"~"+fmt(g.trades_mois_direct,0)}</div><div class="mut" style="font-size:12px">${g.trades_mois_direct==null?"rythme en direct après 3 jours":"rythme en direct"}${g.trades_mois_attendus!=null?" · attendu ~"+fmt(g.trades_mois_attendus,0)+" (recherche)":""}</div></div>
    <div class="tile"><div class="mut">R total</div><div class="v">${rr(g.r_total)}</div></div>
    <div class="tile"><div class="mut">P&L réalisé</div><div class="v">${money(g.pnl)}</div></div>
    <div class="tile"><div class="mut">Jours tradés</div><div class="v">${g.jours_trades}</div><div class="mut" style="font-size:12px">minimum ${D.ftmo.min_days}</div></div></div>`+
