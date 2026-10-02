@@ -31,7 +31,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from .backtest import RR_LEVELS, RiskConfig, run_backtest
+from .backtest import MANAGEMENT, RR_LEVELS, RiskConfig, run_backtest
 from .compare import build_comparison
 from .data import DEFAULT_YEARS
 from .evaluator import candidate_key, compute_signal, describe
@@ -391,6 +391,7 @@ class Director:
                              f"en paper trading ({hit.get('raison', '')}) -> écartée de la stratégie combinée")
         if self.cfg.rr_variants:
             n_var = 0
+            self.mgmt_rows = []
             for key in list(info):
                 base = info[key]
                 c = base["candidate"]
@@ -403,13 +404,22 @@ class Director:
                 mask = (df.index >= lo) & (df.index <= hi)
                 if mask.sum() < 50:
                     continue
-                for rr in RR_LEVELS:
-                    if rr == c["risk"]["rr"] or (rr is None and c["risk"]["management"] == "breakeven"):
-                        continue
+                # variantes : chaque R:R (même gestion), puis chaque GESTION des trades (même R:R)
+                tries = [("rr", rr) for rr in RR_LEVELS
+                         if rr != c["risk"]["rr"] and not (rr is None and c["risk"]["management"] == "breakeven")]
+                tries += [("management", m) for m in MANAGEMENT
+                          if m != c["risk"]["management"] and not (c["risk"]["rr"] is None and m == "breakeven")]
+                row = {"symbole": base["symbole"], "timeframe": base["timeframe"], "strategie": base["strategie"],
+                       "rr": RiskConfig(**c["risk"]).label().split("|")[1].strip(), "modes": {}}
+                if base.get("attendu_r") is not None:
+                    row["modes"][c["risk"]["management"]] = {"r": base["attendu_r"], "wr": base.get("attendu_wr")}
+                for what, val in tries:
                     v = copy.deepcopy(c)
-                    v["risk"]["rr"] = rr
+                    v["risk"][what] = val
                     res, tr = run_backtest(df[mask], sig[mask], RiskConfig(**v["risk"]), cost=cost,
                                            risk_pct=self.cfg.lab_risk_pct, return_trades=True)
+                    if what == "management":
+                        row["modes"][val] = {"r": float(res.avg_r), "wr": float(res.win_rate), "n": int(res.trades)}
                     if res.trades < 20 or res.avg_r <= 0 or res.profit_factor < 1.1:
                         continue
                     k2 = f"{base['symbole']}_{base['timeframe']}|{candidate_key(v)}"
@@ -422,7 +432,19 @@ class Director:
                                 "seule_ftmo": solo["ftmo_pass"], "variante": True,
                                 "attendu_r": float(res.avg_r), "attendu_wr": float(res.win_rate)}
                     n_var += 1
-            self.say(f"Variantes de R:R : {n_var} variantes restent gagnantes hors-échantillon et rejoignent le choix")
+                if row["modes"]:
+                    row["meilleure"] = max(row["modes"], key=lambda m: row["modes"][m]["r"])
+                    row["actuelle"] = c["risk"]["management"]
+                    self.mgmt_rows.append(row)
+            self.say(f"Variantes de R:R et de gestion des trades : {n_var} variantes restent gagnantes "
+                     "hors-échantillon et rejoignent le choix")
+            if self.mgmt_rows:
+                from collections import Counter
+                wins = Counter(r["meilleure"] for r in self.mgmt_rows)
+                self.say("Gestion des trades qui marche le mieux : " + ", ".join(
+                    f"{MGMT_FR.get(m, m)} ({n} stratégies)" for m, n in wins.most_common()))
+                (self.cfg.out / "gestion_trades.json").write_text(
+                    json.dumps(self.mgmt_rows, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
         return trades, windows, info
 
     def levels(self) -> list[float]:
@@ -1390,6 +1412,10 @@ def _accounts_html(d) -> str:
                 f"problème {_fmt(r['p_probleme'])} % de chances sur un an. "
                 f"<a href='compte_{esc(name)}.html'>Détails</a> {button(slim(c), 'Bot MT5 de ce compte')}</p>")
     return out
+
+
+MGMT_FR = {"none": "aucune", "breakeven": "break-even à +1R", "trailing": "stop suiveur ATR",
+           "paliers": "paliers (BE à +1R, +1R à +2R...)", "intelligente": "sortie intelligente"}
 
 
 def _drawdown(daily: pd.DataFrame) -> dict:

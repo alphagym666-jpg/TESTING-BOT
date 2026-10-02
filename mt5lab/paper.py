@@ -49,6 +49,7 @@ class Position:
     spread_pts: float
     bars_held: int = 0
     be_done: bool = False
+    best: float = 0.0     # meilleur cours de clôture depuis l'entrée (sortie intelligente)
     opened_msc: int = 0
     shadow: bool = False  # composant en pause : trade suivi pour le contrôle, mais hors du compte combiné
 
@@ -971,8 +972,36 @@ class PaperEngine:
                     if new_sl != p.sl and self._bot(s):
                         self.bridge.move_sl(s.id, s.symbol, new_sl)
                     p.sl = new_sl
+                elif cfg.management in ("paliers", "intelligente"):
+                    self._manage_steps(s, p, cfg, close, sig, atr_last, exit_px, tick)
             if s.position is None and sig != 0 and (s.group or s.ftmo_status == "en cours"):
                 self._open(s, sig, closed, tick, atr_arr)
+
+    def _manage_steps(self, s, p, cfg, close: float, sig: int, atr_last: float, exit_px: float, tick):
+        """PALIERS : +1R -> stop au point d'entrée, +2R -> stop à +1R, +3R -> stop à +2R...
+        INTELLIGENTE : paliers + fermeture avant un retournement (signal inverse de la stratégie, ou le prix rend
+        1 ATR depuis son meilleur cours après avoir atteint +1R). Même règles que la recherche, à la clôture."""
+        when = _now(tick)
+        if cfg.management == "intelligente":
+            if not p.best or (close - p.best) * p.side > 0:
+                p.best = close
+            if sig == -p.side:
+                self._close(s, exit_px, when, "sortie intelligente : signal inverse")
+                return
+            if (p.best - p.entry) * p.side >= p.risk and np.isfinite(atr_last) and \
+                    (p.best - close) * p.side >= atr_last:
+                self._close(s, exit_px, when, "sortie intelligente : retournement (le prix rend 1 ATR)")
+                return
+        prog = (close - p.entry) * p.side / p.risk if p.risk > 0 else 0.0
+        if prog >= 1.0:
+            lock = p.entry + p.side * (math.floor(prog) - 1.0) * p.risk
+            if (lock - p.sl) * p.side > 1e-12:
+                p.sl = lock
+                p.be_done = True
+                lvl = math.floor(prog) - 1
+                self.event(when, "SL DÉPLACÉ", s, "break-even" if lvl == 0 else f"stop à +{lvl}R ({lock:.5g})")
+                if self._bot(s):
+                    self.bridge.move_sl(s.id, s.symbol, lock)
 
     def _weekend_close(self):
         """Compte FTMO Standard financé : toutes les positions des stratégies combinées concernées sont fermées le

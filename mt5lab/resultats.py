@@ -159,6 +159,34 @@ def _advice(adv: dict | None) -> str:
             + "".join(f"<p>{html.escape(t)}</p>" for t in adv.get("texte", [])))
 
 
+MODES = [("none", "Aucune"), ("breakeven", "Break-even à +1R"), ("trailing", "Stop suiveur"),
+         ("paliers", "Paliers (BE à 1R, +1R à 2R…)"), ("intelligente", "Sortie intelligente")]
+
+
+def _management(rows) -> str:
+    if not rows:
+        return "<p class='mut'>Pas encore calculé (touche 1 du menu, TOUT FAIRE).</p>"
+    from collections import Counter
+    wins = Counter(r.get("meilleure") for r in rows)
+    lead = " · ".join(f"{dict(MODES).get(m, m)} : meilleure pour {n}" for m, n in wins.most_common())
+    body = ""
+    for r in rows[:60]:
+        modes = r.get("modes", {})
+        cells = ""
+        for m, _ in MODES:
+            x = modes.get(m)
+            v = None if not x else x.get("r")
+            cls = "pos" if m == r.get("meilleure") else ""
+            cells += f"<td class='n {cls}'>{_f(v, '{:+.2f}R')}</td>"
+        body += (f"<tr><td><b>{html.escape(str(r['symbole']))} {html.escape(str(r['timeframe']))}</b> · "
+                 f"{html.escape(str(r['strategie'])[:90])}<br><span class='mut'>R:R {html.escape(str(r.get('rr', '')))} · "
+                 f"gestion actuelle : {html.escape(dict(MODES).get(r.get('actuelle'), str(r.get('actuelle'))))}</span></td>{cells}</tr>")
+    head = "<tr><th>Stratégie</th>" + "".join(f"<th>{html.escape(l)}</th>" for _, l in MODES) + "</tr>"
+    return (f"<p>{html.escape(lead)}</p><details><summary>Voir le R moyen par trade de chaque gestion, stratégie par "
+            f"stratégie</summary><div class='scroll'><table><thead>{head}</thead><tbody>{body}</tbody></table></div>"
+            "</details>")
+
+
 def costs_text(commission: str | None = None) -> str:
     return ("<ul><li><b>Spread</b> : celui de CHAQUE bougie de l'historique MT5 (au moins le spread médian), à "
             "l'ouverture et à la fermeture.</li>"
@@ -202,6 +230,13 @@ marchés, timeframes, risques et trades par mois de chaque composant.</p>
 <h2>Après le challenge : compte financé · et votre compte perso</h2>
 {_account_block("Compte financé (après le challenge)", fin)}
 {_account_block("Compte perso", perso)}
+<h2>Gestion des trades : break-even, paliers ou sortie intelligente ?</h2>
+<p class="mut">Chaque stratégie validée est rejouée sur la période jamais vue avec les 5 gestions : aucune ; break-even
+quand le trade a gagné 1R ; stop suiveur ; PALIERS (break-even à +1R, stop à +1R une fois à +2R, à +2R une fois à
++3R… jusqu'au TP) ; SORTIE INTELLIGENTE (les paliers + fermeture avant un retournement : signal inverse de la
+stratégie, ou le prix rend 1 ATR après avoir atteint +1R). Les meilleures versions entrent dans les stratégies
+combinées ci-dessus, et le bot applique exactement la même gestion.</p>
+{_management(_load(out / "gestion_trades.json"))}
 <h2>Quel compte FTMO acheter ?</h2>
 {_advice(main.get('conseil_compte'))}
 <h2>Sur quoi c'est basé</h2>

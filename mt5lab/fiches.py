@@ -69,7 +69,13 @@ def management_text(r: dict) -> str:
             "breakeven": "Break-even : quand une bougie clôture à +1R, le stop est remonté au prix d'entrée.",
             "trailing": ("Stop suiveur : à chaque clôture, stop = clôture ∓ " +
                          (f"{r['sl_value']:g} × ATR(14)" if r["sl_mode"] == "atr" else "la distance du stop initial") +
-                         ", il ne recule jamais.")}.get(r["management"], r["management"])
+                         ", il ne recule jamais."),
+            "paliers": ("Paliers : à chaque clôture, si le trade a gagné k R (k >= 1), le stop monte à +(k-1)R : "
+                        "+1R -> break-even, +2R -> stop à +1R, +3R -> stop à +2R... jusqu'au TP. Il ne recule jamais."),
+            "intelligente": ("Sortie intelligente : les paliers ci-dessus, et en plus le trade est fermé à la clôture "
+                             "AVANT un retournement : si la stratégie donne le signal inverse, ou si, après avoir "
+                             "atteint +1R, le prix rend 1 ATR(14) depuis son meilleur cours de clôture.")
+            }.get(r["management"], r["management"])
 
 
 def _helpers(src: str, module) -> list[str]:
@@ -183,6 +189,12 @@ def pseudo_code(c: dict, tf: str, risk_pct: float | None) -> str:
         lines.append("        SI clôture a avancé d'au moins 1R : stop = prix d'entrée")
     elif r["management"] == "trailing":
         lines.append("        stop = max(stop, clôture - distance)  (achat)  /  min(stop, clôture + distance)  (vente)")
+    elif r["management"] in ("paliers", "intelligente"):
+        if r["management"] == "intelligente":
+            lines += ["        meilleur = meilleure clôture depuis l'entrée",
+                      "        SI signal = sens inverse de la position : fermer au marché",
+                      "        SI meilleur a atteint +1R ET le prix a rendu 1 × ATR(14) depuis meilleur : fermer au marché"]
+        lines.append("        k = partie entière(gain à la clôture en R) ; SI k >= 1 : stop = max(stop, entrée + (k-1) × R)")
     lines += ["    SINON SI signal != 0 :",
               "        prix = ask (achat) ou bid (vente)",
               "        distance = " + ({"atr": f"{r['sl_value']:g} × ATR(14)", "pct": f"prix × {r['sl_value']:g} %",

@@ -546,6 +546,21 @@ Attention :
   alors sauté (visible dans le journal).
 - Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
 
+## Gestion des trades : break-even, paliers, sortie intelligente
+
+5 gestions possibles pour chaque stratégie : elles sont testées par les agents, et le Directeur les compare sur
+chaque stratégie validée.
+- **Aucune** : le stop et le TP ne bougent pas.
+- **Break-even** : à +1R (clôture), le stop passe au prix d'entrée.
+- **Stop suiveur** : le stop suit le prix à distance d'ATR.
+- **Paliers** : +1R → break-even, +2R → stop à +1R, +3R → stop à +2R… jusqu'au TP (ou au signal de sortie).
+- **Sortie intelligente** : les paliers, et en plus le trade est fermé AVANT un retournement. C'est le cas si la
+  stratégie donne le signal inverse, ou si, après avoir atteint +1R, le prix rend 1 ATR depuis son meilleur cours.
+
+La page des résultats montre la meilleure gestion de chaque stratégie (R moyen par trade pour chacune). Les
+meilleures versions entrent dans les stratégies combinées. Le paper trading et le bot appliquent exactement la
+même gestion : le stop est déplacé chez le courtier, la fermeture passe au marché.
+
 ## Le menu simple (lancer.bat)
 
 | Touche | Ce qu'elle fait |

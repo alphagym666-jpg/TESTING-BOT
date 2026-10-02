@@ -3,7 +3,9 @@
 - Entrée à l'ouverture de la bougie qui suit le signal (pas de look-ahead).
 - Stop loss : ATR, swing (plus bas/haut récent) ou pourcentage.
 - Take profit : SL x R:R (ex. 1:2 -> TP à 2 fois la distance du SL). rr=None -> sortie sur signal inverse.
-- Gestion : aucune, break-even à +1R, trailing stop ATR.
+- Gestion : aucune, break-even à +1R, trailing stop ATR, PALIERS (break-even à +1R, stop à +1R une fois à +2R,
+  à +2R une fois à +3R...), INTELLIGENTE (paliers + sortie avant un retournement : signal inverse de la stratégie,
+  ou le prix rend 1 ATR après avoir atteint +1R).
 - Si SL et TP sont touchés dans la même bougie, on suppose le PIRE cas (SL touché).
 - Coûts : spread + commission exprimés en prix.
 """
@@ -18,7 +20,8 @@ from . import indicators as ind
 
 RR_LEVELS = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, None]
 SL_MODES = {"atr": [1.0, 1.5, 2.0, 3.0], "swing": [5, 10, 20], "pct": [0.25, 0.5, 1.0]}
-MANAGEMENT = ["none", "breakeven", "trailing"]
+MANAGEMENT = ["none", "breakeven", "trailing", "paliers", "intelligente"]
+MGMT_CODE = {"none": 0, "breakeven": 1, "trailing": 2, "paliers": 3, "intelligente": 4}
 
 
 @dataclass(frozen=True)
@@ -26,7 +29,7 @@ class RiskConfig:
     sl_mode: str = "atr"          # atr | swing | pct
     sl_value: float = 1.5         # multiple d'ATR, nb de bougies du swing, ou % du prix
     rr: float | None = 2.0        # ratio risque:rendement ; None -> sortie sur signal opposé
-    management: str = "none"      # none | breakeven | trailing
+    management: str = "none"      # none | breakeven | trailing | paliers | intelligente
     max_hold: int = 200           # nb max de bougies en position
     direction: str = "both"       # both | long | short
 
@@ -73,7 +76,9 @@ def _stop_distance(df: pd.DataFrame, cfg: RiskConfig, atr_arr: np.ndarray, i: in
 def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cost_mult,
           bar_cost, use_bar_cost, sw_long, sw_short, day_num, has_swap, news, has_news, wk_last, weekend_exit):
     """Boucle de simulation (compilée par numba quand il est installé : même logique, bien plus rapide).
-    sl_mode : 0 atr, 1 pct, 2 swing ; rr <= 0 : sortie sur signal opposé ; mgmt : 0 aucune, 1 break-even, 2 trailing.
+    sl_mode : 0 atr, 1 pct, 2 swing ; rr <= 0 : sortie sur signal opposé ; mgmt : 0 aucune, 1 break-even, 2 trailing,
+    3 paliers (stop remonté d'1R à chaque R gagné, à la clôture), 4 intelligente (paliers + signal inverse + le prix rend
+    1 ATR depuis son meilleur cours après avoir atteint +1R).
     weekend_exit : position fermée à la clôture de la dernière bougie avant le week-end (wk_last), pas d'entrée
     sur cette bougie (compte FTMO Standard : pas de position pendant le week-end)."""
     n = len(o)
@@ -122,6 +127,7 @@ def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cos
         has_tp = rr > 0
         tp = entry + side * rr * risk if has_tp else 0.0
         be_done = False
+        best = entry
         exit_px = np.nan
         exit_bar = -1
         last = e + max_hold
@@ -159,6 +165,25 @@ def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cos
                     sl = sl if sl > trail else trail
                 else:
                     sl = sl if sl < trail else trail
+            elif mgmt >= 3:
+                if mgmt == 4:  # sortie intelligente, à la clôture de la bougie
+                    if (c[j] - best) * side > 0:
+                        best = c[j]
+                    if j > e and sig[j] == -side:  # la stratégie donne le signal inverse
+                        exit_px = c[j]
+                        exit_bar = j
+                        break
+                    if (best - entry) * side >= risk and np.isfinite(atr[j]) and (best - c[j]) * side >= atr[j]:
+                        exit_px = c[j]  # retournement : le prix rend 1 ATR depuis son meilleur cours
+                        exit_bar = j
+                        break
+                prog = (c[j] - entry) * side / risk
+                if prog >= 1.0:  # paliers : +1R -> break-even, +2R -> stop à +1R, +3R -> stop à +2R...
+                    lock = entry + side * (np.floor(prog) - 1.0) * risk
+                    if side > 0:
+                        sl = sl if sl > lock else lock
+                    else:
+                        sl = sl if sl < lock else lock
         if exit_bar < 0:
             exit_px = c[last]
             exit_bar = last
@@ -256,7 +281,7 @@ def run_backtest(
     elif cfg.direction == "short":
         sig = np.where(sig < 0, sig, 0.0)
     sl_mode = {"atr": 0, "pct": 1, "swing": 2}[cfg.sl_mode]
-    mgmt = {"none": 0, "breakeven": 1, "trailing": 2}[cfg.management]
+    mgmt = MGMT_CODE[cfg.management]
     t = _core_fast(a["o"], a["h"], a["l"], a["c"], sig, a["atr"], sl_mode, float(cfg.sl_value),
                    float(cfg.rr) if cfg.rr else 0.0, mgmt, int(cfg.max_hold), float(cost), float(cost_mult),
                    a["bar_cost"], a["use_bar_cost"], a["sw_long"], a["sw_short"], a["day_num"], a["has_swap"],

@@ -80,3 +80,8 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     assert "TOP 10 des stratégies combinées" in page and page.count('class="labbot"') >= 3
     assert "Plus grosse baisse" in page and "Période analysée" in page and "Glissement" in page
     assert "Compte financé" in page and "Quel compte FTMO acheter" in page
+    # gestion des trades : les 5 gestions comparées pour chaque stratégie validée
+    g = json.loads((tmp_path / "gestion_trades.json").read_text(encoding="utf-8"))
+    assert g and all(r["meilleure"] in r["modes"] for r in g)
+    assert {"paliers", "intelligente"} <= set().union(*(r["modes"] for r in g))
+    assert "Gestion des trades" in page
