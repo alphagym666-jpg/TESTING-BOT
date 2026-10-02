@@ -74,6 +74,8 @@ echo   D. PASSER LE CHALLENGE FTMO LE PLUS VITE : le Directeur fait tout (recher
 echo      tous les marches et timeframes, reglages du risque), puis lance le paper trading du resultat
 echo   X. DIRECTEUR MAXIMUM : refait TOUTES les cases avec le maximum de tests par agent (%MAX_TESTS% par round,
 echo      %MAX_ROUNDS% rounds) + genies et Conseil au maximum. TRES long (une nuit ou plus), laissez MT5 ouvert
+echo   W. MELANGER LES STRATEGIES COMBINEES entre elles (Chef des combinaisons) : la combinee + les autres
+echo      horaires + le portefeuille du Chef FTMO + le direct, gardee seulement si ca passe plus vite
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
 echo   T. Alertes sur le TELEPHONE (Telegram) : explications + message de test
 echo   L. MEILLEURS SETUPS DU DIRECT : analyse des trades du paper trading + meilleure combinaison
@@ -120,6 +122,7 @@ if /i "%CHOIX%"=="S" goto paperessai
 if "%CHOIX%"=="9" goto platform
 if /i "%CHOIX%"=="D" goto directeur
 if /i "%CHOIX%"=="X" goto directeurmax
+if /i "%CHOIX%"=="W" goto melanges
 if /i "%CHOIX%"=="N" goto nouvelles
 if /i "%CHOIX%"=="R" goto rapportdir
 if /i "%CHOIX%"=="G" goto genies
@@ -188,6 +191,12 @@ pause & goto menu
 :compare
 python run.py compare --out %RES% --capital %CAPITAL% --risk %RISK% %FTMO%
 if exist "%RES%\comparaison.html" (start "" "%RES%\comparaison.html") else (echo Lancez d'abord une recherche.)
+pause & goto menu
+
+:melanges
+echo Le Chef des combinaisons melange la strategie combinee avec les autres combinaisons (quelques minutes).
+python run.py directeur --melanges-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
+if exist "%RES%\directeur.html" start "" "%RES%\directeur.html"
 pause & goto menu
 
 :directeurmax

@@ -59,6 +59,8 @@ def load_live(root: str | Path) -> tuple[pd.DataFrame, dict]:
 
 def strategy_table(t: pd.DataFrame, min_trades: int = 5) -> pd.DataFrame:
     rows = []
+    # période suivie (la même pour toutes les stratégies du paper trading) : sert aux trades par mois
+    span = max(1.0, (to_dt(t["fermeture"]).max() - to_dt(t["ouverture"]).min()).total_seconds() / 86400) if len(t) else 1.0
     for sid, g in t.groupby("strategie_id"):
         r = g["r"].to_numpy(float)
         n = len(r)
@@ -71,7 +73,7 @@ def strategy_table(t: pd.DataFrame, min_trades: int = 5) -> pd.DataFrame:
             "strategie_id": sid, "symbole": g["symbole"].iloc[0], "timeframe": g["timeframe"].iloc[0],
             "strategie": g["strategie"].iloc[0], "risque": g["risque"].iloc[0], "trades": n,
             "reussite_pct": round(float((r > 0).mean() * 100), 1), "r_moyen": round(float(r.mean()), 3),
-            "r_total": round(float(r.sum()), 2), "t": round(float(r.mean() / sd * math.sqrt(n)), 2) if sd > 0 else 0.0,
+            "r_total": round(float(r.sum()), 2), "trades_mois": round(n / max(span, 7.0) * 30.44, 1), "t": round(float(r.mean() / sd * math.sqrt(n)), 2) if sd > 0 else 0.0,
             "jours": int(by_day.size),
             "meilleur_jour_part": round(float(by_day.max() / pos * 100), 0) if pos > 0 else None,
             "dd_r": round(float(np.max(np.maximum.accumulate(np.concatenate([[0], cum]))[1:] - cum)), 2) if n else 0.0,
@@ -174,7 +176,7 @@ def write_report(result: dict, path: Path) -> Path:
     esc = html.escape
     rows = "".join(
         f"<tr><td>{i}</td><td>{esc(str(r['symbole']))} {esc(str(r['timeframe']))}</td><td>{esc(str(r['strategie'])[:110])}</td>"
-        f"<td>{esc(str(r['risque']))}</td><td>{r['trades']}</td><td>{r['reussite_pct']} %</td><td>{r['r_moyen']:+.2f}</td>"
+        f"<td>{esc(str(r['risque']))}</td><td>{r['trades']}</td><td>~{r.get('trades_mois', 0):.0f}</td><td>{r['reussite_pct']} %</td><td>{r['r_moyen']:+.2f}</td>"
         f"<td><b>{r['r_total']:+.2f}</b></td><td>{r['t']}</td><td>{r['jours']}</td>"
         f"<td>{'' if r['meilleur_jour_part'] is None else str(int(r['meilleur_jour_part'])) + ' %'}</td></tr>"
         for i, r in enumerate(result.get("classement", [])[:60], 1))
@@ -203,7 +205,7 @@ td,th{{border-bottom:1px solid #e3e3df;padding:6px 8px;text-align:left}}th{{back
 <p class="mut">{result.get('trades', 0)} trades · {result.get('strategies', 0)} stratégies · {esc(str(result.get('periode', '')))}</p>
 <h2>Meilleure combinaison des stratégies qui tournent</h2>{comb_html}
 <h2>Classement des stratégies en direct</h2>
-<table><tr><th>#</th><th>Marché</th><th>Stratégie</th><th>Réglage</th><th>Trades</th><th>Réussite</th><th>R moyen</th>
+<table><tr><th>#</th><th>Marché</th><th>Stratégie</th><th>Réglage</th><th>Trades</th><th>Trades / mois</th><th>Réussite</th><th>R moyen</th>
 <th>R total</th><th>t</th><th>Jours</th><th>Meilleur jour (part du profit)</th></tr>{rows}</table>{script(Path(path).parent)}</body></html>"""
     path.write_text(page, encoding="utf-8")
     return path

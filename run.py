@@ -187,6 +187,10 @@ def _run_director(cfg, get_data, a):
     if a.rapport_seulement:
         d.rebuild_report()
         return
+    if a.melanges_seulement:
+        d.mix_only()
+        print(f"-> {Path(cfg.out) / 'directeur.html'}#melanges")
+        return
     if not a.comptes_seulement:
         d.run()
         return
@@ -531,6 +535,8 @@ def main():
     di.add_argument("--demo", action="store_true", help="données synthétiques (sans MT5)")
     di.add_argument("--comptes-seulement", action="store_true",
                     help="seulement le compte perso et le compte financé, avec la recherche déjà faite (rapide)")
+    di.add_argument("--melanges-seulement", action="store_true",
+                    help="seulement le Chef des combinaisons : mélange la combinée avec les autres combinaisons")
     di.add_argument("--rapport-seulement", action="store_true",
                     help="refaire seulement directeur.html et les fiches (boutons Bot MT5 compris), sans recalculer")
     di.add_argument("--sans-comptes", action="store_true", help="ne pas construire le compte perso ni le compte financé")

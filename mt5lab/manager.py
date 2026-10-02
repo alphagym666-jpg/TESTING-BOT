@@ -813,7 +813,7 @@ class Director:
                                        "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
                                        "rates_oos": res.get("challenges_oos", {}).get("rates"),
                                        "echec": res["ftmo_echec_p1"], "pire_jour": res["pire_jour"],
-                                       "composants": len(comb["composants"]),
+                                       "composants": len(comb["composants"]), "trades_mois": res.get("trades_mois"),
                                        "risques": ", ".join(f"{c['risk_pct']:g}" for c in comb["composants"]),
                                        "rr": ", ".join(RiskConfig(**c["candidate"]["risk"]).label().split("|")[1].strip()
                                                        for c in comb["composants"])})
@@ -835,6 +835,28 @@ class Director:
                 out[k] = float(c.get("risk_pct") or min(0.5, self.cfg.risk_pct))
         return out
 
+    def _mix_note(self, why: str):
+        self.say(f"Chef des combinaisons : {why}.")
+        self.combined["melanges"], self.combined["melanges_note"] = [], why
+        (self.cfg.out / "strategie_combinee.json").write_text(
+            json.dumps(self.combined, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+
+    def mix_only(self):
+        """Option W : seulement le Chef des combinaisons, avec les résultats déjà calculés (pas de recherche)."""
+        allr = self.review()
+        self.combined = _load_json(self.cfg.out / "strategie_combinee.json") or {}
+        self.session_rows = self.combined.get("horaires", []) or []
+        self.scenario_rows = self.combined.get("scenarios", []) or []
+        self.accounts = {n: _load_json(self.cfg.out / f"strategie_combinee_{n}.json")
+                         for n in ("perso", "finance") if (self.cfg.out / f"strategie_combinee_{n}.json").exists()}
+        if not self.combined:
+            self.say("Pas encore de stratégie combinée : lancez d'abord le Directeur (option D).")
+        else:
+            self.combine_combinations(allr)
+        if len(allr):
+            self.build_cards()
+        write_report(self)
+
     def combine_combinations(self, allr: pd.DataFrame) -> list[dict]:
         """LE CHEF DES COMBINAISONS : la stratégie combinée du Directeur + une autre combinaison (portefeuille du Chef
         FTMO, autre horaire, combinaison du direct, ou toutes) seraient-elles encore meilleures ENSEMBLE ?
@@ -843,6 +865,7 @@ class Director:
         overall = self.combined
         self.combo_rows = []
         if not overall or not len(allr):
+            self.say("Chef des combinaisons : pas encore de stratégie combinée à mélanger.")
             return []
         pool0 = getattr(self, "_pool0", None) or self._pool(allr)
         h = overall.get("horaire") or {}
@@ -850,6 +873,7 @@ class Director:
         trades, windows, info = pool
         base = self._keys_of(overall, info)
         if not base:
+            self._mix_note("les composants de la combinée ne sont plus dans les stratégies validées (refaites l'option D)")
             return []
         sources = []
         for r in self.session_rows:
@@ -870,6 +894,8 @@ class Director:
             every = {"composants": [x for _, c in sources for x in c["composants"]]}
             sources.append(("toutes les combinaisons ensemble", every))
         if not sources:
+            self._mix_note("aucune autre combinaison à mélanger : il faut au moins un autre horaire, le portefeuille du "
+                           "Chef FTMO (option 5) ou la combinaison du direct (option L)")
             return []
         cap = self.cfg.day_budget
         self.cfg.day_budget = float(overall.get("scenario_choisi") or cap)
@@ -959,6 +985,7 @@ class Director:
             return {"Verdict": r.get("verdict"), "Période testée": per,
                     "Walk-forward (périodes gagnantes)": _txt(r.get("walk_forward")),
                     "Trades hors-échantillon": None if pd.isna(r.get("trades_oos")) else int(r.get("trades_oos")),
+                    "Trades par mois (environ)": r.get("trades_mois"),
                     "Taux de réussite OOS (%)": r.get("wr_oos"),
                     "R moyen OOS": r.get("avgR_oos"), "Profit factor OOS": r.get("pf_oos"),
                     "Gain par mois (%)": r.get("gain_mois_pct"), "Drawdown max OOS (%)": r.get("dd_oos_pct"),
@@ -1060,6 +1087,7 @@ class Director:
         self.session_rows = self.combined.get("horaires", []) or []
         self.scenario_rows = self.combined.get("scenarios", []) or []
         self.combo_rows = self.combined.get("melanges", []) or []
+        self.combo_note = self.combined.get("melanges_note")
         self.accounts = {n: _load_json(self.cfg.out / f"strategie_combinee_{n}.json")
                          for n in ("perso", "finance") if (self.cfg.out / f"strategie_combinee_{n}.json").exists()}
         if len(allr):
@@ -1171,10 +1199,13 @@ def _load_json(path: Path) -> dict | None:
         return None
 
 
-def _combos_html(rows) -> str:
+def _combos_html(rows, note=None, done=False) -> str:
     from html import escape as esc
     if not rows:
-        return "<p class='mut'>Pas encore fait (relancez le Directeur, option D).</p>"
+        if done and note:
+            return f"<p class='warn'>Mélange impossible : {esc(note)}.</p>"
+        return ("<p class='warn'>Pas encore fait sur ces résultats : menu <b>W</b> (mélange seulement, quelques minutes) "
+                "ou <b>D</b> (campagne complète).</p>")
     body = "".join(
         f"<tr><td>{esc(r['melange'])}</td><td>{r['ajoutes']}</td><td>{r['composants']}</td>"
         f"<td><b>{_fmt(r.get('attendus'), '{:.0f}')}</b></td><td>{_fmt(r.get('reussite'))} %</td>"
@@ -1277,11 +1308,12 @@ def write_report(d: Director):
         f"<td class='{'good' if is_chosen(r) else ''}'><b>{r['budget']:g} %</b>{' (retenu)' if is_chosen(r) else ''}</td>"
         f"<td>{_fmt(r['reussite'])} %</td><td>{_fmt(r['jours'], '{:.0f}')}</td><td>{_fmt(r['echec'])} %</td>"
         f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
-        f"<td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td><td>{esc(r['risques'])}</td><td>{esc(r['rr'])}</td></tr>"
+        f"<td>{r['pire_jour']:.2f} %</td><td>{r['composants']}</td><td>{_fmt(r.get('trades_mois'), '{:.0f}')}</td>"
+        f"<td>{esc(r['risques'])}</td><td>{esc(r['rr'])}</td></tr>"
         for r in d.scenario_rows)
     scen = ("<div class='scroll'><table><thead><tr><th>Horaire</th><th>Perte max par jour</th><th>Réussite</th>"
             f"<th>Jours pour +{d.cfg.ftmo.target1:g} %</th><th>Échec</th><th>Challenges réussis / ratés (OOS)</th><th>Pire journée</th><th>Composants</th>"
-            f"<th>Risque par trade (%)</th><th>R:R</th></tr></thead><tbody>{scen_rows}</tbody></table></div>"
+            f"<th>Trades / mois</th><th>Risque par trade (%)</th><th>R:R</th></tr></thead><tbody>{scen_rows}</tbody></table></div>"
             if scen_rows else "<p class='mut'>—</p>")
     sess_rows = "".join(
         f"<tr><td class='{'good' if r['horaire'] == chosen_h else ''}'><b>{esc(r['horaire'])}</b>"
@@ -1340,10 +1372,11 @@ def write_report(d: Director):
                      f"<td>{esc(str(r['risque']))}</td><td class='{'good' if r['_ok'] else ''}'>{esc(str(r['verdict']))}</td>"
                      f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
                      f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
-                     f"<td>{_fmt(r['ftmo_pass'])} %</td><td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
+                     f"<td>{_fmt(r['ftmo_pass'])} %</td><td>{_fmt(r.get('trades_mois'))}</td>"
+                     f"<td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     cat_tbl = ("<div class='scroll'><table><thead><tr><th>#</th><th>Stratégie</th><th>Famille</th><th>Meilleur marché</th>"
                "<th>Meilleur réglage</th><th>Verdict</th><th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th>"
-               "<th>Gain / mois</th><th>Réussite FTMO seule</th><th>Bot</th></tr></thead>"
+               "<th>Gain / mois</th><th>Réussite FTMO seule</th><th>Trades / mois</th><th>Bot</th></tr></thead>"
                f"<tbody>{cat_rows}</tbody></table></div>") if cat_rows else "<p class='mut'>—</p>"
     trial_rows = ""
     if len(d.allr):
@@ -1354,6 +1387,7 @@ def write_report(d: Director):
                            f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
                            f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td>"
                            f"<td class='mut'>{esc(str(r['verdict']).split('—')[-1].strip())}</td>"
+                           f"<td>{_fmt(r.get('trades_mois'))}</td>"
                            f"<td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     gen_rows = ""
     for _, r in d.genius_rows().head(80).iterrows():
@@ -1363,14 +1397,14 @@ def write_report(d: Director):
                      f"<td class='{'good' if r['_ok'] else ''}'>{esc(str(r['verdict']))}</td>"
                      f"<td>{_fmt(r['trades_oos'], '{:.0f}')}</td><td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td>"
                      f"<td>{_fmt(r['pf_oos'], '{:.2f}')}</td><td>{_fmt(r['ftmo_pass'])} %</td>"
-                     f"<td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
+                     f"<td>{_fmt(r.get('trades_mois'))}</td><td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     gen_tbl = ("<div class='scroll'><table><thead><tr><th>Génie</th><th>Loi (lien vers la fiche : formule et symboles)</th>"
                "<th>Marché</th><th>Réglage</th><th>Verdict hors-échantillon</th><th>Trades OOS</th><th>R moyen OOS</th>"
-               f"<th>PF OOS</th><th>Réussite FTMO seule</th><th>Bot</th></tr></thead><tbody>{gen_rows}</tbody></table></div>"
+               f"<th>PF OOS</th><th>Réussite FTMO seule</th><th>Trades / mois</th><th>Bot</th></tr></thead><tbody>{gen_rows}</tbody></table></div>"
                if gen_rows else "<p class='mut'>Pas encore de découverte (relancez la recherche avec la nouvelle version).</p>")
     trial_tbl = ("<div class='scroll'><table><thead><tr><th>Stratégie</th><th>Marché</th><th>TF</th><th>Réglage</th>"
                  "<th>Trades OOS</th><th>R moyen OOS</th><th>PF OOS</th><th>Réussite FTMO seule</th>"
-                 f"<th>Pourquoi pas validée</th><th>Bot</th></tr></thead><tbody>{trial_rows}</tbody></table></div>"
+                 f"<th>Pourquoi pas validée</th><th>Trades / mois</th><th>Bot</th></tr></thead><tbody>{trial_rows}</tbody></table></div>"
                  if trial_rows else "<p class='mut'>Aucune.</p>")
     trial_banner = ('<p class="card" style="border-color:#d97706"><b>ATTENTION : stratégie combinée À L\'ESSAI.</b> '
                     "Aucune stratégie n'a passé toute la validation : celle-ci est faite de stratégies non validées mais "
@@ -1388,19 +1422,19 @@ def write_report(d: Director):
     doc = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Classement du Directeur</title><style>{CSS}</style></head><body><main>
 <h1>Classement général du Directeur</h1>
-<p><a href="fiches_strategies.html">Toutes les fiches détaillées des stratégies</a> · <a href="comparaison.html">Comparaison par marché et timeframe</a></p>
+<p><a href="fiches_strategies.html">Toutes les fiches détaillées des stratégies</a> · <a href="comparaison.html">Comparaison par marché et timeframe</a> · <a href="#melanges"><b>Mélange des stratégies combinées</b></a></p>
 <p class="mut">{esc(d.cfg.ftmo.label())} · risque par trade {min(d.cfg.risk_levels):g} à {d.cfg.risk_pct:g} % ·
 perte possible max {d.cfg.day_budget:g} % par jour · {len(d.cfg.symbols)} marchés × {len(tfs)} timeframes</p>
 <h2>La stratégie combinée</h2>
 {('<div class="cards">' + cards + '</div><p>' + button(slim(c), "Bot MT5 de la stratégie combinée") + '</p>') if c else '<p class="mut">Pas encore de stratégie combinée : aucune stratégie validée.</p>'}
 {('<p class="mut">Composants tradés ENSEMBLE sur un seul compte. Période commune testée : ' + esc(' → '.join(res.get('fenetre', ('', '')))) + ', ' + str(res.get('trades', '')) + ' trades.</p>') if c else ''}
 {('<div class="scroll"><table><thead><tr><th>N°</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th><th>Risque par trade</th><th>Réussite seule</th><th>Trades / mois</th><th>Bot seul</th></tr></thead><tbody>' + comp_rows + '</tbody></table></div>') if c else ''}
-<h2>Le Chef des combinaisons : la combinée serait-elle meilleure avec d'autres ?</h2>
+<h2 id="melanges">Le Chef des combinaisons : la combinée serait-elle meilleure mélangée avec d'autres ?</h2>
 <p class="mut">Il mélange la stratégie combinée du Directeur avec chaque autre combinaison (autres horaires, portefeuille du
 Chef FTMO, combinaison du direct, toutes ensemble), puis retire ce qui ne sert à rien et règle le risque. Le mélange
 n'est gardé que s'il fait réussir le challenge plus vite, sans plus d'échecs.
 {esc(('Résultat : la stratégie combinée ci-dessus a été AMÉLIORÉE avec ' + c['amelioree_avec'] + '.') if c and c.get('amelioree_avec') else '')}</p>
-{_combos_html(getattr(d, 'combo_rows', []))}
+{_combos_html(getattr(d, 'combo_rows', []), (c or {}).get('melanges_note'), 'melanges' in (c or {}))}
 <h2>Horaires : 24h/24 ou seulement le jour ?</h2>
 <p class="mut">Même travail refait avec des entrées permises seulement dans l'horaire (heure locale, serveur MT5 moins
 {d.cfg.server_offset:g} h). Les positions ouvertes gardent leur SL et TP chez le courtier après la fin de l'horaire.

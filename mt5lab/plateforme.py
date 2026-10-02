@@ -361,7 +361,7 @@ function viewAn(){if(!A){loadAnalyse(true);return `<div class="empty">Analyse de
   mise à jour chaque minute · <a href="#" onclick="loadAnalyse(true);return false">actualiser</a></p>
   <h3 style="margin:8px 0">Meilleure combinaison des stratégies qui tournent (1 % max par trade, 2,5 % max par jour)</h3>${comb}
   <h3 style="margin:14px 0 8px">Meilleurs setups en direct</h3>`+
-  table("anr",[["Marché","symbole"],["TF","timeframe"],["Bot","strategie_id",botBtn],["Stratégie","strategie"],["Réglage","risque"],["Trades","trades",null,1],
+  table("anr",[["Marché","symbole"],["TF","timeframe"],["Bot","strategie_id",botBtn],["Stratégie","strategie"],["Réglage","risque"],["Trades","trades",null,1],["Trades / mois","trades_mois",v=>v==null?"—":"~"+fmt(v,0),1],
    ["Réussite","reussite_pct",v=>fmt(v,0)+" %",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["t (solidité)","t",v=>fmt(v,2),1],
    ["Jours","jours",null,1],["Meilleur jour (part du profit)","meilleur_jour_part",v=>v==null?"—":fmt(v,0)+" %",1]],filt(A.classement||[],"symbole","timeframe"))}
 let M=null,mTime=0,mBusy=false;
@@ -373,7 +373,7 @@ function viewMk(){if(!M){loadMarches(true);return `<div class="empty">Classement
   if(!b)return `<div class="tile"><div class="v" style="font-size:18px">${esc(m.symbole)}</div><div class="mut">Aucun bot conseillé : ${esc(m.raison||"")}</div></div>`;
   return `<div class="tile" style="border-color:var(--accent)"><div class="v" style="font-size:18px">${esc(m.symbole)} <span class="mut" style="font-size:13px">graphique ${esc(b.timeframe)}</span></div>
   <div style="margin:6px 0"><b title="${esc(b.strategie)}">${esc(String(b.strategie).slice(0,90))}</b><div class="mut" style="font-size:12px">${esc(b.risque)}</div></div>
-  <div class="mut" style="font-size:13px">${b.trades} trades en direct · réussite ${fmt(b.reussite_pct,0)} % · R total ${rr(b.r_total)} · R moyen ${rr(b.r_moyen)} · solidité t ${fmt(b.t,2)} · ${b.jours} jours</div>
+  <div class="mut" style="font-size:13px">${b.trades} trades en direct (~${fmt(b.trades_mois,0)}/mois) · réussite ${fmt(b.reussite_pct,0)} % · R total ${rr(b.r_total)} · R moyen ${rr(b.r_moyen)} · solidité t ${fmt(b.t,2)} · ${b.jours} jours</div>
   ${b.meilleur_jour_ok?"":`<div class="neg" style="font-size:12px">Attention : une seule journée fait ${fmt(b.meilleur_jour_part,0)} % du profit (règle FTMO du meilleur jour)</div>`}
   <p style="margin:8px 0 0"><button class="botbtn" data-id="${esc(b.strategie_id)}">Créer le bot MT5 pour ${esc(m.symbole)}</button></p>
   ${r?`<div class="mut" style="font-size:12px;margin-top:8px">Remplaçant : ${esc(r.timeframe)} · ${esc(String(r.strategie).slice(0,60))} (${r.trades} trades, ${fmt(r.r_total,2,true)}R) <button class="botbtn" data-id="${esc(r.strategie_id)}">Bot</button></div>`:""}</div>`};
@@ -439,7 +439,7 @@ function prog(p,x){const t=(x&&x.objectif_requis_pct)||D.ftmo.target1,w=Math.max
  const more=t>D.ftmo.target1+1e-9?` <span class="mut" title="Règle du meilleur jour : une journée ne peut pas faire plus de ${D.ftmo.best_day_pct} % du profit total">(objectif ${fmt(t,2)} %)</span>`:"";
  return `<span class="meter${p<0?" neg":""}" title="${fmt(p,2,true)} % sur ${fmt(t,2)} %"><i style="width:${w}%"></i></span> ${fmt(p,2,true)} %${more}`}
 function viewStrat(){return `<p class="note">Un compte fictif par stratégie × marché × timeframe × R:R. Triez en cliquant sur les colonnes.</p>`+
- table("strat",[["Marché","symbole"],["TF","tf"],["Bot","id",botBtn],["Stratégie","strategie"],["Risque","risque"],["Origine","origine"],["Trades","trades",null,1],
+ table("strat",[["Marché","symbole"],["TF","tf"],["Bot","id",botBtn],["Stratégie","strategie"],["Risque","risque"],["Origine","origine"],["Trades","trades",null,1],["Trades / mois","trades_mois",v=>v==null?"—":"~"+fmt(v,0),1],
  ["Réussite","gagnants",(v,r)=>r.trades?fmt(v/r.trades*100,0)+" %":"—",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["P&L","pnl",money,1],
  ["Objectif FTMO","profit_pct",prog],["Pire jour","pire_jour_pct",v=>`<span class="${cls(v)}">${fmt(v,2)} %</span>`,1],["DD max","dd_max",v=>fmt(v,2)+" %",1],
  ["Challenge","ftmo",ftmoCell],["Jours tradés","jours_trades",null,1],["Attendu (recherche)","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],["","en_position",v=>v?'<span class="tag run">en position</span>':""]],filt(D.comptes))}
@@ -490,7 +490,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    <div class="tile"><div class="mut">P&L réalisé</div><div class="v">${money(g.pnl)}</div></div>
    <div class="tile"><div class="mut">Jours tradés</div><div class="v">${g.jours_trades}</div><div class="mut" style="font-size:12px">minimum ${D.ftmo.min_days}</div></div></div>`+
   table("comp",[["Marché","symbole"],["TF","tf"],["Stratégie","strategie"],["Réglage","risque"],["Risque/trade","risque_pct",v=>fmt(v,2)+" %",1],
-   ["Trades","trades",null,1],["Réussite","gagnants",(v,x)=>x.trades?fmt(v/x.trades*100,0)+" %":"—",1],["R total","r_total",rr,1],
+   ["Trades","trades",null,1],["Trades / mois","trades_mois",v=>v==null?"—":"~"+fmt(v,0),1],["Réussite","gagnants",(v,x)=>x.trades?fmt(v/x.trades*100,0)+" %":"—",1],["R total","r_total",rr,1],
    ["R moyen","r_moyen",rr,1],["Attendu","attendu_r",v=>v==null?"—":rr(v),1],["Contrôle","en_pause",pauseCell],
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}

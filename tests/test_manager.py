@@ -54,3 +54,12 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     again = (tmp_path / "directeur.html").read_text(encoding="utf-8")
     assert "labbot" in again and "24h/24 ou seulement le jour" in again
     assert "labbot" in (tmp_path / "fiches_strategies.html").read_text(encoding="utf-8")
+    # option W : seulement le mélange des stratégies combinées, sur les résultats déjà calculés
+    d2 = Director(cfg, get_data, log=lambda m: None)
+    d2.mix_only()
+    mixed = json.loads((tmp_path / "strategie_combinee.json").read_text(encoding="utf-8"))
+    assert "melanges" in mixed
+    page = (tmp_path / "directeur.html").read_text(encoding="utf-8")
+    assert 'id="melanges"' in page and ("Meilleur que la combinée seule" in page or "Mélange impossible" in page)
+    if mixed["melanges"]:
+        assert all(r["melange"].startswith("Directeur + ") for r in mixed["melanges"])
