@@ -296,10 +296,13 @@ class MT5Connector:
             # coûts RÉELS mesurés en direct (paper trading + bot MT5) : ajoutés s'ils sont plus élevés
             from .couts_reels import extra_points
             calib = getattr(self, "calib", None)
-            extra, why = extra_points(calib, self.resolve(symbol), med) if calib else (0.0, "")
-            if extra > 0:
-                df["cost"] = df["cost"] + extra * info.point
-                print(f"[coûts réels] {symbol} : +{extra:g} points par trade ({why})")
+            if getattr(self, "slippage", True):  # glissement : mesuré en direct, ou estimé tant qu'il ne l'est pas
+                extra, why = extra_points(calib, self.resolve(symbol) if calib else symbol, med)
+                if extra > 0:
+                    df["cost"] = df["cost"] + extra * info.point
+                    if why != getattr(self, "_last_why", {}).get(symbol):
+                        print(f"[coûts réels] {symbol} : +{extra:g} points par trade ({why})")
+                        self.__dict__.setdefault("_last_why", {})[symbol] = why
         sl, ss = self.swap_in_price(symbol, float(df["close"].iloc[-1]))
         if sl or ss:
             df["swap_long"], df["swap_short"] = sl, ss

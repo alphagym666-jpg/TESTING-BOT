@@ -32,5 +32,7 @@ def test_calibration_from_paper_and_bot(tmp_path):
     assert json.loads((tmp_path / "couts_reels.json").read_text())["XAUUSD"]["n_spread"] == MIN_TRADES
     extra, why = extra_points(cal, "XAUUSD", 20)
     assert extra == 10 + 2 * 5 and "glissement" in why
-    assert extra_points(cal, "EURUSD", 10)[0] == 0 and extra_points(None, "XAUUSD", 20)[0] == 0
+    # pas encore mesuré en direct : glissement estimé = la moitié du spread médian
+    assert extra_points(cal, "EURUSD", 10)[0] == 5 and extra_points(None, "XAUUSD", 20)[0] == 10
+    assert "estimé" in extra_points(None, "XAUUSD", 20)[1]
     assert extra_points(cal, "XAUUSD", 40)[0] == 10   # spread historique déjà plus large : seul le glissement

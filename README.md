@@ -546,6 +546,31 @@ Attention :
   alors sauté (visible dans le journal).
 - Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
 
+## Le menu simple (lancer.bat)
+
+| Touche | Ce qu'elle fait |
+|---|---|
+| **1. TOUT FAIRE** | La nuit ou la journée : recherche au maximum par tous les employés, stratégies combinées, mélanges, compte perso, compte financé, classement. La page des résultats s'ouvre à la fin. Arrêtable et relançable : le travail fait est gardé. |
+| **2. VOIR LES RÉSULTATS** | `resultats.html` : tout sur UNE page (voir plus bas), avec un bouton Bot MT5 partout. |
+| **3. LANCER** | La stratégie combinée choisie (★) en paper trading, avec la plateforme et les signaux pour le bot. |
+| **4 / 5** | Plateforme du compte perso / du compte financé. |
+| 6 / 7 / 8 | Connexion MT5, marchés et timeframes, alertes téléphone. |
+| **9** | Toutes les anciennes options (avancé). |
+
+**La page des résultats (`resultats.html`)** contient :
+- **La n°1** pour réussir le challenge le plus vite, avec ses chiffres et son bouton Bot MT5 :
+  - jours attendus, réussite, échec, trades par mois ;
+  - plus grosse baisse, pire journée, durée moyenne d'un trade, % gardés le week-end ;
+  - challenges enchaînés et période analysée (dates).
+- **Le TOP 10 de toutes les stratégies combinées** construites : chaque horaire, chaque perte max par jour, chaque
+  mélange, le portefeuille du Chef FTMO et la combinaison du direct. Même chiffres pour chacune ; on clique pour voir
+  les stratégies qui la composent (marché, timeframe, risque, trades/mois).
+- **Le compte financé et le compte perso** : rendement par an et par mois, mauvaise année, baisse typique, bot.
+- **Quel compte FTMO acheter** (1 étape / 2 étapes, Standard / Swing).
+- **Sur quoi c'est basé** : la période jamais vue pendant la recherche, et les **frais inclus**. Ce sont le spread de
+  chaque bougie, la commission du courtier, le **glissement** (mesuré en direct, sinon estimé à la moitié du spread
+  médian) et les **swaps** (le week-end compte 3 nuits). Les stratégies doivent aussi tenir avec des coûts doublés.
+
 ## Règles FTMO 2026 prises en compte : perte suiveuse, week-end, choix du compte
 
 À vérifier sur ftmo.com, les règles changent ; voici celles intégrées.

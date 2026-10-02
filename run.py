@@ -100,6 +100,7 @@ def with_ext(df, sym, tf, symbols, raw, a):
 def real_costs(conn, a):
     """Calibration des coûts réels (spread du paper trading + glissement du bot) ajoutée aux tests."""
     if getattr(a, "sans_couts_reels", False) or getattr(a, "cost", None) is not None:
+        conn.slippage = False
         return
     from mt5lab.couts_reels import calibrate
     conn.calib = calibrate(Path(a.out))
@@ -157,6 +158,11 @@ def cmd_directeur(a):
             return synthetic(a.bars or 6000, seed=zlib.crc32(f"{sym}{tf}".encode()) % 1000, freq=freq.get(tf, "h")), 0.00012
         _run_director(cfg, get_data, a)
         return
+    if a.rapport_seulement:  # pages seulement : pas besoin de MT5
+        def no_data(sym, tf):
+            raise RuntimeError("pas de données (pages seulement)")
+        _run_director(cfg, no_data, a)
+        return
     from mt5lab.data import MT5Connector
     comm = parse_commission(a.commission)
     news = load_news_arg(a)
@@ -185,6 +191,7 @@ def _run_director(cfg, get_data, a):
     cfg.genie_generations = a.generations_genies
     _keep_awake(True)  # Windows : pas de mise en veille pendant une longue campagne
     d = Director(cfg, get_data)
+    d.commission_text = " ".join(a.commission) if a.commission else None
     d.account_overrides = {"perso": {"capital": a.capital_perso, "risk_pct": a.risque_perso,
                                      "day_budget": a.perte_jour_perso},
                            "finance": {"capital": a.capital_finance}}

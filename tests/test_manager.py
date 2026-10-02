@@ -66,3 +66,17 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     assert 'id="melanges"' in page and ("Meilleur que la combinée seule" in page or "Mélange impossible" in page)
     if mixed["melanges"]:
         assert all(r["melange"].startswith("Directeur + ") for r in mixed["melanges"])
+    # LA page unique : TOP 10 de toutes les stratégies combinées, avec leurs chiffres et leurs bots
+    top = json.loads((tmp_path / "toutes_les_combinees.json").read_text(encoding="utf-8"))
+    assert len(top) >= 3 and [e["rang"] for e in top] == list(range(1, len(top) + 1))
+    assert any(e.get("choisie") for e in top)
+    n1 = json.loads((tmp_path / "strategie_n1.json").read_text(encoding="utf-8"))
+    assert n1["composants"] == top[0]["comb"]["composants"] and n1["nom"].startswith("N°1 du TOP 10")
+    for e in top[:10]:
+        r = e["res"]
+        assert r["trades_mois"] is not None and r["dd_max"] >= 0 and r["fenetre"] and r["jours_periode"] > 0
+        assert e["comb"]["composants"] and "candidate" in e["comb"]["composants"][0]
+    page = (tmp_path / "resultats.html").read_text(encoding="utf-8")
+    assert "TOP 10 des stratégies combinées" in page and page.count('class="labbot"') >= 3
+    assert "Plus grosse baisse" in page and "Période analysée" in page and "Glissement" in page
+    assert "Compte financé" in page and "Quel compte FTMO acheter" in page

@@ -57,6 +57,67 @@ if not "%DEPUIS%"=="" (set RES=results_depuis_%DEPUIS%& set PER=--depuis %DEPUIS
 if "%BATTRE_BH%"=="1" set PER=%PER% --battre-buy-hold
 cls
 echo ==================================================
+echo    LABO MT5 - passer le challenge FTMO le plus vite
+echo ==================================================
+echo   Marches : %SYMS%   Timeframes : %TFS%   Risque max par trade : %DIR_RISQUE_MAX%%%   Perte max par jour : %DIR_PERTE_JOUR%%%
+echo.
+echo   1. TOUT FAIRE (laissez tourner la nuit ou la journee) : recherche au maximum par tous les employes,
+echo      strategies combinees, melanges, compte perso, compte finance, classement. A la fin la page des
+echo      RESULTATS s'ouvre toute seule. On peut l'arreter et la relancer : le travail fait est garde.
+echo   2. VOIR LES RESULTATS : TOP 10 des strategies combinees + tout sur UNE page (avec les bots)
+echo   3. LANCER la N.1 du TOP 10 : paper trading + plateforme + signaux pour le bot MT5
+echo   4. Plateforme du COMPTE PERSO (%CAPITAL_PERSO% $)
+echo   5. Plateforme du COMPTE FINANCE (apres le challenge)
+echo.
+echo   6. Tester la connexion a MT5       7. Changer les marches / timeframes
+echo   8. Alertes sur le telephone        9. Options avancees (toutes les anciennes options)
+echo   0. Quitter (le paper trading continue dans sa fenetre)
+echo.
+echo   Aucune option n'envoie d'ordre a MetaTrader : seul le bot MT5, si vous le posez sur un graphique.
+echo.
+set CHOIX=
+set /p CHOIX=Votre choix : 
+if "%CHOIX%"=="1" goto toutfaire
+if "%CHOIX%"=="2" goto resultats
+if "%CHOIX%"=="3" goto lancern1
+if "%CHOIX%"=="4" goto paperperso
+if "%CHOIX%"=="5" goto paperfinance
+if "%CHOIX%"=="6" goto check
+if "%CHOIX%"=="7" goto params
+if "%CHOIX%"=="8" goto telegram
+if "%CHOIX%"=="9" goto avance
+if "%CHOIX%"=="0" exit /b 0
+goto menu
+
+:toutfaire
+echo.
+echo TOUT FAIRE : chaque agent fait %MAX_TESTS% tests par round (%MAX_ROUNDS% rounds), inventeurs, genies, Conseil,
+echo Directeur, melanges des strategies combinees, compte perso et compte finance. Comptez une nuit ou plus.
+echo Le PC ne se met pas en veille pendant le calcul. Laissez MT5 ouvert. Fermer cette fenetre = arreter
+echo (le travail deja fait est garde, relancez la touche 1 pour continuer).
+python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% --budget %MAX_TESTS% --rounds %MAX_ROUNDS% --invent-generations %MAX_INVENTIONS% --generations-genies %MAX_GENIES% --capital-perso %CAPITAL_PERSO% --risque-perso %RISQUE_PERSO% --perte-jour-perso %PERTE_JOUR_PERSO% --capital-finance %CAPITAL_FINANCE% %FTMO%
+if exist "%RES%\resultats.html" start "" "%RES%\resultats.html"
+pause & goto menu
+
+:resultats
+echo Mise a jour de la page des resultats...
+if exist "%RES%\strategie_combinee.json" python run.py directeur --rapport-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
+if exist "%RES%\resultats.html" (start "" "%RES%\resultats.html") else (echo Pas encore de resultats : lancez la touche 1 TOUT FAIRE.)
+echo.
+echo Les boutons "Bot MT5" de la page marchent quand une plateforme est ouverte (touche 3, 4 ou 5).
+pause & goto menu
+
+:lancern1
+if not exist "%RES%\strategie_n1.json" goto papercomb
+start "Paper trading - N.1 du TOP 10" "%~dp0paper_24h.bat" --results %RES% --source combinee --combinee-fichier %RES%\strategie_n1.json --capital %CAPITAL% --risk %RISK% --commission %COMMISSION% %FTMO% --out %RES%\paper_combinee --port 8768
+echo.
+echo La N.1 du TOP 10 demarre dans une NOUVELLE fenetre (reduisez-la, ne la fermez pas).
+echo Plateforme : http://localhost:8768 - onglet "Strategie combinee". Bouton "Creer le bot MT5" sur la plateforme.
+pause & goto menu
+
+:avance
+cls
+echo ==================================================
 echo    Labo de strategies MT5 - Directeur, 4 chefs, 20 agents, 2 genies, le Conseil
 echo ==================================================
 echo   Marches : %SYMS%    Timeframes : %TFS%
@@ -105,7 +166,7 @@ echo   9. Ouvrir la PLATEFORME (voir les trades en direct)
 echo   A. Lancer l'exploration automatiquement au demarrage de Windows
 echo   B. Ne plus lancer au demarrage de Windows
 echo.
-echo   0. Quitter le menu (le paper trading continue dans sa fenetre)
+echo   0. Retour au menu simple
 echo.
 echo   Aucune option n'envoie d'ordre a MetaTrader.
 echo.
@@ -138,8 +199,8 @@ if /i "%CHOIX%"=="M" goto paperperso
 if /i "%CHOIX%"=="V" goto paperfinance
 if /i "%CHOIX%"=="A" goto autostart
 if /i "%CHOIX%"=="B" goto noautostart
-if "%CHOIX%"=="0" exit /b 0
-goto menu
+if "%CHOIX%"=="0" goto menu
+goto avance
 
 :periode
 echo.

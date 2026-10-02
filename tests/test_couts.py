@@ -46,6 +46,7 @@ def test_backtest_uses_bar_spread_swaps_and_news():
 
 def test_enrich_adds_cost_swap_and_news():
     conn = MT5Connector.__new__(MT5Connector)
+    conn.slippage = False  # coûts bruts (le glissement est testé à part)
     info = SimpleNamespace(point=1e-5, trade_tick_value=1.0, trade_tick_size=1e-5, swap_mode=1, swap_long=-7.0,
                            swap_short=2.0, currency_base="EUR", currency_profit="USD", visible=True)
     conn.symbol_info = lambda s: info
@@ -98,6 +99,7 @@ def test_weekend_spread_not_applied_to_history():
 
 def test_enrich_uses_at_least_median_spread():
     conn = MT5Connector.__new__(MT5Connector)
+    conn.slippage = False  # coûts bruts (le glissement est testé à part)
     info = SimpleNamespace(point=1e-5, trade_tick_value=1.0, trade_tick_size=1e-5, swap_mode=0, visible=True,
                            currency_base="EUR", currency_profit="USD")
     conn.symbol_info = lambda s: info
@@ -165,3 +167,15 @@ def test_enrich_adds_real_costs_measured_live():
                       index=idx)
     out = conn.enrich(df, "EURUSD")
     assert np.allclose(out["cost"], (np.array([10, 10, 20]) + 4 + 6) * 1e-5)   # +4 de spread, +2x3 de glissement
+
+
+def test_enrich_estimates_slippage_until_measured():
+    conn = MT5Connector.__new__(MT5Connector)
+    info = SimpleNamespace(point=1e-5, trade_tick_value=1.0, trade_tick_size=1e-5, swap_mode=0, visible=True,
+                           currency_base="EUR", currency_profit="USD")
+    conn.symbol_info = lambda s: info
+    idx = pd.date_range("2024-01-01", periods=3, freq="h")
+    df = pd.DataFrame({"open": 1.1, "high": 1.1, "low": 1.1, "close": 1.1, "volume": 1, "spread": [10, 10, 20]},
+                      index=idx)
+    out = conn.enrich(df, "EURUSD")   # rien de mesuré : + la moitié du spread médian (10 -> 5 points)
+    assert np.allclose(out["cost"], (np.array([10, 10, 20]) + 5) * 1e-5)

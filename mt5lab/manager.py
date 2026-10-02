@@ -131,6 +131,7 @@ class Director:
         self.allr = pd.DataFrame()
         self.card_ids: dict = {}
         self.multi_tf: list[dict] = []
+        self.all_combos: list[dict] = []   # TOUTES les stratégies combinées construites (pour le TOP 10)
 
     # --------------------------------------------------------------------------- utilitaires
     def say(self, msg: str):
@@ -459,6 +460,7 @@ class Director:
         res["trades"] = int(len(merged))
         res["trades_mois"] = _per_month(len(merged), lo, hi)
         res.update(holding_stats(merged))
+        res.update(_drawdown(daily), jours_periode=int((hi - lo).days))
         res["pire_jour"] = float(daily["worst"].min()) if len(daily) else 0.0
         res["rendement_pct"] = float(daily["pnl"].sum()) if len(daily) else 0.0
         res["jours_attendus"] = expected_days(res)
@@ -712,6 +714,7 @@ class Director:
                 continue
             self.say(f"===== Horaire {name} (entrées seulement {'24h/24' if start is None else f'de {start}h à {end}h'}, "
                      "heure locale) =====")
+            self._cur_horaire = {"nom": name, "debut": start, "fin": end, "decalage_serveur": self.cfg.server_offset}
             best, best_b, rows = self._budget_scenarios(allr, pool)
             for r in rows:
                 r["horaire"] = name
@@ -810,6 +813,9 @@ class Director:
                                     "wr_attendu": info[k].get("attendu_wr"),
                                     "trades_mois": _comp_tpm(trades, windows, k)} for k in keys],
                     "cree_le": time.strftime("%Y-%m-%d %H:%M")}
+            h = getattr(self, "_cur_horaire", None) or {"nom": "24h/24", "debut": None, "fin": None}
+            self._register(f"Challenge FTMO · horaire {h['nom']} · perte max {b:g} %/jour", "passer le challenge FTMO",
+                           {**comb, "horaire": h})
             rows.append({"budget": b, "reussite": res["ftmo_pass"], "jours": res["ftmo_jours_p1"],
                                        "reussis_oos": res.get("challenges_oos", {}).get("reussis"),
                                        "rates_oos": res.get("challenges_oos", {}).get("rates"),
@@ -940,6 +946,102 @@ class Director:
             self.say("Conseiller du compte : " + t)
         return self.advice
 
+    # --------------------------------------------------------------------------- TOP 10 des stratégies combinées
+    def _register(self, nom: str, pour: str, comb: dict | None, star: bool = False):
+        """Garde chaque stratégie combinée construite (une seule fois) avec ses chiffres, pour le TOP 10."""
+        from .boutons import slim
+        if not comb or not comb.get("resultat") or not comb.get("composants"):
+            return
+        sig = json.dumps([[c["symbole"], c["timeframe"], candidate_key(c["candidate"]), c.get("risk_pct")]
+                          for c in comb["composants"]] + [comb.get("regles"), (comb.get("horaire") or {}).get("nom")],
+                         sort_keys=True, default=str)
+        for e in self.all_combos:
+            if e["_sig"] == sig:
+                e["choisie"] = e.get("choisie") or star
+                return
+        r = comb["resultat"]
+        keep = ("ftmo_pass", "ftmo_jours_p1", "ftmo_echec_p1", "jours_attendus", "trades", "trades_mois",
+                "pire_jour", "dd_max", "rendement_pct", "fenetre", "jours_periode", "week_end_pct", "duree_moy_h",
+                "challenges_oos")
+        res = {k: r.get(k) for k in keep}
+        if res.get("jours_attendus") is None:
+            res["jours_attendus"] = expected_days(r)
+        sc = slim(comb)
+        for c, full in zip(sc["composants"], comb["composants"]):
+            c["trades_mois"] = full.get("trades_mois")
+        self.all_combos.append({"_sig": sig, "nom": nom, "pour": pour, "choisie": star, "comb": sc, "res": res})
+
+    def _eval_external(self, comb: dict | None, info, trades, windows, default_w: float):
+        """Chiffres d'une combinaison venue d'ailleurs (Chef FTMO, direct) avec la même méthode que le Directeur."""
+        w = {k: (v if v else default_w) for k, v in self._keys_of(comb, info).items()}
+        if not w:
+            return None
+        res = self._eval(list(w), w, None, None, trades, windows, n=3000)
+        if res is None:
+            return None
+        comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
+                  "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": w[k],
+                  "trades_mois": _comp_tpm(trades, windows, k)} for k in w]
+        return {"resultat": res, "composants": comps,
+                "regles": {"day_budget": self.cfg.day_budget, "total_budget": self.cfg.total_budget},
+                "horaire": {"nom": "24h/24", "debut": None, "fin": None}}
+
+    def rank_combos(self, allr: pd.DataFrame | None = None) -> list[dict]:
+        """Ajoute le portefeuille du Chef FTMO et la combinaison du direct, classe tout et enregistre le TOP."""
+        if allr is not None and len(allr):
+            try:
+                pool0 = getattr(self, "_pool0", None) or self._pool(allr)
+                trades, windows, info = pool0
+                pf = self.cfg.out / "portefeuille_ftmo.csv"
+                if pf.exists():
+                    p = pd.read_csv(pf)
+                    comb = {"composants": [{"symbole": r.symbole, "timeframe": r.timeframe,
+                                            "candidate": json.loads(r.candidate)}
+                                           for r in p.itertuples() if isinstance(getattr(r, "candidate", None), str)]}
+                    self._register("Portefeuille du Chef FTMO", "passer le challenge FTMO",
+                                   self._eval_external(comb, info, trades, windows, min(0.5, self.cfg.risk_pct)))
+                d = _load_json(self.cfg.out / "strategie_combinee_direct.json")
+                if d:
+                    self._register("Combinaison du direct (paper trading)", "passer le challenge FTMO",
+                                   self._eval_external(d, info, trades, windows, min(0.5, self.cfg.risk_pct)))
+            except Exception as exc:
+                self.say(f"TOP 10 : portefeuille / direct non évalués ({exc})")
+        if self.combined:
+            self._register("LA stratégie combinée du Directeur", "passer le challenge FTMO", self.combined, star=True)
+        lim = self.cfg.max_fail
+
+        def key(e):  # 1. échecs sous la limite 2. jours attendus 3. réussite 4. échecs
+            r = e["res"]
+            ech = r.get("ftmo_echec_p1")
+            j = r.get("jours_attendus")
+            p = r.get("ftmo_pass")
+            bad = ech is None or ech != ech or ech > lim
+            return (bad, round(j) if j is not None and j == j else 10**9, -(p if p == p and p is not None else 0),
+                    ech if ech == ech and ech is not None else 100)
+        self.all_combos.sort(key=key)
+        for i, e in enumerate(self.all_combos, 1):
+            e["rang"] = i
+        (self.cfg.out / "toutes_les_combinees.json").write_text(
+            json.dumps(self.all_combos, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+        if self.all_combos:  # LA n°1 : c'est elle que lance la touche 3 du menu
+            top = self.all_combos[0]
+            n1 = {**top["comb"], "nom": f"N°1 du TOP 10 : {top['nom']}", "resultat": top["res"]}
+            if self.combined.get("essai") or top["comb"].get("essai"):
+                n1["essai"] = True
+            (self.cfg.out / "strategie_n1.json").write_text(
+                json.dumps(n1, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+        if self.all_combos:
+            b = self.all_combos[0]
+            self.say(f"TOP 10 des stratégies combinées : n°1 = {b['nom']} -> challenge réussi en "
+                     f"~{_fmt(b['res'].get('jours_attendus'), '{:.0f}')} jours attendus "
+                     f"({len(self.all_combos)} stratégies combinées classées)")
+        return self.all_combos
+
+    def _load_combos(self):
+        self.all_combos = _load_json(self.cfg.out / "toutes_les_combinees.json") or []
+        if not isinstance(self.all_combos, list):
+            self.all_combos = []
+
     def mix_only(self):
         """Option W : seulement le Chef des combinaisons, avec les résultats déjà calculés (pas de recherche)."""
         allr = self.review()
@@ -948,11 +1050,13 @@ class Director:
         self.scenario_rows = self.combined.get("scenarios", []) or []
         self.accounts = {n: _load_json(self.cfg.out / f"strategie_combinee_{n}.json")
                          for n in ("perso", "finance") if (self.cfg.out / f"strategie_combinee_{n}.json").exists()}
+        self._load_combos()
         if not self.combined:
             self.say("Pas encore de stratégie combinée : lancez d'abord le Directeur (option D).")
         else:
             self.combine_combinations(allr)
             self.account_advice(allr)
+        self.rank_combos(allr)
         if len(allr):
             self.build_cards()
         write_report(self)
@@ -1010,6 +1114,9 @@ class Director:
                 union = {**other, **base}  # les composants du Directeur gardent leur risque
                 new = self.build_combined(allr, pool, quiet=True, start=(list(union), union, rg))
                 res = new.get("resultat") if new else None
+                if new:
+                    self._register(f"Mélange : combinée du Directeur + {name}", "passer le challenge FTMO",
+                                   {**new, "horaire": overall.get("horaire")})
                 better = bool(res) and self._better(res, base_res)
                 self.combo_rows.append({
                     "melange": f"Directeur + {name}", "ajoutes": len(set(other) - set(base)),
@@ -1193,6 +1300,7 @@ class Director:
         self.advice = self.combined.get("conseil_compte") or {}
         self.accounts = {n: _load_json(self.cfg.out / f"strategie_combinee_{n}.json")
                          for n in ("perso", "finance") if (self.cfg.out / f"strategie_combinee_{n}.json").exists()}
+        self._load_combos()
         if len(allr):
             self.build_cards()
         write_report(self)
@@ -1217,6 +1325,7 @@ class Director:
                 self.multi_tf_test()
             self.build_cards()
         self.live_analysis()
+        self.rank_combos(allr)
         self.say(f"Campagne terminée en {(time.time() - t0) / 60:.0f} min. Rapport : {self.cfg.out / 'directeur.html'}")
         write_report(self)
         return self.combined
@@ -1281,6 +1390,17 @@ def _accounts_html(d) -> str:
                 f"problème {_fmt(r['p_probleme'])} % de chances sur un an. "
                 f"<a href='compte_{esc(name)}.html'>Détails</a> {button(slim(c), 'Bot MT5 de ce compte')}</p>")
     return out
+
+
+def _drawdown(daily: pd.DataFrame) -> dict:
+    """Plus grosse baisse depuis un plus haut (en % du capital, positions ouvertes au pire moment de la journée)."""
+    if daily is None or not len(daily):
+        return {"dd_max": float("nan")}
+    cum = daily["pnl"].to_numpy(float).cumsum()
+    before = np.concatenate([[0.0], cum[:-1]])
+    peak = np.maximum.accumulate(np.maximum(before, 0.0))
+    low = before + np.minimum(daily["worst"].to_numpy(float), 0.0)
+    return {"dd_max": round(float(np.max(peak - low)), 2)}
 
 
 def _per_month(n, lo, hi) -> float:
@@ -1617,3 +1737,5 @@ qu'ils n'avaient pas vue. Chaque faille est aussi jouée comme stratégie et pas
 pendant la recherche. Confirmez en paper trading (menu, option « stratégie combinée ») avant tout challenge réel.</p>
 </main>{script(d.cfg.out)}</body></html>"""
     (d.cfg.out / "directeur.html").write_text(doc, encoding="utf-8")
+    from .resultats import write_results_page  # LA page unique : TOP 10 et tout le reste
+    write_results_page(d.cfg.out, d.cfg.ftmo.label(), getattr(d, "commission_text", None))

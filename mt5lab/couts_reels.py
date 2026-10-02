@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 
 MIN_TRADES = 10
+DEFAULT_SLIP_FRACTION = 0.5  # glissement supposé tant qu'il n'est pas mesuré : la moitié du spread médian par trade
 FILE = "couts_reels.json"
 
 
@@ -71,9 +72,7 @@ def calibrate(results_dir: Path, save: bool = True) -> dict:
 def extra_points(calib: dict | None, symbol: str, hist_spread_pts: float) -> tuple[float, str]:
     """Coût aller-retour à AJOUTER (en points) : spread réel au-delà du spread historique + glissement à l'entrée
     et à la sortie. Retourne (points, explication)."""
-    c = (calib or {}).get(symbol)
-    if not c:
-        return 0.0, ""
+    c = (calib or {}).get(symbol) or {}
     extra, why = 0.0, []
     if c.get("spread_pts") is not None and c["spread_pts"] > hist_spread_pts:
         extra += c["spread_pts"] - hist_spread_pts
@@ -81,4 +80,8 @@ def extra_points(calib: dict | None, symbol: str, hist_spread_pts: float) -> tup
     if c.get("glissement_pts"):
         extra += 2 * c["glissement_pts"]
         why.append(f"glissement du bot {c['glissement_pts']:g} pts x2 (entrée + sortie)")
+    elif hist_spread_pts > 0:  # pas encore mesuré en direct : estimation prudente
+        est = round(DEFAULT_SLIP_FRACTION * hist_spread_pts, 2)
+        extra += est
+        why.append(f"glissement estimé {est:g} pts (pas encore mesuré en direct)")
     return extra, " + ".join(why)
