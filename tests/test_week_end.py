@@ -47,3 +47,17 @@ def test_near_weekend_server_time():
     assert near_weekend("2026-10-02 21:30:00") and not near_weekend("2026-10-02 21:30:00", close=True)
     assert near_weekend("2026-10-02 22:05:00", close=True) and near_weekend("2026-10-03 10:00:00")
     assert not near_weekend("2026-10-01 23:00:00")
+
+
+def test_devils_advocate_shuffle_keeps_candles_but_kills_trends():
+    from mt5lab.data import shuffle_prices, synthetic
+    df = synthetic(2000, seed=3, momentum=0.4)
+    fake = shuffle_prices(df, seed=1)
+    assert len(fake) == len(df) and (fake.index == df.index).all()
+    assert (fake["high"] >= fake[["open", "close"]].max(axis=1) - 1e-12).all()
+    assert (fake["low"] <= fake[["open", "close"]].min(axis=1) + 1e-12).all()
+    r_real = np.log(df["close"]).diff().dropna()
+    r_fake = np.log(fake["close"]).diff().dropna()
+    assert abs(r_real.std() - r_fake.std()) / r_real.std() < 0.05         # même volatilité
+    ac = lambda r: float(np.corrcoef(r[:-1], r[1:])[0, 1])
+    assert abs(ac(r_fake.to_numpy())) < abs(ac(r_real.to_numpy())) or abs(ac(r_fake.to_numpy())) < 0.05  # plus de tendance

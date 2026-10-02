@@ -199,6 +199,72 @@ def costs_text(commission: str | None = None) -> str:
             "<li>Les stratégies sont aussi testées avec des coûts DOUBLÉS : celles qui ne tiennent plus sont rejetées.</li></ul>")
 
 
+def _avocat(a: dict | None) -> str:
+    if not a:
+        return ("<div class='card'><b>Avocat du diable</b> : pas encore passé (il travaille à la fin de la touche 1, "
+                "TOUT FAIRE).</div>")
+    color = {"bon": "var(--ok)", "moyen": "var(--gold)", "danger": "var(--bad)"}.get(a.get("niveau"), "var(--line)")
+    rows = "".join(
+        f"<tr><td><b>{html.escape(r['symbole'])} {html.escape(r['timeframe'])}</b></td>"
+        f"<td>{r['vrais_valides']} validées · {r['vrais_essai']} à l'essai</td>"
+        f"<td>{r['hasard_valides']} validées · {r['hasard_essai']} à l'essai</td></tr>" for r in a.get("cases", []))
+    return (f"<div class='card' style='border:2px solid {color}'><b>Avocat du diable</b> "
+            f"<span class='mut'>({html.escape(str(a.get('fait_le', '')))})</span>"
+            "<p class='mut'>La même recherche, refaite sur les mêmes bougies remises dans un ordre au hasard : plus aucune "
+            "vraie tendance ni aucun vrai motif. Ce qui « marche » là gagne par pure chance.</p>"
+            "<div class='scroll'><table><thead><tr><th>Case</th><th>Sur les VRAIS prix</th><th>Sur des prix AU HASARD</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table></div><p><b>{html.escape(a.get('verdict', ''))}</b></p></div>")
+
+
+def _comp_table(comb: dict) -> str:
+    rows = "".join(
+        f"<tr><td><b>{html.escape(str(c.get('symbole')))}</b></td><td>{html.escape(str(c.get('timeframe')))}</td>"
+        f"<td>{html.escape(str(c.get('strategie', ''))[:140])}</td><td>{html.escape(str(c.get('risque_config', '')))}</td>"
+        f"<td class='n'>{_f(c.get('risk_pct'), '{:g}')} %</td><td class='n'>~{_f(c.get('trades_mois'), '{:.0f}')}</td>"
+        f"<td>{button({**{k: v for k, v in comb.items() if k != 'composants'}, 'composants': [c]}, 'Bot seule')}</td></tr>"
+        for c in comb.get("composants", []))
+    return ("<div class='scroll'><table><thead><tr><th>Marché</th><th>TF</th><th>Stratégie</th>"
+            "<th>Stop · R:R · gestion des trades</th><th>Risque / trade</th><th>Trades / mois</th><th></th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>")
+
+
+def write_top10_page(out_dir: str | Path, rules_label: str = "") -> Path:
+    """Page dédiée : les 10 meilleures stratégies combinées, chacune avec TOUTES ses infos et son bouton Bot MT5."""
+    out = Path(out_dir)
+    combos = (_load(out / "toutes_les_combinees.json") or [])[:10]
+    cards = ""
+    for e in combos:
+        c, r = e["comb"], e["res"]
+        tpm = r.get("trades_mois")
+        label = f"Créer le bot MT5 de la n°{e.get('rang')}"
+        cards += (f"<div class='card{' hero' if e.get('rang') == 1 else ''}'>"
+                  f"<h2 style='margin:0 0 4px'>N°{e.get('rang')} · {html.escape(e['nom'])}</h2>"
+                  f"<p class='mut'>Pour : {html.escape(e.get('pour', ''))} · {html.escape(_rules_text(c))}"
+                  + (f" · ~{tpm / 21:.1f} trades par jour de bourse" if tpm else "") + "</p>"
+                  f"<p>{button(c, label)}</p>"
+                  f"{_kpis(r)}<details{' open' if e.get('rang') == 1 else ''}><summary>Les "
+                  f"{len(c.get('composants', []))} stratégies qui la composent (et le bot de chacune seule)</summary>"
+                  f"{_comp_table(c)}</details></div>")
+    if not cards:
+        cards = ("<div class='card hero'><b>Pas encore de stratégie combinée.</b> Lancez la touche 1 du menu "
+                 "(TOUT FAIRE) : cette page se remplit à la fin.</div>")
+    doc = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TOP 10</title><style>{CSS}</style></head><body><main>
+<h1>TOP 10 des stratégies combinées</h1>
+<p class="mut">{html.escape(rules_label)} · classées de la plus rapide à réussir le challenge à la moins rapide (celles qui
+ratent trop souvent passent après). Chaque bouton « Créer le bot MT5 » prépare le bot de CETTE stratégie combinée et
+l'installe dans MT5 : une plateforme doit être ouverte (touche 3, 4 ou 5 du menu). Frais inclus : spread, commission,
+glissement et swaps. Période analysée : jamais vue pendant la recherche.</p>
+{_avocat(_load(out / "avocat_du_diable.json"))}
+{cards}
+<p><a href="resultats.html">Tous les résultats (comptes perso et financé, choix du compte, gestion des trades)</a> ·
+<a href="directeur.html">Rapport détaillé du Directeur</a></p>
+</main>{script(out)}</body></html>"""
+    path = out / "top10.html"
+    path.write_text(doc, encoding="utf-8")
+    return path
+
+
 def write_results_page(out_dir: str | Path, rules_label: str = "", commission: str | None = None) -> Path:
     out = Path(out_dir)
     combos = _load(out / "toutes_les_combinees.json") or []
@@ -220,7 +286,9 @@ def write_results_page(out_dir: str | Path, rules_label: str = "", commission: s
 <title>Résultats</title><style>{CSS}</style></head><body><main>
 <h1>Résultats : les meilleures stratégies combinées</h1>
 <p class="mut">{html.escape(rules_label)} · {len(combos)} stratégies combinées classées · mis à jour le {html.escape(str(main.get('cree_le', '')))}</p>
+{_avocat(_load(out / "avocat_du_diable.json"))}
 {hero}
+<p><a href="top10.html"><b>→ La page dédiée au TOP 10 (toutes les infos et le bot de chacune)</b></a></p>
 <h2>TOP 10 des stratégies combinées (de la plus rapide à réussir le challenge à la moins rapide)</h2>
 <p class="mut">Toutes celles que le Directeur a construites : chaque horaire, chaque perte max par jour, les mélanges
 du Chef des combinaisons, le portefeuille du Chef FTMO et la combinaison du direct. Classées par jours attendus pour
@@ -252,4 +320,5 @@ partir des VRAIES journées de cette période, et des challenges enchaînés jou
 </main>{script(out)}</body></html>"""
     path = out / "resultats.html"
     path.write_text(doc, encoding="utf-8")
+    write_top10_page(out, rules_label)
     return path

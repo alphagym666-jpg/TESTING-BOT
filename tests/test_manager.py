@@ -85,3 +85,9 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     assert g and all(r["meilleure"] in r["modes"] for r in g)
     assert {"paliers", "intelligente"} <= set().union(*(r["modes"] for r in g))
     assert "Gestion des trades" in page
+    # l'avocat du diable et la page dédiée au TOP 10
+    av = json.loads((tmp_path / "avocat_du_diable.json").read_text(encoding="utf-8"))
+    assert av["cases"] and av["niveau"] in ("bon", "moyen", "danger", "neutre") and av["verdict"]
+    t10 = (tmp_path / "top10.html").read_text(encoding="utf-8")
+    assert "TOP 10 des stratégies combinées" in t10 and "Avocat du diable" in t10
+    assert t10.count("Créer le bot MT5 de la n°") == min(10, len(top)) and "Trades par mois" in t10

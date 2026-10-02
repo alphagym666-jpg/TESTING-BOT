@@ -360,6 +360,27 @@ def load_csv(path: str | Path) -> pd.DataFrame:
     return df.set_index("time")[["open", "high", "low", "close", "volume"]].sort_index()
 
 
+def shuffle_prices(df: pd.DataFrame, seed: int = 0) -> pd.DataFrame:
+    """L'AVOCAT DU DIABLE : mêmes bougies (tailles, mèches, volatilité, spreads, heures), mais dans un ORDRE AU HASARD.
+    Toute tendance, tout cycle et tout motif réel disparaissent : une stratégie qui « marche » ici gagne par hasard."""
+    rng = np.random.default_rng(seed)
+    c = df["close"].to_numpy(float)
+    prev = np.concatenate([[c[0]], c[:-1]])
+    rel = {k: df[k].to_numpy(float) / prev for k in ("open", "high", "low", "close")}
+    perm = rng.permutation(len(df))
+    out = df.copy()
+    closes = c[0] * np.cumprod(rel["close"][perm])
+    prev_new = np.concatenate([[c[0]], closes[:-1]])
+    for k in ("open", "high", "low"):
+        out[k] = prev_new * rel[k][perm]
+    out["close"] = closes
+    for k in ("volume", "tick_volume", "real_volume"):
+        if k in out.columns:
+            out[k] = df[k].to_numpy()[perm]
+    # les colonnes « ext: » (autres marchés) restent dans le vrai ordre : leur lien avec ces prix est cassé
+    return out
+
+
 def synthetic(bars: int = 8000, seed: int = 7, start_price: float = 1.10, freq: str = "h",
               momentum: float = 0.15) -> pd.DataFrame:
     """Marché synthétique à régimes (tendance / range / volatilité) pour tester la plateforme hors MT5.

@@ -76,6 +76,8 @@ class DirectorConfig:
     comptes: bool = True               # construire aussi le compte perso et le compte financé (comptes.py)
     conseil: bool = True               # le Conseil : les meilleures stratégies de chaque case votent ensemble
     genie_generations: int = 12        # générations d'évolution des formules des génies
+    avocat: bool = True                # l'avocat du diable : la même recherche sur des prix mélangés au hasard
+    avocat_cases: int = 2              # nombre de cases (marché × timeframe) rejouées par l'avocat du diable
 
 
 def _fmt(v, f="{:.1f}"):
@@ -968,6 +970,64 @@ class Director:
             self.say("Conseiller du compte : " + t)
         return self.advice
 
+    # --------------------------------------------------------------------------- l'avocat du diable
+    def devils_advocate(self, allr: pd.DataFrame) -> dict:
+        """L'AVOCAT DU DIABLE : refait EXACTEMENT la même recherche sur les mêmes bougies remises dans un ordre au
+        hasard (aucune vraie tendance, aucun vrai motif). S'il y trouve presque autant de stratégies « validées »
+        que sur les vrais prix, nos trouvailles sont surtout de la chance."""
+        from .data import shuffle_prices
+        if not len(allr):
+            return {}
+        good = allr["verdict"].astype(str)
+        allr = allr.assign(_n_ok=good.eq("APPROUVÉ").astype(int),
+                           _n_essai=good.str.startswith("À L'ESSAI").astype(int))
+        cells = (allr.groupby(["symbole", "timeframe"])[["_n_ok", "_n_essai"]].sum()
+                 .sort_values(["_n_ok", "_n_essai"], ascending=False).head(self.cfg.avocat_cases))
+        rows = []
+        for (sym, tf), r in cells.iterrows():
+            try:
+                df, cost = self.data(sym, tf)
+            except Exception as exc:
+                self.say(f"Avocat du diable : {sym} {tf} impossible ({exc})")
+                continue
+            self.say(f"Avocat du diable : je refais la recherche de {sym} {tf} sur les mêmes bougies MÉLANGÉES au "
+                     "hasard (plus aucune vraie tendance). Si je trouve autant de gagnantes, c'était de la chance.")
+            fake = run_lab(shuffle_prices(df, seed=self.cfg.seed), cost, self.lab_cfg(), f"{sym}_{tf}_HASARD",
+                           self.cfg.out / "avocat_du_diable" / f"{sym}_{tf}")
+            v = fake["verdict"].astype(str) if len(fake) else pd.Series(dtype=str)
+            row = {"symbole": sym, "timeframe": tf, "vrais_valides": int(r["_n_ok"]),
+                   "vrais_essai": int(r["_n_essai"]), "hasard_valides": int(v.eq("APPROUVÉ").sum()),
+                   "hasard_essai": int(v.str.startswith("À L'ESSAI").sum())}
+            rows.append(row)
+            self.say(f"Avocat du diable {sym} {tf} : vrais prix {row['vrais_valides']} validées / "
+                     f"{row['vrais_essai']} à l'essai ; prix au hasard {row['hasard_valides']} validées / "
+                     f"{row['hasard_essai']} à l'essai")
+        if not rows:
+            return {}
+        real = sum(r["vrais_valides"] + r["vrais_essai"] for r in rows)
+        fake = sum(r["hasard_valides"] + r["hasard_essai"] for r in rows)
+        real_ok = sum(r["vrais_valides"] for r in rows)
+        fake_ok = sum(r["hasard_valides"] for r in rows)
+        if real == 0:
+            verdict, level = ("Rien trouvé sur les vrais prix de ces cases : pas de conclusion possible.", "neutre")
+        elif fake_ok == 0 and fake <= real * 0.25:
+            verdict, level = ("BON SIGNE : sur des prix au hasard, la recherche ne trouve (presque) rien. Ce qu'elle "
+                              "trouve sur les vrais prix n'est probablement pas que de la chance.", "bon")
+        elif fake < real * 0.6:
+            verdict, level = ("PRUDENCE : la recherche trouve aussi des « gagnantes » sur des prix au hasard, mais "
+                              "beaucoup moins que sur les vrais. Une partie de nos stratégies est sûrement de la chance : "
+                              "fiez-vous surtout à celles confirmées en paper trading.", "moyen")
+        else:
+            verdict, level = ("DANGER : la recherche trouve presque autant de « gagnantes » sur des prix au hasard que "
+                              "sur les vrais. La plupart de nos stratégies sont probablement de la chance. Ne payez pas de "
+                              "challenge avant une confirmation solide en paper trading.", "danger")
+        self.avocat = {"cases": rows, "verdict": verdict, "niveau": level, "fait_le": time.strftime("%Y-%m-%d %H:%M"),
+                       "vrais": real, "hasard": fake, "vrais_valides": real_ok, "hasard_valides": fake_ok}
+        (self.cfg.out / "avocat_du_diable.json").write_text(
+            json.dumps(self.avocat, indent=1, ensure_ascii=False), encoding="utf-8")
+        self.say("AVOCAT DU DIABLE : " + verdict)
+        return self.avocat
+
     # --------------------------------------------------------------------------- TOP 10 des stratégies combinées
     def _register(self, nom: str, pour: str, comb: dict | None, star: bool = False):
         """Garde chaque stratégie combinée construite (une seule fois) avec ses chiffres, pour le TOP 10."""
@@ -1348,6 +1408,8 @@ class Director:
             self.build_cards()
         self.live_analysis()
         self.rank_combos(allr)
+        if self.cfg.avocat and len(allr):
+            self.devils_advocate(allr)
         self.say(f"Campagne terminée en {(time.time() - t0) / 60:.0f} min. Rapport : {self.cfg.out / 'directeur.html'}")
         write_report(self)
         return self.combined

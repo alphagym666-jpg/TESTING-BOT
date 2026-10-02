@@ -62,9 +62,10 @@ echo ==================================================
 echo   Marches : %SYMS%   Timeframes : %TFS%   Risque max par trade : %DIR_RISQUE_MAX%%%   Perte max par jour : %DIR_PERTE_JOUR%%%
 echo.
 echo   1. TOUT FAIRE (laissez tourner la nuit ou la journee) : recherche au maximum par tous les employes,
-echo      strategies combinees, melanges, compte perso, compte finance, classement. A la fin la page des
-echo      RESULTATS s'ouvre toute seule. On peut l'arreter et la relancer : le travail fait est garde.
-echo   2. VOIR LES RESULTATS : TOP 10 des strategies combinees + tout sur UNE page (avec les bots)
+echo      strategies combinees, melanges, compte perso, compte finance, classement, puis l'AVOCAT DU DIABLE
+echo      (la meme recherche sur des prix au hasard). A la fin le TOP 10 s'ouvre tout seul. On peut l'arreter et la relancer : le travail fait est garde.
+echo   2. TOP 10 DES STRATEGIES COMBINEES : une page avec toutes leurs infos et le bouton du bot de chacune
+echo   R. Tous les resultats (comptes perso et finance, choix du compte FTMO, gestion des trades, avocat du diable)
 echo   3. LANCER la N.1 du TOP 10 : paper trading + plateforme + signaux pour le bot MT5
 echo   4. Plateforme du COMPTE PERSO (%CAPITAL_PERSO% $)
 echo   5. Plateforme du COMPTE FINANCE (apres le challenge)
@@ -78,7 +79,8 @@ echo.
 set CHOIX=
 set /p CHOIX=Votre choix : 
 if "%CHOIX%"=="1" goto toutfaire
-if "%CHOIX%"=="2" goto resultats
+if "%CHOIX%"=="2" goto top10
+if /i "%CHOIX%"=="R" goto resultats
 if "%CHOIX%"=="3" goto lancern1
 if "%CHOIX%"=="4" goto paperperso
 if "%CHOIX%"=="5" goto paperfinance
@@ -96,7 +98,15 @@ echo Directeur, melanges des strategies combinees, compte perso et compte financ
 echo Le PC ne se met pas en veille pendant le calcul. Laissez MT5 ouvert. Fermer cette fenetre = arreter
 echo (le travail deja fait est garde, relancez la touche 1 pour continuer).
 python run.py directeur --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --capital %CAPITAL% --risk %RISK% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% --budget %MAX_TESTS% --rounds %MAX_ROUNDS% --invent-generations %MAX_INVENTIONS% --generations-genies %MAX_GENIES% --capital-perso %CAPITAL_PERSO% --risque-perso %RISQUE_PERSO% --perte-jour-perso %PERTE_JOUR_PERSO% --capital-finance %CAPITAL_FINANCE% %FTMO%
-if exist "%RES%\resultats.html" start "" "%RES%\resultats.html"
+if exist "%RES%\top10.html" start "" "%RES%\top10.html"
+pause & goto menu
+
+:top10
+echo Mise a jour du TOP 10...
+if exist "%RES%\strategie_combinee.json" python run.py directeur --rapport-seulement --out %RES% %PER% --symbols %SYMS% --timeframes %TFS% --risk-max %DIR_RISQUE_MAX% --perte-max-jour %DIR_PERTE_JOUR% --perte-max-totale %DIR_PERTE_TOTALE% --commission %COMMISSION% %FTMO%
+if exist "%RES%\top10.html" (start "" "%RES%\top10.html") else (echo Pas encore de resultats : lancez la touche 1 TOUT FAIRE.)
+echo.
+echo Les boutons "Creer le bot MT5" marchent quand une plateforme est ouverte (touche 3, 4 ou 5).
 pause & goto menu
 
 :resultats

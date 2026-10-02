@@ -546,6 +546,19 @@ Attention :
   alors sauté (visible dans le journal).
 - Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
 
+## L'avocat du diable
+
+À la fin de la touche 1 (TOUT FAIRE), il prend les 2 cases (marché × timeframe) où la recherche a trouvé le plus de
+stratégies. Il refait EXACTEMENT la même recherche sur les mêmes bougies, remises dans un **ordre au hasard** : même
+volatilité, mêmes mèches, mêmes spreads et mêmes heures, mais plus aucune vraie tendance ni aucun vrai motif. Tout
+ce qui « marche » là gagne par pure chance.
+- **Bon signe** : (presque) rien trouvé sur les prix au hasard.
+- **Prudence** : un peu trouvé, mais beaucoup moins que sur les vrais prix.
+- **Danger** : presque autant trouvé que sur les vrais prix. Ne payez pas de challenge sans confirmation en paper trading.
+
+Le verdict est en haut de `top10.html` et de `resultats.html`. Les recherches au hasard sont dans
+`results/avocat_du_diable/`.
+
 ## Gestion des trades : break-even, paliers, sortie intelligente
 
 5 gestions possibles pour chaque stratégie : elles sont testées par les agents, et le Directeur les compare sur
@@ -566,7 +579,8 @@ même gestion : le stop est déplacé chez le courtier, la fermeture passe au ma
 | Touche | Ce qu'elle fait |
 |---|---|
 | **1. TOUT FAIRE** | La nuit ou la journée : recherche au maximum par tous les employés, stratégies combinées, mélanges, compte perso, compte financé, classement. La page des résultats s'ouvre à la fin. Arrêtable et relançable : le travail fait est gardé. |
-| **2. VOIR LES RÉSULTATS** | `resultats.html` : tout sur UNE page (voir plus bas), avec un bouton Bot MT5 partout. |
+| **2. TOP 10** | `top10.html` : page dédiée aux 10 meilleures stratégies combinées. Pour chacune : toutes ses infos (jours attendus, réussite, échecs, trades par mois et par jour, plus grosse baisse, pire journée, durée des trades, week-end, période analysée) et ses stratégies. Bouton « Créer le bot MT5 » pour la combinée, et « Bot seule » pour chacune de ses stratégies. |
+| **R** | `resultats.html` : tous les résultats (comptes perso et financé, choix du compte, gestion des trades, avocat du diable). |
 | **3. LANCER** | La stratégie combinée choisie (★) en paper trading, avec la plateforme et les signaux pour le bot. |
 | **4 / 5** | Plateforme du compte perso / du compte financé. |
 | 6 / 7 / 8 | Connexion MT5, marchés et timeframes, alertes téléphone. |
