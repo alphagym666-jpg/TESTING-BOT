@@ -22,7 +22,8 @@ set COMMISSION=EURUSD=5 GBPUSD=5 USDJPY=5 XAUUSD=5 NASDAQ=0 GER40=0 US30=0
 rem Regles OFFICIELLES du challenge FTMO (objectif, perte max par jour, perte max totale, en %%).
 rem --ftmo-meilleur-jour 50 : une journee ne peut pas faire plus de 50 %% du profit total (0 = pas de regle).
 rem Vos propres limites, plus prudentes (2.5 %% par jour), sont DIR_PERTE_JOUR et DIR_PERTE_TOTALE plus bas.
-set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10 --ftmo-meilleur-jour 50
+rem --ftmo-perte-suiveuse 1 : FTMO 1 etape, la perte max de 10 %% suit le plus haut solde de fin de journee (0 = fixe, 2 etapes)
+set FTMO=--ftmo-target 10 --ftmo-daily 3 --ftmo-total 10 --ftmo-meilleur-jour 50 --ftmo-perte-suiveuse 1
 rem Le Directeur : risque MAX par trade, et perte possible max par jour (il teste tous les scenarios jusqu'a ce plafond)
 set DIR_RISQUE_MAX=1.0
 set DIR_PERTE_JOUR=2.5
@@ -76,6 +77,7 @@ echo   X. DIRECTEUR MAXIMUM : refait TOUTES les cases avec le maximum de tests p
 echo      %MAX_ROUNDS% rounds) + genies et Conseil au maximum. TRES long (une nuit ou plus), laissez MT5 ouvert
 echo   W. MELANGER LES STRATEGIES COMBINEES entre elles (Chef des combinaisons) : la combinee + les autres
 echo      horaires + le portefeuille du Chef FTMO + le direct, gardee seulement si ca passe plus vite
+echo      + QUEL COMPTE CHOISIR (1 etape ou 2 etapes, Standard ou Swing, effet du week-end)
 echo   R. Ouvrir le CLASSEMENT GENERAL (meilleures strategies, catalogue, failles, combinee)
 echo   T. Alertes sur le TELEPHONE (Telegram) : explications + message de test
 echo   L. MEILLEURS SETUPS DU DIRECT : analyse des trades du paper trading + meilleure combinaison

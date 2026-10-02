@@ -70,6 +70,7 @@ class Slot:
     balance: float = 100_000.0
     peak: float = 100_000.0
     capital: float = 100_000.0    # capital de départ : le risque par trade est plafonné sur cette base
+    eod_high: float = 0.0         # plus haut solde de fin de journée (perte max suiveuse du FTMO 1 étape)
     max_dd_pct: float = 0.0
     trades: int = 0
     wins: int = 0
@@ -115,10 +116,12 @@ class Group:
     day_lock: dict | None = None      # frein de bonne journée {"seuil": %, "facteur": 0 = stop, 0.5 = risque /2}
     compound: bool = False            # compte perso : le risque suit le SOLDE (intérêts composés)
     expected_tpm: float | None = None # trades par mois attendus (période de test de la recherche)
+    weekend_close: bool = False       # compte Standard financé : tout fermer le vendredi soir, pas d'entrée le week-end
     best_day: float = 0.0             # meilleure journée (argent)
     prev_day_pnl: float = 0.0
     balance: float = 100_000.0
     peak: float = 100_000.0
+    eod_high: float = 0.0             # plus haut solde de fin de journée (perte max suiveuse du FTMO 1 étape)
     max_dd_pct: float = 0.0
     trades: int = 0
     wins: int = 0
@@ -136,7 +139,8 @@ class Group:
 
 GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
                                                                 "total_budget", "max_corr", "session", "pilot",
-                                                                "day_lock", "compound", "expected_tpm")]
+                                                                "day_lock", "compound", "expected_tpm",
+                                                                "weekend_close")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -211,7 +215,7 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0),
                      "max_corr": rules.get("max_correles"), "session": _session_of(d),
                      "pilot": rules.get("pilote"), "day_lock": rules.get("frein"),
-                     "compound": bool(d.get("composer")),
+                     "compound": bool(d.get("composer")), "weekend_close": bool(d.get("fermer_week_end")),
                      "expected_tpm": (d.get("resultat") or {}).get("trades_mois")
                      or (sum(float(c.get("trades_mois") or 0) for c in d.get("composants", [])) or None)}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
@@ -351,7 +355,8 @@ class PaperEngine:
             cap = g.get("capital", 100_000.0)
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
                                       g.get("total_budget"), g.get("max_corr"), g.get("session"), g.get("pilot"),
-                                      g.get("day_lock"), bool(g.get("compound")), g.get("expected_tpm"), balance=cap, peak=cap, day_start=cap)
+                                      g.get("day_lock"), bool(g.get("compound")), g.get("expected_tpm"),
+                                      bool(g.get("weekend_close")), balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -517,6 +522,8 @@ class PaperEngine:
             return True
         if g.session and not in_session(when, g.session):
             return False  # hors de l'horaire choisi : pas de nouvelle entrée (les positions ouvertes continuent)
+        if g.weekend_close and near_weekend(when):
+            return False  # compte Standard : pas de nouvelle position à l'approche du week-end
         if g.ftmo_status != "en cours" and self.bridge is None:
             return False  # avec le bot, le compte réel a ses propres garde-fous : on continue à donner les signaux
         if when[:10] != g.day:
@@ -525,7 +532,9 @@ class PaperEngine:
         # pertes du jour et totale : la PIRE des deux entre le paper trading et le vrai compte du bot
         real = self.real_account()
         day_loss = max(0.0, -g.day_realized, (real["day_start"] - real["solde"]) if real else 0.0)
-        total_loss = max(0.0, g.capital - g.balance, (g.capital - real["solde"]) if real else 0.0)
+        total_loss = max(0.0, g.capital - g.balance, (g.capital - real["solde"]) if real else 0.0,
+                         self._total_used(g, g.balance),
+                         self._total_used(g, real["solde"], real.get("eod_high")) if real else 0.0)
         ok = True
         if g.max_open is not None and len(members) >= g.max_open:
             ok = False
@@ -564,6 +573,7 @@ class PaperEngine:
         if when[:10] != acc.day:
             if acc.day:
                 acc.best_day = max(acc.best_day, equity - acc.day_start)
+                acc.eod_high = max(acc.eod_high, acc.balance)  # solde de clôture de la journée
             if isinstance(acc, Group) and acc.day:
                 acc.prev_day_pnl = equity - acc.day_start
             acc.day, acc.day_start = when[:10], (equity if acc.day else acc.capital)
@@ -580,12 +590,25 @@ class PaperEngine:
         acc.worst_day_pct = min(acc.worst_day_pct, daily)
         if daily <= -R.max_daily:
             acc.ftmo_status, acc.ftmo_when = f"ÉCHOUÉ (perte du jour {daily:.2f} %)", when
-        elif (equity - acc.capital) / acc.capital * 100 <= -R.max_total:
+        elif equity <= self._floor(acc):
             acc.ftmo_status, acc.ftmo_when = "ÉCHOUÉ (perte max totale)", when
         elif flat and R.target1 > 0 and (acc.balance - acc.capital) / acc.capital * 100 >= self.target_needed(acc) \
                 and len(acc.trade_days) >= R.min_days:
             acc.ftmo_status, acc.ftmo_when = "RÉUSSI", when
         return acc.ftmo_status != "en cours"
+
+    def _floor(self, acc, eod_high: float | None = None) -> float:
+        """Plancher de la perte max totale en argent : fixe (capital - 10 %) ou SUIVEUSE (FTMO 1 étape : plus haut
+        solde de fin de journée - 10 % du capital, jamais au-dessus du capital de départ)."""
+        R, cap = self.ftmo, acc.capital
+        if not getattr(R, "trailing", False):
+            return cap * (1 - R.max_total / 100)
+        hi = max(cap, acc.eod_high if eod_high is None else eod_high)
+        return min(hi - cap * R.max_total / 100, cap)
+
+    def _total_used(self, acc, bal: float, eod_high: float | None = None) -> float:
+        """Perte totale « consommée » en argent (0 = rien) : distance perdue vers le plancher, fixe ou suiveux."""
+        return max(0.0, acc.capital * self.ftmo.max_total / 100 - (bal - self._floor(acc, eod_high)))
 
     def alert(self, text: str, when: str | None = None):
         """Alerte du surveillant : journal de la plateforme + téléphone (Telegram si configuré)."""
@@ -698,9 +721,11 @@ class PaperEngine:
         if r["day"] != today:
             if r["day_start"] is not None:
                 r["best_day"] = max(r["best_day"], bal - r["day_start"])
+                r["eod_high"] = max(r.get("eod_high") or 0.0, bal)  # solde de clôture (perte max suiveuse)
             r["day"], r["day_start"] = today, bal
             self._dirty = True
-        return {"solde": bal, "equite": eq, "day_start": r["day_start"], "best_day": r["best_day"]}
+        return {"solde": bal, "equite": eq, "day_start": r["day_start"], "best_day": r["best_day"],
+                "eod_high": r.get("eod_high") or 0.0}
 
     def target_needed(self, acc) -> float:
         """Objectif réel en % : +10 %, ou plus si la meilleure journée dépasse 50 % du profit (règle du meilleur jour).
@@ -949,6 +974,22 @@ class PaperEngine:
             if s.position is None and sig != 0 and (s.group or s.ftmo_status == "en cours"):
                 self._open(s, sig, closed, tick, atr_arr)
 
+    def _weekend_close(self):
+        """Compte FTMO Standard financé : toutes les positions des stratégies combinées concernées sont fermées le
+        vendredi soir (heure du serveur MT5), avant la fermeture des marchés."""
+        for g in self.groups.values():
+            if not g.weekend_close:
+                continue
+            for s in self.slots.values():
+                if s.group != g.name or not s.position or s.position.shadow:
+                    continue
+                t = self.mt5.symbol_info_tick(s.symbol)
+                if t is None:
+                    continue
+                when = _now(t)
+                if near_weekend(when, close=True):
+                    self._close(s, t.bid if s.position.side > 0 else t.ask, when, "fermeture avant le week-end")
+
     def step(self):
         today = datetime.now().strftime("%Y-%m-%d")
         if today != self._report_day:  # rapport du soir de la journée qui vient de finir
@@ -963,6 +1004,7 @@ class PaperEngine:
             self.bot_watch.poll(lambda sym: getattr(self.c.symbol_info(sym), "point", None))
         for sym in sorted({s.symbol for s in self.slots.values()}):
             self.process_ticks(sym)
+        self._weekend_close()
         for (sym, tf) in sorted(self.by_bar):
             last2 = self.mt5.copy_rates_from_pos(sym, getattr(self.mt5, f"TIMEFRAME_{tf}"), 0, 2)
             if last2 is None or len(last2) < 2:
@@ -1188,6 +1230,18 @@ def ext_needed(obj) -> set:
         for v in obj:
             out |= ext_needed(v)
     return out
+
+
+def near_weekend(when: str, close: bool = False) -> bool:
+    """Heure du serveur MT5 (FTMO : GMT+2/+3). Vendredi à partir de 21 h : plus de nouvelle entrée ; à partir de
+    22 h : fermeture des positions (les indices ferment vers 23 h). Samedi et dimanche : marché fermé."""
+    try:
+        t = datetime.strptime(when[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return False
+    if t.weekday() >= 5:
+        return True
+    return t.weekday() == 4 and t.hour >= (22 if close else 21)
 
 
 def in_session(when: str, session) -> bool:

@@ -33,7 +33,9 @@ input double InpPerteJourMax    = 2.8;    // perte du jour qui déclenche la fer
 input double InpPerteTotaleMax  = 9.5;    // perte totale qui arrête le bot (%)
 input double InpObjectif        = 10.0;   // objectif du challenge en % (0 = pas d'arrêt à l'objectif)
 input double InpMeilleurJour    = 50.0;   // règle du meilleur jour : une journée <= X % du profit total (0 = aucune)
-input bool   InpComposer        = false;  // true = risque calculé sur le SOLDE (compte perso, intérêts composés)
+input bool   InpPerteSuiveuse   = true;   // FTMO 1 étape : perte max SUIVEUSE (plus haut solde de fin de journée - X %)
+input bool   InpComposer        = false;
+input int    InpFermerVendredi  = 0;      // compte Standard financé : heure serveur du vendredi où tout est fermé (0 = non)  // true = risque calculé sur le SOLDE (compte perso, intérêts composés)
 input int    InpDelaiMaxSec     = 90;     // un signal d'ouverture plus vieux que ça est ignoré
 input long   InpMagic           = 260926; // numéro magique des ordres du bot
 input bool   InpAutoriserReel   = false;  // autoriser un compte RÉEL (laisser false pour un challenge / démo)
@@ -45,6 +47,7 @@ string   g_gv_seq, g_gv_stop;
 datetime g_day = 0;
 double   g_day_start = 0;
 string   g_gv_best;
+string   g_gv_eod;   // plus haut solde de fin de journée (perte max suiveuse), gardé si MT5 redémarre
 
 double BestDay() { return GlobalVariableCheck(g_gv_best) ? GlobalVariableGet(g_gv_best) : 0.0; }
 bool     g_block_day = false;
@@ -67,6 +70,7 @@ int OnInit()
    g_gv_seq  = "LaboBot_seq_" + IntegerToString(InpMagic);
    g_gv_stop = "LaboBot_arret_" + IntegerToString(InpMagic);
    g_gv_best = "LaboBot_meilleurjour_" + IntegerToString(InpMagic);
+   g_gv_eod = "LaboBot_plushautsolde_" + IntegerToString(InpMagic);
    // au premier lancement, on ne rejoue pas les anciens signaux du fichier
    if(GlobalVariableCheck(g_gv_seq))
       g_last_seq = (long)GlobalVariableGet(g_gv_seq);
@@ -130,11 +134,25 @@ void NewDay()
          double prev = AccountInfoDouble(ACCOUNT_BALANCE) - g_day_start;
          if(prev > BestDay())
             GlobalVariableSet(g_gv_best, prev);
+         if(AccountInfoDouble(ACCOUNT_BALANCE) > EodHigh())  // solde de clôture de la veille
+            GlobalVariableSet(g_gv_eod, AccountInfoDouble(ACCOUNT_BALANCE));
         }
       g_day = d;
       g_day_start = AccountInfoDouble(ACCOUNT_BALANCE);  // comme FTMO : solde au début de la journée
       g_block_day = false;
      }
+  }
+
+double EodHigh() { return GlobalVariableCheck(g_gv_eod) ? GlobalVariableGet(g_gv_eod) : InpCapital; }
+
+// plancher de la perte max totale : fixe (capital - X %) ou suiveux (plus haut solde de fin de journée - X % du
+// capital, jamais au-dessus du capital de départ), comme FTMO 1 étape
+double Floor()
+  {
+   double cut = InpCapital * InpPerteTotaleMax / 100.0;
+   if(!InpPerteSuiveuse)
+      return InpCapital - cut;
+   return MathMin(MathMax(InpCapital, EodHigh()) - cut, InpCapital);
   }
 
 bool Stopped() { return GlobalVariableCheck(g_gv_stop) && GlobalVariableGet(g_gv_stop) > 0; }
@@ -145,12 +163,19 @@ void Guards()
    double eq = AccountInfoDouble(ACCOUNT_EQUITY);
    double day_loss = (g_day_start - eq) / InpCapital * 100.0;
    double total_loss = (InpCapital - eq) / InpCapital * 100.0;
-   if(!Stopped() && total_loss >= InpPerteTotaleMax)
+   if(!Stopped() && eq <= Floor())
      {
       CloseAll("perte totale " + DoubleToString(total_loss, 2) + " %");
       GlobalVariableSet(g_gv_stop, 1);
       Alert("LaboBot ARRÊTÉ : perte totale ", DoubleToString(total_loss, 2), " %. Supprimez la variable globale ",
             g_gv_stop, " (F3) pour le relancer.");
+     }
+   MqlDateTime now;
+   TimeToStruct(TimeCurrent(), now);
+   if(InpFermerVendredi > 0 && now.day_of_week == 5 && now.hour >= InpFermerVendredi && !g_block_day)
+     {  // pas de position pendant le week-end (sécurité, même si la plateforme Python est arrêtée)
+      CloseAll("fermeture avant le week-end");
+      g_block_day = true;
      }
    if(!g_block_day && day_loss >= InpPerteJourMax)
      {

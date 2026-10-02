@@ -33,6 +33,7 @@ PROFILES = {
               "but": "meilleur rendement à long terme (intérêts composés) sans grosse baisse du compte"},
     "finance": {"nom": "Compte financé", "capital": 100_000.0, "risk_pct": 1.0, "day_budget": 2.5,
                 "total_budget": 10.0, "dd_limit": None, "day_limit": 3.0, "max_fail": 5.0, "compound": False,
+                "fermer_week_end": True,  # compte FTMO Standard financé : pas de position pendant le week-end
                 "but": "meilleur rendement par mois sans jamais perdre 3 % dans une journée ni 10 % au total"},
 }
 DAYS_YEAR, DAYS_MONTH = 252, 21
@@ -48,9 +49,10 @@ def profile(name: str, **over) -> dict:
 def ftmo_like(p: dict) -> FtmoRules:
     """Règles de suivi pour le paper trading et le bot : aucun objectif (on ne s'arrête jamais de gagner)."""
     if p["compound"]:  # compte perso : seulement l'arrêt à -total_budget %
-        return FtmoRules(target1=0.0, max_daily=100.0, max_total=float(p["total_budget"]), min_days=0, best_day_pct=0)
+        return FtmoRules(target1=0.0, max_daily=100.0, max_total=float(p["total_budget"]), min_days=0, best_day_pct=0,
+                         trailing=False)
     return FtmoRules(target1=0.0, max_daily=float(p["day_limit"]), max_total=float(p["total_budget"]), min_days=0,
-                     best_day_pct=0)
+                     best_day_pct=0, trailing=False)
 
 
 def simulate_long(daily: pd.DataFrame, p: dict, n: int = 2000, days: int = DAYS_YEAR, seed: int = 0,
@@ -119,6 +121,14 @@ class AccountManager(Director):
     def say(self, msg: str):
         super().say(f"[{self.prof['nom']}] {msg}")
 
+    def _pool(self, allr):
+        trades, windows, info = super()._pool(allr)
+        if self.prof.get("fermer_week_end") and trades:  # Standard financé : tout est fermé le vendredi soir
+            closed = self._trades_weekend_closed(list(info), info, windows)
+            trades = {**trades, **{k: v for k, v in closed.items() if len(v)}}
+            self.say(f"compte Standard : {len(closed)} stratégies rejouées SANS garder de position le week-end")
+        return trades, windows, info
+
     def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500, max_corr=None, pilot=None,
               day_lock=None):
         got = self._daily(keys, weights, day_stop, max_open, trades, windows, max_corr, day_lock)
@@ -168,7 +178,7 @@ class AccountManager(Director):
             return {}
         p = self.prof
         comb.update(nom=f"{p['nom']} : stratégie combinée", profil=p["cle"], capital=p["capital"],
-                    composer=bool(p["compound"]), but=p["but"],
+                    composer=bool(p["compound"]), but=p["but"], fermer_week_end=bool(p.get("fermer_week_end")),
                     ftmo_regles=f"{p['nom']} : {p['but']}", horaire={"nom": "24h/24", "debut": None, "fin": None,
                                                                    "decalage_serveur": self.cfg.server_offset})
         if getattr(self, "trial_mode", False):

@@ -546,6 +546,29 @@ Attention :
   alors sauté (visible dans le journal).
 - Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
 
+## Règles FTMO 2026 prises en compte : perte suiveuse, week-end, choix du compte
+
+À vérifier sur ftmo.com, les règles changent ; voici celles intégrées.
+
+- **FTMO 1 étape** : +10 %, perte max 3 %/jour, meilleur jour ≤ 50 % du profit, part des profits 90 %. La **perte max
+  de 10 % est SUIVEUSE** : le plancher = plus haut solde de fin de journée − 10 % du capital, et il ne dépasse
+  jamais le capital de départ. Exemple : à 104 000 $ en fin de journée, le plancher monte à 94 000 $. Le simulateur,
+  le paper trading et le bot (`InpPerteSuiveuse`) l'appliquent. Option `--ftmo-perte-suiveuse 0` pour la règle fixe.
+- **FTMO 2 étapes** : +10 % puis +5 %, 5 %/jour, 10 % au total fixe, 4 jours minimum par phase, part 80 %.
+- **Week-end** : pendant le challenge, garder une position la nuit ou le week-end est permis (Standard comme Swing).
+  Une fois financé, le compte **Standard** l'interdit le week-end (et autour des nouvelles) ; le **Swing** le permet,
+  mais avec un levier de 1:30 au lieu de 1:100.
+- **Frais de swap** : chaque nuit en position coûte (ou rapporte) le swap du courtier ; le week-end compte comme 3 nuits.
+  Ils sont maintenant bien comptés dans tous les tests (un bug les mettait à zéro avec la version récente de
+  pandas). La méthode de calcul passe en version 4 : l'option D refait les recherches.
+- Chaque stratégie affiche le **% de ses trades gardés pendant un week-end** et sa **durée moyenne**.
+- **Conseiller du compte** (section « Quel compte FTMO choisir ? » de directeur.html, options D et W) : avec la
+  stratégie combinée, il donne les jours attendus pour être financé en 1 étape et en 2 étapes. Il montre aussi
+  l'effet d'une fermeture obligatoire le vendredi soir, et dit si un compte Swing vaut le coup.
+- **Compte financé** (options K et V) : il est construit et tradé SANS position pendant le week-end. Le paper trading
+  arrête les entrées le vendredi dès 21 h et ferme tout dès 22 h (heure du serveur MT5) ; le bot aussi
+  (`InpFermerVendredi = 22`), même si la plateforme Python est arrêtée.
+
 ## Le Conseil et le Chef des combinaisons (nouveaux employés)
 
 - **Le Conseil** (dans chaque recherche, et sur les cases déjà cherchées sans tout refaire) : il prend les

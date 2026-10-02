@@ -35,7 +35,7 @@ from .backtest import RR_LEVELS, RiskConfig, run_backtest
 from .compare import build_comparison
 from .data import DEFAULT_YEARS
 from .evaluator import candidate_key, compute_signal, describe
-from .ftmo import (FtmoRules, apply_risk_rules, count_challenges, daily_table, lock_text, pilot_text, simulate,
+from .ftmo import (FtmoRules, holding_stats, apply_risk_rules, count_challenges, daily_table, lock_text, pilot_text, simulate,
                    to_dt)
 from .lab import LAB_VERSION, LabConfig, run_lab
 from .strategies import REGISTRY, apply_filter
@@ -458,6 +458,7 @@ class Director:
         res["fenetre"] = (str(lo.date()), str(hi.date()))
         res["trades"] = int(len(merged))
         res["trades_mois"] = _per_month(len(merged), lo, hi)
+        res.update(holding_stats(merged))
         res["pire_jour"] = float(daily["worst"].min()) if len(daily) else 0.0
         res["rendement_pct"] = float(daily["pnl"].sum()) if len(daily) else 0.0
         res["jours_attendus"] = expected_days(res)
@@ -841,6 +842,104 @@ class Director:
         (self.cfg.out / "strategie_combinee.json").write_text(
             json.dumps(self.combined, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
+    def _trades_weekend_closed(self, keys, info, windows, horaire=None) -> dict:
+        """Trades des composants rejoués SANS position pendant le week-end (fermeture le vendredi soir)."""
+        out = {}
+        for k in keys:
+            x = info[k]
+            try:
+                df, cost = self.data(x["symbole"], x["timeframe"])
+            except Exception:
+                continue
+            lo, hi = windows[k]
+            c = x["candidate"]
+            sig = apply_filter(df, compute_signal(df, c["signal"]), c["filter"])
+            mask = (df.index >= lo) & (df.index <= hi)
+            _, tr = run_backtest(df[mask], sig[mask], RiskConfig(**c["risk"]), cost=cost,
+                                 risk_pct=self.cfg.lab_risk_pct, return_trades=True, weekend_exit=True)
+            tr = tr[["entry_time", "exit_time", "r", "side"]].reset_index(drop=True) if len(tr) else tr
+            if horaire and horaire.get("debut") is not None and len(tr):
+                tr = tr[self.in_session(tr["entry_time"], horaire["debut"], horaire["fin"])].reset_index(drop=True)
+            out[k] = tr
+        return out
+
+    def account_advice(self, allr: pd.DataFrame) -> dict:
+        """LE CONSEILLER DU COMPTE : FTMO 1 étape ou 2 étapes ? Standard ou Swing ? Avec la stratégie combinée
+        finale : jours attendus pour être financé, réussite, échecs, et l'effet d'une fermeture obligatoire avant
+        le week-end (compte FTMO Standard une fois financé)."""
+        c = self.combined
+        if not c or not len(allr):
+            return {}
+        pool0 = getattr(self, "_pool0", None) or self._pool(allr)
+        h = c.get("horaire") or {}
+        trades, windows, info = self._session_pool(pool0, h.get("debut"), h.get("fin"))
+        w = self._keys_of(c, info)
+        if not w:
+            return {}
+        keys, rg = list(w), c.get("regles", {})
+        cap = self.cfg.day_budget
+        self.cfg.day_budget = float(rg.get("day_budget") or cap)
+        one = FtmoRules(target1=10.0, max_daily=3.0, max_total=10.0, min_days=self.cfg.ftmo.min_days,
+                        best_day_pct=50.0, trailing=True)
+        two = FtmoRules(target1=10.0, target2=5.0, max_daily=5.0, max_total=10.0, min_days=4, best_day_pct=0.0,
+                        trailing=False)
+
+        def evaluate(tr, rules, name):
+            got = self._daily(keys, w, rg.get("day_stop"), rg.get("max_open"), tr, windows, rg.get("max_correles"),
+                              rg.get("frein"))
+            if got is None:
+                return None
+            daily = got[0]
+            res = simulate(daily, rules, 3000, seed=0, pilot=rg.get("pilote"))
+            j = (res["ftmo_jours_p1"] or 0) + (res["ftmo_jours_p2"] if rules.target2 > 0 and
+                                                 res["ftmo_jours_p2"] == res["ftmo_jours_p2"] else 0)
+            p = res["ftmo_pass"]
+            hist = count_challenges(daily, rules, rg.get("pilote"))
+            return {"compte": name, "reussite": p, "echec": res["ftmo_echec_p1"],
+                    "jours_median": j, "jours_attendus": j / (p / 100) if p and p == p and p > 0 else float("nan"),
+                    "reussis_oos": hist["reussis"], "rates_oos": hist["rates"],
+                    **holding_stats(got[1])}
+        try:
+            rows = [r for r in (evaluate(trades, one, "FTMO 1 étape (Standard)"),
+                                evaluate(trades, two, "FTMO 2 étapes (Standard ou Swing)")) if r]
+            closed = self._trades_weekend_closed(keys, info, windows, h)
+            if len(closed) == len(keys):
+                r = evaluate({**trades, **closed}, one, "FTMO 1 étape, en fermant tout avant le week-end")
+                if r:
+                    rows.append(r)
+        finally:
+            self.cfg.day_budget = cap
+        if not rows:
+            return {}
+        best = min(rows[:2], key=lambda r: r["jours_attendus"] if r["jours_attendus"] == r["jours_attendus"] else 1e9)
+        wk = rows[0].get("week_end_pct") or 0.0
+        txt = [f"Le plus rapide pour être financé avec cette stratégie combinée : {best['compte']} "
+               f"(~{_fmt(best['jours_attendus'], '{:.0f}')} jours de bourse attendus, réussite {_fmt(best['reussite'])} %)."]
+        if wk >= 5:
+            txt.append(f"{wk:.0f} % de ses trades restent ouverts pendant un week-end. Pendant le challenge c'est permis "
+                       "(Standard comme Swing), mais une fois financé en Standard il faut tout fermer avant le week-end.")
+            if len(rows) > 2:
+                cl = rows[2]
+                worse = (cl["jours_attendus"] != cl["jours_attendus"]) or cl["jours_attendus"] > rows[0]["jours_attendus"] * 1.2
+                txt.append("En fermant tout le vendredi soir : " + (
+                    f"~{_fmt(cl['jours_attendus'], '{:.0f}')} jours attendus, réussite {_fmt(cl['reussite'])} %. " if
+                    cl["jours_attendus"] == cl["jours_attendus"] else "plus de résultat exploitable. ")
+                    + ("Nettement moins bon : un compte SWING (garde le week-end, levier 1:30) vaut le coup pour la phase "
+                       "financée, ou demandez au Directeur des stratégies plus courtes." if worse else
+                       "Presque pareil : un compte STANDARD suffit (le bot fermera avant le week-end une fois financé)."))
+        else:
+            txt.append(f"Seulement {wk:.0f} % des trades passent le week-end : un compte STANDARD (levier 1:100, moins "
+                       "cher) est le bon choix ; le Swing n'apporte rien ici.")
+        txt.append("Rappel : le Swing a un levier de 1:30 (contre 1:100) : avec des stops serrés sur les indices ou l'or, "
+                   "les gros lots peuvent manquer de marge.")
+        self.advice = {"lignes": rows, "texte": txt}
+        self.combined["conseil_compte"] = self.advice
+        (self.cfg.out / "strategie_combinee.json").write_text(
+            json.dumps(self.combined, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        for t in txt:
+            self.say("Conseiller du compte : " + t)
+        return self.advice
+
     def mix_only(self):
         """Option W : seulement le Chef des combinaisons, avec les résultats déjà calculés (pas de recherche)."""
         allr = self.review()
@@ -853,6 +952,7 @@ class Director:
             self.say("Pas encore de stratégie combinée : lancez d'abord le Directeur (option D).")
         else:
             self.combine_combinations(allr)
+            self.account_advice(allr)
         if len(allr):
             self.build_cards()
         write_report(self)
@@ -986,6 +1086,8 @@ class Director:
                     "Walk-forward (périodes gagnantes)": _txt(r.get("walk_forward")),
                     "Trades hors-échantillon": None if pd.isna(r.get("trades_oos")) else int(r.get("trades_oos")),
                     "Trades par mois (environ)": r.get("trades_mois"),
+                    "Trades gardés pendant un week-end (%)": r.get("week_end_pct"),
+                    "Durée moyenne d'un trade (heures)": r.get("duree_moy_h"),
                     "Taux de réussite OOS (%)": r.get("wr_oos"),
                     "R moyen OOS": r.get("avgR_oos"), "Profit factor OOS": r.get("pf_oos"),
                     "Gain par mois (%)": r.get("gain_mois_pct"), "Drawdown max OOS (%)": r.get("dd_oos_pct"),
@@ -1088,6 +1190,7 @@ class Director:
         self.scenario_rows = self.combined.get("scenarios", []) or []
         self.combo_rows = self.combined.get("melanges", []) or []
         self.combo_note = self.combined.get("melanges_note")
+        self.advice = self.combined.get("conseil_compte") or {}
         self.accounts = {n: _load_json(self.cfg.out / f"strategie_combinee_{n}.json")
                          for n in ("perso", "finance") if (self.cfg.out / f"strategie_combinee_{n}.json").exists()}
         if len(allr):
@@ -1106,6 +1209,7 @@ class Director:
             self.scenarios(allr)
             if self.combined:
                 self.combine_combinations(allr)
+                self.account_advice(allr)
             if self.cfg.comptes:
                 from .comptes import run_accounts
                 self.accounts = run_accounts(self, allr, overrides=getattr(self, "account_overrides", None))
@@ -1217,6 +1321,33 @@ def _combos_html(rows, note=None, done=False) -> str:
             f"<th>Meilleur que la combinée seule ?</th></tr></thead><tbody>{body}</tbody></table></div>")
 
 
+def _advice_html(a) -> str:
+    from html import escape as esc
+    if not a:
+        return "<p class='mut'>Pas encore calculé : menu W (rapide) ou D.</p>"
+    body = "".join(
+        f"<tr><td><b>{esc(r['compte'])}</b></td><td class='pos'><b>{_fmt(r.get('jours_attendus'), '{:.0f}')}</b></td>"
+        f"<td>{_fmt(r.get('reussite'))} %</td><td>{_fmt(r.get('echec'))} %</td>"
+        f"<td>{r.get('reussis_oos', '—')} / {r.get('rates_oos', '—')}</td>"
+        f"<td>{_fmt(r.get('week_end_pct'), '{:.0f}')} %</td></tr>" for r in a.get("lignes", []))
+    return ("<div class='scroll'><table><thead><tr><th>Compte</th><th>Financé en (jours de bourse attendus)</th>"
+            "<th>Réussite</th><th>Échec</th><th>Challenges réussis / ratés (période de test)</th>"
+            f"<th>Trades gardés le week-end</th></tr></thead><tbody>{body}</tbody></table></div>"
+            + "".join(f"<p>{esc(t)}</p>" for t in a.get("texte", []))
+            + "<p class='mut'>Règles utilisées — 1 étape : +10 %, perte max 3 %/jour, 10 % au total SUIVEUSE (fin de journée), "
+              "meilleur jour ≤ 50 % du profit, part des profits 90 %. 2 étapes : +10 % puis +5 %, 5 %/jour, 10 % au total fixe, "
+              "4 jours minimum par phase, part des profits 80 %. Pendant le challenge, aucun compte n'interdit de garder une "
+              "position la nuit ou le week-end ; une fois financé, le Standard l'interdit le week-end (et autour des "
+              "nouvelles), pas le Swing. Vérifiez les règles du moment sur ftmo.com.</p>")
+
+
+def _wk_text(r) -> str:
+    v, h = r.get("week_end_pct"), r.get("duree_moy_h")
+    if v is None or v != v:
+        return "—"
+    return f"{v:.0f} % des trades (durée moyenne {h:.0f} h)" if h == h else f"{v:.0f} % des trades"
+
+
 def _tpm_text(res: dict) -> str:
     v = res.get("trades_mois")
     if v is None:
@@ -1280,6 +1411,7 @@ def write_report(d: Director):
             ("Buy & hold sur la même période (moyenne des marchés utilisés)", _bh_text(d, c)),
             ("Composants", str(len(c["composants"]))),
             ("TRADES PAR MOIS (environ, tous composants ensemble)", _tpm_text(res)),
+            ("Trades gardés pendant un week-end", _wk_text(res)),
             ("Pire journée (positions ouvertes au stop)", f"{res.get('pire_jour', 0):.2f} %"),
             ("Perte possible max par jour", f"{rules.get('day_budget', d.cfg.day_budget):g} %"),
             ("Arrêt journalier", "aucun" if rules.get("day_stop") is None else f"après -{rules['day_stop']:g} %"),
@@ -1355,11 +1487,13 @@ def write_report(d: Director):
                           f"<td>{_fmt(r['gain_mois_pct'], '{:+.2f}')} %</td>"
                           f"<td>{_fmt(r['avgR_oos'], '{:+.2f}')}</td><td>{_fmt(r['wr_oos'], '{:.0f}')} %</td>"
                           f"<td>{_fmt(r['trades_mois'])}</td><td>{_fmt(r['dd_oos_pct'])} %</td>"
+                          f"<td>{_fmt(r.get('week_end_pct'), '{:.0f}')} %</td><td>{_fmt(r.get('duree_moy_h'), '{:.0f}')} h</td>"
                           f"<td>{bot1(r['symbole'], r['timeframe'], r['candidate'])}</td></tr>")
     best_tbl = ("<div class='scroll'><table><thead><tr><th>#</th><th>Stratégie (lien vers la fiche)</th><th>Type</th>"
                 "<th>Marché</th><th>TF</th><th>Réglage</th><th>Réussite FTMO seule</th><th>Jours pour l'objectif</th>"
                 "<th>Challenges réussis / ratés (tout l'historique)</th><th>Challenges réussis / ratés (hors-échantillon)</th>"
-                "<th>Gain / mois</th><th>R moyen</th><th>Réussite</th><th>Trades / mois</th><th>DD max</th><th>Bot</th></tr></thead>"
+                "<th>Gain / mois</th><th>R moyen</th><th>Réussite</th><th>Trades / mois</th><th>DD max</th>"
+                "<th>Trades gardés le week-end</th><th>Durée moyenne</th><th>Bot</th></tr></thead>"
                 f"<tbody>{best_rows}</tbody></table></div>") if best_rows else \
         "<p class='mut'>Aucune stratégie validée pour l'instant.</p>"
     from .strategies import REGISTRY as _REG
@@ -1435,6 +1569,8 @@ Chef FTMO, combinaison du direct, toutes ensemble), puis retire ce qui ne sert �
 n'est gardé que s'il fait réussir le challenge plus vite, sans plus d'échecs.
 {esc(('Résultat : la stratégie combinée ci-dessus a été AMÉLIORÉE avec ' + c['amelioree_avec'] + '.') if c and c.get('amelioree_avec') else '')}</p>
 {_combos_html(getattr(d, 'combo_rows', []), (c or {}).get('melanges_note'), 'melanges' in (c or {}))}
+<h2 id="compte">Quel compte FTMO choisir ? 1 étape ou 2 étapes, Standard ou Swing</h2>
+{_advice_html(getattr(d, 'advice', None) or (c or {}).get('conseil_compte'))}
 <h2>Horaires : 24h/24 ou seulement le jour ?</h2>
 <p class="mut">Même travail refait avec des entrées permises seulement dans l'horaire (heure locale, serveur MT5 moins
 {d.cfg.server_offset:g} h). Les positions ouvertes gardent leur SL et TP chez le courtier après la fin de l'horaire.

@@ -16,6 +16,26 @@ from .evaluator import candidate_key
 from .ftmo import FtmoRules, build_portfolio, daily_table, simulate
 
 
+def _add_holding(df: pd.DataFrame, trades_path: Path):
+    """Colonnes week_end_pct (trades gardés pendant un week-end) et duree_moy_h, depuis les trades hors-échantillon."""
+    from .ftmo import holding_stats
+    df["week_end_pct"], df["duree_moy_h"] = float("nan"), float("nan")
+    if not trades_path.exists() or "candidate" not in df.columns:
+        return
+    try:
+        t = pd.read_csv(trades_path, usecols=["entry_time", "exit_time", "key"])
+    except (ValueError, OSError):
+        return
+    stats = {k: holding_stats(g) for k, g in t.groupby("key")}
+    for idx, c in df["candidate"].items():
+        try:
+            st = stats.get(candidate_key(json.loads(c)))
+        except (TypeError, ValueError):
+            st = None
+        if st:
+            df.at[idx, "week_end_pct"], df.at[idx, "duree_moy_h"] = st["week_end_pct"], st["duree_moy_h"]
+
+
 def collect(results_dir: Path) -> pd.DataFrame:
     frames = []
     for path in sorted(Path(results_dir).glob("*_*/classement.csv")):
@@ -30,6 +50,7 @@ def collect(results_dir: Path) -> pd.DataFrame:
         df = mark_trials(df)  # recherches faites avant l'ajout des stratégies « à l'essai »
         df.insert(0, "timeframe", tf)
         df.insert(0, "symbole", sym)
+        _add_holding(df, path.parent / "trades_oos.csv")
         frames.append(df)
     if not frames:
         return pd.DataFrame()

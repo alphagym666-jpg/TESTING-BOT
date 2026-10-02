@@ -59,6 +59,9 @@ def test_director_builds_combined_strategy_within_daily_loss_cap(tmp_path):
     d2.mix_only()
     mixed = json.loads((tmp_path / "strategie_combinee.json").read_text(encoding="utf-8"))
     assert "melanges" in mixed
+    adv = mixed.get("conseil_compte")
+    assert adv and {r["compte"] for r in adv["lignes"]} >= {"FTMO 1 étape (Standard)", "FTMO 2 étapes (Standard ou Swing)"}
+    assert 'id="compte"' in (tmp_path / "directeur.html").read_text(encoding="utf-8")
     page = (tmp_path / "directeur.html").read_text(encoding="utf-8")
     assert 'id="melanges"' in page and ("Meilleur que la combinée seule" in page or "Mélange impossible" in page)
     if mixed["melanges"]:

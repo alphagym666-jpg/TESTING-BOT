@@ -191,6 +191,7 @@ def make_bot(engine, url: str) -> dict:
                               ["composants"][0] for x in members]
         comb["regles"].update({"day_stop": g.day_stop, "max_open": g.max_open, "max_correles": g.max_corr,
                                "pilote": g.pilot, "frein": g.day_lock})
+        comb["fermer_week_end"] = g.weekend_close
         if g.session:
             comb["horaire"] = {"nom": f"{g.session[0]:g}h-{g.session[1]:g}h", "debut": g.session[0],
                                "fin": g.session[1], "decalage_serveur": g.session[2]}

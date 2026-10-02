@@ -35,6 +35,15 @@ class FtmoRules:
     horizon_days: int = 250     # jours de bourse simulés au max (~1 an ; FTMO n'impose plus de limite de temps)
     best_day_pct: float = 50.0  # règle du meilleur jour : aucune journée ne peut faire plus de X % du profit total
                                 # (0 = pas de règle). Ex. une journée à +6 % -> il faut au moins +12 % pour réussir
+    trailing: bool = True       # FTMO 1 étape : la perte max SUIT le plus haut solde de fin de journée (-10 % de
+                                # ce plus haut, jamais au-dessus du capital de départ). 2 étapes : fixe (False)
+
+    def floor(self, hwm):
+        """Plancher de la perte max totale (en % du capital, 0 = capital de départ) selon le plus haut solde
+        de fin de journée déjà atteint (hwm, en %)."""
+        if not self.trailing:
+            return -self.max_total
+        return np.minimum(np.maximum(hwm, 0.0) - self.max_total, 0.0)
 
     def target_needed(self, target: float, best_day: float) -> float:
         """Objectif réellement à atteindre compte tenu de la meilleure journée (règle des 50 %)."""
@@ -45,7 +54,8 @@ class FtmoRules:
     def label(self) -> str:
         p2 = f", phase 2 +{self.target2:g} %" if self.target2 > 0 else ""
         bd = f", meilleur jour <= {self.best_day_pct:g} % du profit" if self.best_day_pct else ""
-        return (f"objectif +{self.target1:g} %{p2}, perte max {self.max_daily:g} %/jour et {self.max_total:g} % au total, "
+        tr = " (suiveuse, fin de journée)" if self.trailing else ""
+        return (f"objectif +{self.target1:g} %{p2}, perte max {self.max_daily:g} %/jour et {self.max_total:g} % au total{tr}, "
                 f"min {self.min_days} jours de trading{bd}")
 
 
@@ -81,6 +91,22 @@ def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> 
     out = g.reindex(days, fill_value=0.0)
     out["traded"] = [d in entry_days for d in out.index]
     return out
+
+
+def holding_stats(trades: pd.DataFrame) -> dict:
+    """Combien de trades restent ouverts pendant un week-end, et combien de temps un trade dure en moyenne.
+    Important pour un compte FTMO Standard (pas de position pendant le week-end une fois financé) : frais de swap
+    et trous de prix du lundi."""
+    if trades is None or not len(trades):
+        return {"week_end_pct": float("nan"), "duree_moy_h": float("nan")}
+    e, x = pd.DatetimeIndex(to_dt(trades["entry_time"])), pd.DatetimeIndex(to_dt(trades["exit_time"]))
+    ed = e.normalize().to_numpy().astype("datetime64[D]")
+    xd = x.normalize().to_numpy().astype("datetime64[D]")
+    cal = (xd - ed).astype(int)
+    biz = np.busday_count(ed, xd)
+    weekend = cal > biz  # un samedi ou un dimanche entre l'ouverture et la fermeture
+    return {"week_end_pct": round(float(weekend.mean() * 100), 1),
+            "duree_moy_h": round(float((x - e).total_seconds().to_numpy().mean() / 3600), 1)}
 
 
 def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_open: int | None = None,
@@ -203,7 +229,8 @@ def _phase(pnl, worst, traded, target, rules: FtmoRules, n: int, rng, block: int
             prev = P[:, d]
     cum_after = np.cumsum(P, axis=1)
     cum_before = cum_after - P
-    fail = (W <= -rules.max_daily) | (cum_before + W <= -rules.max_total)
+    hwm = np.maximum.accumulate(np.maximum(cum_before, 0.0), axis=1)  # plus haut solde de fin de journée
+    fail = (W <= -rules.max_daily) | (cum_before + W <= rules.floor(hwm))
     tdays = np.cumsum(T, axis=1)
     ok = (cum_after >= target) & (tdays >= rules.min_days)
     if rules.best_day_pct and rules.best_day_pct > 0:  # meilleure journée <= X % du profit total
@@ -258,11 +285,12 @@ def count_challenges(daily: pd.DataFrame, rules: FtmoRules = FtmoRules(), pilot:
     while i < n:
         start, result = i, None
         for target in phases:
-            cum, tdays, prev, best = 0.0, 0, 0.0, 0.0
+            cum, tdays, prev, best, hwm = 0.0, 0, 0.0, 0.0, 0.0
             pl = {**pilot, "cible": target} if pilot else None
             while i < n:
                 k = float(pilot_factor(pl, cum, prev)) if pl else 1.0
-                fail = worst[i] * k <= -rules.max_daily or cum + worst[i] * k <= -rules.max_total
+                hwm = max(hwm, cum)
+                fail = worst[i] * k <= -rules.max_daily or cum + worst[i] * k <= float(rules.floor(hwm))
                 cum += pnl[i] * k
                 prev = pnl[i] * k
                 best = max(best, prev)

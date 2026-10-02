@@ -54,7 +54,7 @@ def combined(components: list[dict], name: str, rules: dict | None = None, **ext
             "composants": comps, "cree_le": time.strftime("%Y-%m-%d %H:%M"), **extra}
 
 
-KEEP = ("nom", "regles", "horaire", "essai", "profil", "capital", "composer", "cree_le")
+KEEP = ("nom", "regles", "horaire", "essai", "profil", "capital", "composer", "cree_le", "fermer_week_end")
 KEEP_C = ("symbole", "timeframe", "candidate", "strategie", "risque_config", "risk_pct")
 
 

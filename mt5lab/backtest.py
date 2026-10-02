@@ -71,9 +71,11 @@ def _stop_distance(df: pd.DataFrame, cfg: RiskConfig, atr_arr: np.ndarray, i: in
 
 
 def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cost_mult,
-          bar_cost, use_bar_cost, sw_long, sw_short, day_num, has_swap, news, has_news):
+          bar_cost, use_bar_cost, sw_long, sw_short, day_num, has_swap, news, has_news, wk_last, weekend_exit):
     """Boucle de simulation (compilée par numba quand il est installé : même logique, bien plus rapide).
-    sl_mode : 0 atr, 1 pct, 2 swing ; rr <= 0 : sortie sur signal opposé ; mgmt : 0 aucune, 1 break-even, 2 trailing."""
+    sl_mode : 0 atr, 1 pct, 2 swing ; rr <= 0 : sortie sur signal opposé ; mgmt : 0 aucune, 1 break-even, 2 trailing.
+    weekend_exit : position fermée à la clôture de la dernière bougie avant le week-end (wk_last), pas d'entrée
+    sur cette bougie (compte FTMO Standard : pas de position pendant le week-end)."""
     n = len(o)
     m = 0
     for k in range(n):
@@ -91,6 +93,8 @@ def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cos
         if e >= n or np.isnan(atr[i]):
             continue
         if has_news and news[e]:
+            continue
+        if weekend_exit and wk_last[e]:
             continue
         side = 1 if sig[i] > 0 else -1
         entry = o[e]
@@ -138,6 +142,10 @@ def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cos
                 exit_bar = j
                 break
             if (not has_tp) and j > e and sig[j] == -side:
+                exit_px = c[j]
+                exit_bar = j
+                break
+            if weekend_exit and wk_last[j]:  # vendredi soir : on ferme avant le week-end
                 exit_px = c[j]
                 exit_bar = j
                 break
@@ -204,10 +212,15 @@ def _arrays(df: pd.DataFrame) -> dict:
     if a["has_swap"]:
         a["sw_long"] = df["swap_long"].to_numpy(dtype=float)
         a["sw_short"] = df["swap_short"].to_numpy(dtype=float)
-        a["day_num"] = (df.index.normalize().asi8 // 86_400_000_000_000).astype(np.int64)
+        a["day_num"] = (df.index.normalize().values.astype("datetime64[D]").astype(np.int64))
     else:
         a["sw_long"] = a["sw_short"] = np.zeros(1)
         a["day_num"] = np.zeros(1, dtype=np.int64)
+    if isinstance(df.index, pd.DatetimeIndex) and n > 1:  # dernière bougie avant un trou de plus de 36 h
+        ts = df.index.values.astype("datetime64[s]").astype(np.int64)  # en secondes, quelle que soit l'unité
+        a["wk_last"] = np.concatenate([np.diff(ts) > 36 * 3600, [False]])
+    else:
+        a["wk_last"] = np.zeros(max(n, 1), dtype=np.bool_)
     a["has_news"] = "news_block" in df.columns
     a["news"] = df["news_block"].to_numpy(dtype=bool) if a["has_news"] else np.zeros(1, dtype=bool)
     if len(_ARR_CACHE) > 64:
@@ -224,6 +237,7 @@ def run_backtest(
     risk_pct: float = 1.0,
     return_trades: bool = False,
     cost_mult: float = 1.0,
+    weekend_exit: bool = False,
 ):
     """Backtest un vecteur de signaux avec une config de risque.
 
@@ -233,6 +247,7 @@ def run_backtest(
     du vendredi, ce qui aurait pénalisé tous les trades. cost_mult = 2 pour le test « coûts doublés ».
     Colonnes « swap_long » / « swap_short » (prix par nuit) : swaps comptés pour chaque nuit passée en position.
     Colonne « news_block » : aucune entrée sur une bougie qui s'ouvre près d'une annonce économique importante.
+    weekend_exit = True : jamais de position pendant le week-end (fermeture le vendredi soir, compte Standard).
     """
     a = _arrays(df)
     sig = np.asarray(signals.to_numpy(), dtype=np.float64)
@@ -245,7 +260,7 @@ def run_backtest(
     t = _core_fast(a["o"], a["h"], a["l"], a["c"], sig, a["atr"], sl_mode, float(cfg.sl_value),
                    float(cfg.rr) if cfg.rr else 0.0, mgmt, int(cfg.max_hold), float(cost), float(cost_mult),
                    a["bar_cost"], a["use_bar_cost"], a["sw_long"], a["sw_short"], a["day_num"], a["has_swap"],
-                   a["news"], a["has_news"])
+                   a["news"], a["has_news"], a["wk_last"], bool(weekend_exit))
     res = summarize(t[:, 7], (t[:, 2] - t[:, 1] + 1), risk_pct)
     if return_trades:
         tdf = pd.DataFrame(t, columns=["signal_bar", "entry_bar", "exit_bar", "side", "entry", "exit", "risk", "r"])

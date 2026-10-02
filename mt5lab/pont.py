@@ -118,7 +118,9 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
               "InpPerteJourMax": f"{max(0.5, daily - 0.2):g}", "InpPerteTotaleMax": f"{max(1.0, total - 0.5):g}",
               "InpObjectif": f"{target:g}", "InpMagic": str(int(magic)), "InpFichier": f'"{signal_file}"',
               "InpMeilleurJour": f"{getattr(ftmo, 'best_day_pct', 50.0):g}",
-              "InpComposer": "true" if comb.get("composer") else "false"}
+              "InpComposer": "true" if comb.get("composer") else "false",
+              "InpPerteSuiveuse": "true" if getattr(ftmo, "trailing", False) else "false",
+              "InpFermerVendredi": "22" if comb.get("fermer_week_end") else "0"}
     import re
     for name, v in values.items():
         src = re.sub(rf"(input\s+\w+\s+{name}\s*=\s*)[^;]+;", rf"\g<1>{v};", src)
@@ -173,6 +175,10 @@ Démarrer
      InpMeilleurJour   = {values['InpMeilleurJour']} % : une journée ne peut pas faire plus que ça du profit total
                          (l'objectif monte si besoin : une journée à +6 % -> il faut +12 %)
      InpComposer       = {values['InpComposer']} : true = le risque suit le solde (compte perso, intérêts composés)
+     InpFermerVendredi = {values['InpFermerVendredi']} : heure du serveur MT5 le vendredi où tout est fermé (0 = jamais ;
+                         22 pour un compte FTMO Standard financé : pas de position pendant le week-end)
+     InpPerteSuiveuse  = {values['InpPerteSuiveuse']} : true = perte max SUIVEUSE comme le FTMO 1 étape (le plancher
+                         monte avec le plus haut solde de fin de journée, jusqu'au capital de départ)
      (InpObjectif = 0 : pas d'objectif, le bot continue à trader — compte perso ou compte financé)
 3. Le coin du graphique affiche l'état du bot, la perte du jour et le dernier signal reçu.
    Onglet « Experts » (en bas) : chaque ordre passé ou refusé est expliqué.

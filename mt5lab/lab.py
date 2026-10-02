@@ -46,7 +46,8 @@ class LabConfig:
 
 # version de la méthode de calcul : le Directeur refait les recherches faites avec une version plus ancienne
 # (3 = coûts historiques bougie par bougie, spread du moment ignoré, walk-forward, challenges enchaînés)
-LAB_VERSION = 3
+# (4 = swaps de nuit et de week-end vraiment comptés, durée des positions et trades gardés le week-end)
+LAB_VERSION = 4
 # stratégies non validées mais gagnantes hors-échantillon : suivies en paper trading pour les juger en direct
 ESSAI = "À L'ESSAI"
 ESSAI_MAX = 10
