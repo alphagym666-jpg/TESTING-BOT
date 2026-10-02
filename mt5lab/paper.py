@@ -28,6 +28,7 @@ import pandas as pd
 from . import indicators as ind
 from .backtest import RR_LEVELS, RiskConfig, _stop_distance
 from .evaluator import compute_signal, describe, signal_key
+from .cot import add_cot, uses_cot
 from .ftmo import FtmoRules, lock_text
 from .strategies import REGISTRY, apply_filter, expand_grid
 
@@ -118,6 +119,8 @@ class Group:
     compound: bool = False            # compte perso : le risque suit le SOLDE (intérêts composés)
     expected_tpm: float | None = None # trades par mois attendus (période de test de la recherche)
     weekend_close: bool = False       # compte Standard financé : tout fermer le vendredi soir, pas d'entrée le week-end
+    vol_target: dict | None = None    # dimensionnement par volatilité {"cible": %/jour, "jours": 20}
+    daily_hist: list = field(default_factory=list)  # résultats des derniers jours (%), pour la volatilité
     best_day: float = 0.0             # meilleure journée (argent)
     prev_day_pnl: float = 0.0
     balance: float = 100_000.0
@@ -141,7 +144,7 @@ class Group:
 GROUP_SAVED = [f.name for f in fields(Group) if f.name not in ("name", "capital", "day_budget", "day_stop", "max_open",
                                                                 "total_budget", "max_corr", "session", "pilot",
                                                                 "day_lock", "compound", "expected_tpm",
-                                                                "weekend_close")]
+                                                                "weekend_close", "vol_target")]
 
 
 def slot_id(symbol, timeframe, candidate) -> str:
@@ -217,6 +220,7 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
                      "max_corr": rules.get("max_correles"), "session": _session_of(d),
                      "pilot": rules.get("pilote"), "day_lock": rules.get("frein"),
                      "compound": bool(d.get("composer")), "weekend_close": bool(d.get("fermer_week_end")),
+                     "vol_target": rules.get("volatilite"),
                      "expected_tpm": (d.get("resultat") or {}).get("trades_mois")
                      or (sum(float(c.get("trades_mois") or 0) for c in d.get("composants", [])) or None)}}
     print(f"[paper] stratégie combinée du Directeur : {len(slots)} composants sur un seul compte "
@@ -357,7 +361,7 @@ class PaperEngine:
             self.groups[name] = Group(name, cap, g.get("day_budget"), g.get("day_stop"), g.get("max_open"),
                                       g.get("total_budget"), g.get("max_corr"), g.get("session"), g.get("pilot"),
                                       g.get("day_lock"), bool(g.get("compound")), g.get("expected_tpm"),
-                                      bool(g.get("weekend_close")), balance=cap, peak=cap, day_start=cap)
+                                      bool(g.get("weekend_close")), g.get("vol_target"), balance=cap, peak=cap, day_start=cap)
         self.by_bar: dict[tuple, list[Slot]] = {}
         for s in self.slots.values():
             self.by_bar.setdefault((s.symbol, s.timeframe), []).append(s)
@@ -490,6 +494,9 @@ class PaperEngine:
                 pl = {**g.pilot, "cible": self.ftmo.target1}
                 pct *= float(pilot_factor(pl, (g.day_start - g.capital) / g.capital * 100,
                                           g.prev_day_pnl / g.capital * 100))
+            if g.vol_target:  # dimensionnement par volatilité : moins de risque quand les résultats s'agitent
+                from .ftmo import vol_factor
+                pct *= vol_factor(g.daily_hist[-int(g.vol_target.get("jours", 20)):], float(g.vol_target["cible"]))
             if self._locked(g):  # frein de bonne journée : risque réduit jusqu'à demain
                 pct *= float(g.day_lock.get("facteur", 0))
             return self._risk_base(g) * pct / 100
@@ -577,6 +584,8 @@ class PaperEngine:
                 acc.eod_high = max(acc.eod_high, acc.balance)  # solde de clôture de la journée
             if isinstance(acc, Group) and acc.day:
                 acc.prev_day_pnl = equity - acc.day_start
+                if abs(acc.prev_day_pnl) > 1e-9:  # journée tradée : sert au dimensionnement par volatilité
+                    acc.daily_hist = (acc.daily_hist + [acc.prev_day_pnl / acc.capital * 100])[-60:]
             acc.day, acc.day_start = when[:10], (equity if acc.day else acc.capital)
             if isinstance(acc, Group):
                 acc.day_realized = 0.0
@@ -977,6 +986,13 @@ class PaperEngine:
             if s.position is None and sig != 0 and (s.group or s.ftmo_status == "en cours"):
                 self._open(s, sig, closed, tick, atr_arr)
 
+    def _cot_table(self):
+        """Rapport COT rechargé une fois par jour (publié chaque vendredi par la CFTC)."""
+        from .cot import table
+        if getattr(self, "_cot", None) is None or time.time() - self._cot[0] > 86400:
+            self._cot = (time.time(), table(log=lambda m: print(f"[paper] {m}")))
+        return self._cot[1]
+
     def _manage_steps(self, s, p, cfg, close: float, sig: int, atr_last: float, exit_px: float, tick):
         """PALIERS : +1R -> stop au point d'entrée, +2R -> stop à +1R, +3R -> stop à +2R...
         INTELLIGENTE : paliers + fermeture avant un retournement (signal inverse de la stratégie, ou le prix rend
@@ -1056,6 +1072,8 @@ class PaperEngine:
                     except Exception as exc:
                         print(f"[paper] inter-marchés : {o} {tf} indisponible ({exc})")
                 df = add_ext(df, others)
+            if any(uses_cot(sl.candidate) for sl in self.by_bar[(sym, tf)]):  # équipe E : rapport COT
+                df = add_cot(df, sym, self._cot_table())
             self.on_bar(sym, tf, df.iloc[:-1])
         if self.groups:
             self.update_groups()

@@ -111,7 +111,8 @@ def holding_stats(trades: pd.DataFrame) -> dict:
 
 def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_open: int | None = None,
                      default_w: float = 0.5, day_budget: float | None = None, safety: float = 1.1,
-                     max_corr: int | None = None, day_lock: dict | None = None) -> pd.DataFrame:
+                     max_corr: int | None = None, day_lock: dict | None = None,
+                     vol_target: dict | None = None) -> pd.DataFrame:
     """Règles de risque du Directeur, appliquées dans l'ordre chronologique des entrées :
 
     - day_budget : un trade n'est pris que si  perte déjà réalisée aujourd'hui + risque des positions ouvertes
@@ -122,11 +123,14 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
     - max_open   : pas plus de max_open positions ouvertes en même temps
     - max_corr   : pas plus de max_corr positions ouvertes sur des marchés corrélés dans le même sens
                    (colonnes « cluster » et « expo » = sens du trade x sens du marché dans son groupe)
+    - vol_target : DIMENSIONNEMENT PAR VOLATILITÉ (comme les fonds de tendance) {"cible": 0.75, "jours": 20} : si
+                   l'écart-type des derniers résultats journaliers dépasse « cible » %, le risque de chaque nouveau
+                   trade est réduit d'autant (jamais augmenté, jamais sous 40 %)
     - day_lock   : FREIN DE BONNE JOURNÉE {"seuil": 1.5, "facteur": 0} : une fois +seuil % réalisés dans la journée,
                    plus de nouveau trade (facteur 0) ou risque multiplié par facteur jusqu'au lendemain
     """
     if trades is None or not len(trades) or (day_stop is None and max_open is None and day_budget is None
-                                              and max_corr is None and not day_lock):
+                                              and max_corr is None and not day_lock and not vol_target):
         return trades
     import heapq
     t = trades.copy()
@@ -139,6 +143,7 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
     open_heap: list[tuple] = []          # (heure de sortie, P&L en %, risque en %, groupe corrélé, exposition)
     has_corr = max_corr is not None and "cluster" in t.columns and "expo" in t.columns
     realized: dict = {}                  # jour -> P&L réalisé %
+    vol_cache: dict = {}                 # jour -> facteur de volatilité
     for i, row in enumerate(t.itertuples()):
         while open_heap and open_heap[0][0] <= row.e_dt:
             x, p, _w, _c, _e = heapq.heappop(open_heap)
@@ -147,6 +152,12 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
         if day_stop is not None and today <= -day_stop:
             continue
         w = row.w
+        if vol_target:
+            d0 = row.e_dt.normalize()
+            if d0 not in vol_cache:
+                past = [v for d, v in sorted(realized.items()) if d < d0][-int(vol_target.get("jours", 20)):]
+                vol_cache[d0] = vol_factor(past, float(vol_target["cible"]))
+            w = w * vol_cache[d0]
         if day_lock and today >= float(day_lock["seuil"]):
             if float(day_lock.get("facteur", 0)) <= 0:
                 continue
@@ -166,6 +177,22 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
                                    row.cluster if has_corr else "", row.expo if has_corr else 0))
     t["w"] = new_w
     return t.loc[keep].drop(columns=["e_dt", "x_dt"]).reset_index(drop=True)
+
+
+def vol_factor(daily_pnls, target: float, floor: float = 0.4) -> float:
+    """Ciblage de volatilité : facteur <= 1 = cible / écart-type des derniers résultats journaliers (en %)."""
+    v = np.asarray([x for x in daily_pnls if x == x], dtype=float)
+    if len(v) < 5:
+        return 1.0
+    sd = float(v.std(ddof=1))
+    return 1.0 if sd <= 0 else float(min(1.0, max(floor, target / sd)))
+
+
+def vol_text(v: dict | None) -> str:
+    if not v:
+        return "aucun"
+    return (f"risque réduit quand les résultats des {int(v.get('jours', 20))} derniers jours bougent de plus de "
+            f"{float(v['cible']):g} % par jour (écart-type)")
 
 
 def pilot_factor(pilot: dict | None, cum_before, prev_day):

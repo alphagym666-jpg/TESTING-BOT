@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .inventions import BETWEEN, FEATURES, feat
+from .inventions import BETWEEN, EXT_FEATURES, FEATURES, ext_symbols, feat
 
 HORIZONS = (3, 8, 20)
 QUANTILES = (0.05, 0.1, 0.2, 0.3, 0.7, 0.8, 0.9, 0.95)
@@ -48,6 +48,14 @@ TEAM_C = [
     (13, "Niveaux ronds et ordres", "Niveaux psychologiques, plus hauts/bas de la veille", ["round_dist", "prev_day_pos"]),
     (14, "Exécution VWAP/TWAP", "Écart au VWAP du jour, pics de volume", ["vwap_dist", "vol_spike"]),
     (15, "Flux calendaires", "Fin de mois, jour de la semaine, range asiatique", ["month_end", "dow", "asia_pos"]),
+]
+
+# ÉQUIPE E — le DESK QUANTITATIF : ce que les fonds quantitatifs regardent vraiment
+TEAM_E = [
+    (21, "Profil de volume", "POC et zone de valeur des jours précédents (Market Profile des desks)", ["vp_poc", "vp_va"]),
+    (22, "Arbitragiste statistique", "Écart anormal avec un marché lié (NASDAQ/US30, EURUSD/GBPUSD...)",
+     ["pair_z", "ext_div"]),
+    (23, "Positionnement des fonds", "Rapport COT de la CFTC : positions des gros spéculateurs", ["cot"]),
 ]
 
 TEAM_D = [
@@ -82,7 +90,7 @@ def _forward(df: pd.DataFrame, h: int) -> np.ndarray:
     return _FW[key]
 
 
-def _conditions(df, f, n):
+def _conditions(df, f, n, s=None):
     """Conditions candidates pour un indicateur : seuils (quantiles) ou fenêtres (heures, jours...)."""
     if f in BETWEEN:
         lo, hi, widths, _ = BETWEEN[f]
@@ -91,18 +99,20 @@ def _conditions(df, f, n):
             for a in range(lo, hi - w + 1, max(1, w // 2 if w > 1 else 1)):
                 out.append({"f": f, "n": 0, "op": "between", "v": [a, a + w]})
         return out
-    x = feat(df, f, n).dropna()
+    x = feat(df, f, n, s).dropna()
     if FEATURES[f][1]:
         x = pd.concat([x, -x])
     if not len(x):
         return []
     qs = np.nanquantile(x, QUANTILES)
-    return [{"f": f, "n": n, "op": ">" if q > np.nanmedian(x) else "<", "v": float(f"{q:.3g}")} for q in qs]
+    extra = {"s": s} if s else {}
+    return [{"f": f, "n": n, "op": ">" if q > np.nanmedian(x) else "<", "v": float(f"{q:.3g}"), **extra}
+            for q in qs]
 
 
 def _events(df, cond, side):
     """Bougies où la condition DEVIENT vraie, côté achat (side=1) ou vente miroir (side=-1)."""
-    x = feat(df, cond["f"], cond["n"])
+    x = feat(df, cond["f"], cond["n"], cond.get("s"))
     if cond["op"] == "between":
         c = (x >= cond["v"][0]) & (x < cond["v"][1])
     else:
@@ -154,9 +164,10 @@ def scan(agent: BankAgent, df_train, df_check, min_t=3.0, min_n=30, check_t=1.5,
     for f in agent.features:
         if f not in FEATURES:
             continue
-        for n in FEATURES[f][2]:
+        markets = ext_symbols(df_train) if f in EXT_FEATURES else [None]
+        for n, s in ((n, s) for n in FEATURES[f][2] for s in markets):
             try:
-                conds = _conditions(df_train, f, n)
+                conds = _conditions(df_train, f, n, s)
             except Exception:
                 continue
             for cond in conds:
@@ -195,6 +206,6 @@ def scan(agent: BankAgent, df_train, df_check, min_t=3.0, min_n=30, check_t=1.5,
             break
     agent.found = confirmed
     log(agent.tag, f"{agent.tested} situations mesurées, {len(ranked)} failles candidates, "
-                   f"{len(confirmed)} confirmées par le Chef C"
+                   f"{len(confirmed)} confirmées par son chef"
         + (f" | meilleure : {describe_faille(confirmed[0])}" if confirmed else ""))
     return confirmed

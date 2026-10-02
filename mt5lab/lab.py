@@ -189,7 +189,7 @@ def team_of(agent_tag: str) -> str:
     if not m:
         return ""
     n = int(m.group(1))
-    return "A" if n <= 5 else "B" if n <= 10 else "C" if n <= 15 else "D"
+    return "A" if n <= 5 else "B" if n <= 10 else "C" if n <= 15 else "D" if n <= 20 else "E"
 
 
 def run_bank_teams(ev, extra, cfg: LabConfig, journal, rules):
@@ -197,7 +197,7 @@ def run_bank_teams(ev, extra, cfg: LabConfig, journal, rules):
     import random as _random
 
     from .agents import Finding, TeamLead
-    from .banques import TEAM_C, TEAM_D, BankAgent, describe_faille, scan, to_rule
+    from .banques import TEAM_C, TEAM_D, TEAM_E, BankAgent, describe_faille, scan, to_rule
     from .evaluator import score
     from .inventions import BANK_FEATURES, INVENTION_RISKS, Inventor, invent
 
@@ -212,6 +212,15 @@ def run_bank_teams(ev, extra, cfg: LabConfig, journal, rules):
     for a in agents_c:
         failles += scan(a, extra["isa"], extra["isb"], log=journal.log)
     lead_c.log(f"{len(failles)} failles confirmées au total")
+    # ÉQUIPE E, le DESK QUANTITATIF : profil de volume, arbitrage statistique, positionnement des fonds (COT).
+    # Même méthode : mesuré sur isa, revérifié sur isb ; leurs failles rejoignent celles de l'équipe C.
+    journal.log("Plateforme", "=== ÉQUIPE E (desk quantitatif) : profil de volume, arbitrage statistique, rapport COT ===")
+    agents_e = [BankAgent(*t) for t in TEAM_E]
+    n_c = len(failles)
+    for a in agents_e:
+        failles += scan(a, extra["isa"], extra["isb"], log=journal.log)
+    journal.log("Chef E (Desk quantitatif)", f"{len(failles) - n_c} failles quantitatives confirmées")
+    agents_c = agents_c + agents_e
     # chaque faille devient une stratégie jouable : le meilleur des 4 réglages de risque est présenté
     findings_c = []
     count: dict = {}

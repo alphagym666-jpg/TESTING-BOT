@@ -71,6 +71,9 @@ def _rules_text(comb: dict) -> str:
         parts.append(f"{rg['max_correles']} max sur des marchés corrélés")
     if rg.get("frein"):
         parts.append("frein de bonne journée : " + lock_text(rg["frein"]))
+    if rg.get("volatilite"):
+        from .ftmo import vol_text
+        parts.append("volatilité : " + vol_text(rg["volatilite"]))
     h = (comb.get("horaire") or {}).get("nom") or "24h/24"
     parts.append(f"entrées {h} (heure locale)")
     return " · ".join(parts)

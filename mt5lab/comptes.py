@@ -130,8 +130,8 @@ class AccountManager(Director):
         return trades, windows, info
 
     def _eval(self, keys, weights, day_stop, max_open, trades, windows, n=1500, max_corr=None, pilot=None,
-              day_lock=None):
-        got = self._daily(keys, weights, day_stop, max_open, trades, windows, max_corr, day_lock)
+              day_lock=None, vol=None):
+        got = self._daily(keys, weights, day_stop, max_open, trades, windows, max_corr, day_lock, vol)
         if got is None:
             return None
         daily, merged, lo, hi = got

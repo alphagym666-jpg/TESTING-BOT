@@ -546,6 +546,26 @@ Attention :
   alors sauté (visible dans le journal).
 - Sur un compte financé FTMO, vous touchez seulement votre part du profit (souvent 80 %).
 
+## Équipe E : le desk quantitatif, et le dimensionnement par volatilité
+
+Ce que les fonds quantitatifs regardent vraiment. On ne copie pas les banques : elles gagnent surtout grâce aux
+ordres de leurs clients, à la vitesse et au market making. On cherche les empreintes que ces gros acteurs laissent
+dans les prix. Trois nouveaux analystes, avec la même méthode que l'équipe C (mesuré sur une période, revérifié sur
+une autre, puis validation finale commune). Leurs failles servent aussi de pistes aux inventeurs de l'équipe D.
+
+- **Agent 21, profil de volume (Market Profile)** : POC (le prix le plus échangé) et zone de valeur (70 % du volume)
+  de la veille et des 5 derniers jours, que les desks défendent et vers lesquels le prix revient souvent.
+- **Agent 22, arbitragiste statistique** : un marché qui s'écarte anormalement de son marché lié (NASDAQ/US30,
+  EURUSD/GBPUSD, GER40/indices US…), au-delà de ce que leur lien habituel explique. On parie qu'il revient.
+- **Agent 23, positionnement des fonds (rapport COT)** : positions des gros spéculateurs publiées gratuitement chaque
+  semaine par la CFTC (or, euro, livre, yen, NASDAQ, Dow ; pas le DAX). Téléchargé automatiquement dans `data/cot/`
+  (une fois par semaine), et utilisé seulement à partir du samedi qui suit sa publication, jamais en avance.
+  `--sans-cot` pour s'en passer.
+- **Dimensionnement par volatilité** (comme les fonds de tendance) : quand les résultats journaliers de la stratégie
+  combinée deviennent nerveux, le risque de chaque nouveau trade baisse (jamais au-dessus du risque choisi). Le
+  Directeur le teste et le garde seulement s'il fait réussir le challenge plus vite ou plus sûrement. Le paper trading
+  et le bot l'appliquent.
+
 ## L'avocat du diable
 
 À la fin de la touche 1 (TOUT FAIRE), il prend les 2 cases (marché × timeframe) où la recherche a trouvé le plus de

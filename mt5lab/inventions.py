@@ -244,6 +244,70 @@ def f_htf(df, n):
     return htf_direction(df, n, "ema50")
 
 
+# ---------------------------------------------------------------- DESK QUANTITATIF (équipe E)
+_VP: dict = {}
+
+
+def _profile_levels(df, n):
+    """PROFIL DE VOLUME des n journées PRÉCÉDENTES (jamais la journée en cours) : POC (prix le plus échangé) et
+    zone de valeur (70 % du volume autour du POC), reportés sur chaque bougie du jour."""
+    key = (id(df), len(df), df.index[0], df.index[-1], n)
+    if key in _VP:
+        return _VP[key]
+    day = df.index.normalize()
+    tp = ((df["high"] + df["low"] + df["close"]) / 3).to_numpy(float)
+    vol = df["volume"].to_numpy(float) if "volume" in df.columns else np.ones(len(df))
+    vol = np.where(vol > 0, vol, 1.0)
+    days, start = np.unique(day.to_numpy(), return_index=True)
+    bounds = list(start) + [len(df)]
+    poc, val, vah = (np.full(len(df), np.nan) for _ in range(3))
+    for k in range(n, len(days)):
+        a, b = bounds[k - n], bounds[k]
+        p, w = tp[a:b], vol[a:b]
+        lo, hi = np.nanmin(p), np.nanmax(p)
+        if not np.isfinite(lo) or hi <= lo:
+            continue
+        hist, edges = np.histogram(p, bins=30, range=(lo, hi), weights=w)
+        i = int(np.argmax(hist))
+        order = np.argsort(-hist)
+        keep, tot = [], 0.0
+        for j in order:  # zone de valeur : les cases les plus échangées jusqu'à 70 % du volume
+            keep.append(j)
+            tot += hist[j]
+            if tot >= 0.7 * hist.sum():
+                break
+        c0, c1 = bounds[k], bounds[k + 1]
+        poc[c0:c1] = (edges[i] + edges[i + 1]) / 2
+        val[c0:c1], vah[c0:c1] = edges[min(keep)], edges[max(keep) + 1]
+    if len(_VP) > 40:
+        _VP.clear()
+    _VP[key] = (poc, val, vah)
+    return _VP[key]
+
+
+@feature("vp_poc", True, [1, 5], "écart au POC du profil de volume des {n} jours précédents, en ATR")
+def f_vp_poc(df, n):
+    if not _dt(df):
+        return _nan(df)
+    poc, _, _ = _profile_levels(df, n)
+    return (df["close"] - poc) / _atr(df)
+
+
+@feature("vp_va", True, [1, 5], "position dans la zone de valeur des {n} jours précédents (-0,5 = bas, +0,5 = haut)")
+def f_vp_va(df, n):
+    if not _dt(df):
+        return _nan(df)
+    _, val, vah = _profile_levels(df, n)
+    width = pd.Series(vah - val, index=df.index).replace(0, np.nan)
+    return (df["close"] - val) / width - 0.5
+
+
+@feature("cot", True, [52, 156], "positionnement des gros spéculateurs (rapport COT, z-score sur {n} semaines)")
+def f_cot(df, n):
+    col = f"cot_z{n}"
+    return df[col].astype(float) if col in df.columns else _nan(df)
+
+
 # ---------------------------------------------------------------- inter-marchés : un marché qui en annonce un autre
 # Les données d'un marché peuvent contenir les clôtures d'autres marchés (colonnes « ext:NASDAQ », « ext:XAUUSD »...,
 # ajoutées par data.add_ext, alignées sans regarder le futur). Les inventeurs cherchent alors des règles comme
@@ -289,9 +353,21 @@ def f_ext_z(df, n, s):
     return ind.zscore(_ext_close(df, s), n)
 
 
+@ext_feature("pair_z", [10, 20, 50], "écart anormal avec {s} (arbitrage statistique : résidu sur {n} bougies, "
+                                    "en écarts-types)")
+def f_pair_z(df, n, s):
+    """ARBITRAGE STATISTIQUE : ce marché s'est-il écarté de son marché lié (au-delà de ce que leur lien habituel
+    explique) ? résidu = rendement - bêta x rendement de l'autre, cumulé sur n bougies."""
+    ra = np.log(df["close"].astype(float)).diff()
+    rb = np.log(_ext_close(df, s)).diff()
+    beta = (ra.rolling(200, min_periods=60).cov(rb) / rb.rolling(200, min_periods=60).var().replace(0, np.nan)).clip(-3, 3)
+    resid = ra - beta * rb
+    return resid.rolling(n).sum() / (resid.rolling(200, min_periods=60).std() * np.sqrt(n)).replace(0, np.nan)
+
+
 # caractéristiques jouées en fenêtres (entre a et b) : bornes et largeurs possibles
 BETWEEN = {"hour": (0, 24, [2, 3, 4, 6, 8], "h"), "dow": (0, 5, [1, 2, 3], " (jour)"), "minute": (0, 60, [5, 10, 15, 30], " min")}
-BANK_FEATURES = ["sweep", "prev_day_pos", "round_dist", "session_move", "vwap_dist", "vol_spike", "asia_pos",
+BANK_FEATURES = ["vp_poc", "vp_va", "sweep", "prev_day_pos", "round_dist", "session_move", "vwap_dist", "vol_spike", "asia_pos",
                  "month_end", "dow", "minute", "hour"]
 
 _CACHE: dict = {}

@@ -6,3 +6,4 @@ data/*.csv
 .venv/
 .env
 .bot_token
+data/cot/

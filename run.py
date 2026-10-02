@@ -72,6 +72,7 @@ def period_args(p):
     p.add_argument("--generations-genies", type=int, default=12, help="générations d'évolution des formules des génies")
     p.add_argument("--sans-couts-reels", action="store_true",
                    help="ne pas ajouter les coûts mesurés en direct (spread réel + glissement du bot)")
+    p.add_argument("--sans-cot", action="store_true", help="ne pas télécharger le rapport COT de la CFTC")
     p.add_argument("--sans-inter-marches", action="store_true",
                    help="ne pas donner aux inventeurs les prix des autres marchés")
     p.add_argument("--depuis", default=None,
@@ -81,8 +82,24 @@ def period_args(p):
                    help="une stratégie n'est validée que si elle bat le buy & hold sur la période de validation")
 
 
+_COT: dict = {}
+
+
+def with_cot(df, sym, a):
+    """Rapport COT de la CFTC (gratuit) : positions des gros spéculateurs, pour l'équipe E."""
+    if getattr(a, "sans_cot", False):
+        return df
+    from mt5lab.cot import add_cot, table
+    if "t" not in _COT:
+        _COT["t"] = table()
+        print(f"[COT] {len(_COT['t'])} relevés hebdomadaires de la CFTC chargés" if len(_COT["t"]) else
+              "[COT] pas de données (internet ?) : l'analyste COT de l'équipe E ne travaillera pas cette fois")
+    return add_cot(df, sym, _COT["t"])
+
+
 def with_ext(df, sym, tf, symbols, raw, a):
-    """Inter-marchés : ajoute les clôtures des autres marchés choisis (les inventeurs s'en servent)."""
+    """Inter-marchés : ajoute les clôtures des autres marchés choisis (les inventeurs s'en servent), et le COT."""
+    df = with_cot(df, sym, a)
     if getattr(a, "sans_inter_marches", False):
         return df
     from mt5lab.data import add_ext

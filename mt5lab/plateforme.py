@@ -190,7 +190,7 @@ def make_bot(engine, url: str) -> dict:
         comb["composants"] = [single_strategy(x.candidate, x.symbol, x.timeframe, x.risk_pct or engine.risk_pct)
                               ["composants"][0] for x in members]
         comb["regles"].update({"day_stop": g.day_stop, "max_open": g.max_open, "max_correles": g.max_corr,
-                               "pilote": g.pilot, "frein": g.day_lock})
+                               "pilote": g.pilot, "frein": g.day_lock, "volatilite": g.vol_target})
         comb["fermer_week_end"] = g.weekend_close
         if g.session:
             comb["horaire"] = {"nom": f"{g.session[0]:g}h-{g.session[1]:g}h", "debut": g.session[0],
