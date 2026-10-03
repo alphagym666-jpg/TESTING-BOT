@@ -65,6 +65,13 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"message": f"Classement impossible : {exc}", "marches": []}, ensure_ascii=False)
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
+        elif path == "/api/top10":  # bouton « Compiler toutes les stratégies » : TOP 10 des combinaisons du direct
+            try:
+                body = json.dumps(top10_live(self.server.engine, start="lancer=1" in self.path),
+                                  ensure_ascii=False, default=str)
+            except Exception as exc:
+                body = json.dumps({"etat": "erreur", "message": f"Compilation impossible : {exc}"}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path == "/api/botfichier":  # bouton « Bot MT5 » des rapports (comparaison, Directeur, fiches...)
             try:
                 body = json.dumps(bot_from_report(self.server.engine, self.path), ensure_ascii=False)
@@ -104,6 +111,63 @@ def analyse_live(engine) -> dict:
     res = analyse(engine.out, engine.ftmo, engine.risk_pct, trades=trades, strategies=strategies, n_sim=800)
     engine.last_analysis = res
     return res
+
+
+def top10_live(engine, start: bool = False) -> dict:
+    """Onglet « TOP 10 combinées du direct » : le bouton lance (en arrière-plan) la compilation de TOUTES les
+    stratégies de cette plateforme ; la page demande l'avancement toutes les 2 secondes."""
+    import time as _time
+    job = getattr(engine, "_top10_job", None)
+    if start and not (job and job["etat"] == "en cours"):
+        job = {"etat": "en cours", "fait": 0, "total": 0, "debut": _time.strftime("%H:%M:%S"), "resultat": None,
+               "message": "Compilation de toutes les stratégies du direct…"}
+        engine._top10_job = job
+        threading.Thread(target=_run_top10, args=(engine, job), daemon=True).start()
+    if job is None:  # pas encore lancé depuis le démarrage : le dernier TOP 10 enregistré
+        f = engine.out / "top10_direct.json"
+        try:
+            res = json.loads(f.read_text(encoding="utf-8"))
+            return {"etat": "fini", "fait": 1, "total": 1, "resultat": res,
+                    "message": f"Dernier TOP 10 enregistré ({res.get('calcule_le', '')}). Recliquez pour le refaire."}
+        except (OSError, ValueError):
+            return {"etat": "jamais", "message": "Cliquez sur le bouton pour compiler toutes les stratégies du direct."}
+    return job
+
+
+def _run_top10(engine, job):
+    import time as _time
+
+    import pandas as pd
+
+    from .direct import top_combinations
+    from .ftmo import FtmoRules
+    try:
+        path = engine.out / "trades.csv"
+        t = pd.read_csv(path) if path.exists() and path.stat().st_size else pd.DataFrame(engine.recent)
+        live = {k for k, s in engine.slots.items() if not getattr(s, "paused", False)}  # pas les stratégies en pause
+        if len(t) and "strategie_id" in t.columns:
+            t = t[t["strategie_id"].isin(live)].copy()
+            t["r"] = pd.to_numeric(t["r"], errors="coerce")
+            t = t.dropna(subset=["r"])
+        strategies = {k: {"symbole": s.symbol, "timeframe": s.timeframe, "candidate": s.candidate}
+                      for k, s in engine.slots.items() if k in live}
+        # toujours les règles du CHALLENGE (même sur la plateforme d'un compte perso) et 1 % max par trade
+        rules = FtmoRules() if getattr(engine, "profile", None) else engine.ftmo
+        risk = min(float(engine.risk_pct or 1.0), 1.0)
+
+        def progress(done, total):
+            job.update(fait=done, total=total)
+        res = top_combinations(t, strategies, rules, risk, progress=progress)
+        res["calcule_le"] = _time.strftime("%Y-%m-%d %H:%M")
+        res["regles"] = rules.label()
+        try:
+            (engine.out / "top10_direct.json").write_text(json.dumps(res, ensure_ascii=False, default=str, indent=1),
+                                                          encoding="utf-8")
+        except OSError:
+            pass
+        job.update(etat="fini", resultat=res, message=res["message"])
+    except Exception as exc:
+        job.update(etat="erreur", message=f"Compilation impossible : {exc}")
 
 
 MIN_TRADES_MARKET = 10   # trades en direct avant de conseiller un bot pour un marché
@@ -173,6 +237,18 @@ def make_bot(engine, url: str) -> dict:
     from .pont import single_strategy
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
+    if q.get("top"):  # une combinaison du TOP 10 du direct (règles du challenge, même sur un compte perso)
+        res = (top10_live(engine).get("resultat") or {}).get("top") or []
+        i = int(q["top"]) - 1
+        if not 0 <= i < len(res):
+            return {"ok": False, "message": "Recompilez d'abord le TOP 10 (bouton de l'onglet)."}
+        comb = {k: v for k, v in res[i].items() if k not in ("resultat",)}
+        comb["composants"] = [{**c, "candidate": c.get("candidate") or engine.slots[c["strategie_id"]].candidate}
+                              for c in comb["composants"]]
+        from .ftmo import FtmoRules
+        ftmo = FtmoRules() if getattr(engine, "profile", None) else engine.ftmo
+        capital = 100_000.0 if getattr(engine, "profile", None) else next(iter(engine.slots.values())).capital
+        return _build_bot(engine, comb, root, capital, ftmo, max(c["risk_pct"] for c in comb["composants"]))
     if q.get("analyse"):  # la meilleure combinaison trouvée par l'analyse du direct
         comb = dict(getattr(engine, "last_analysis", {}).get("combinaison") or {})
         if not comb:
@@ -318,6 +394,8 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11.5px;border:1px solid var(--border)}
 .botbtn{font:inherit;font-size:12px;padding:3px 9px;border-radius:8px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer;white-space:nowrap}
 .botbtn:hover{border-color:currentColor}
+.cmpbtn{font:inherit;font-size:14px;font-weight:600;padding:8px 16px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+.cmpbtn:disabled{opacity:.6;cursor:wait}
 .ok::before{content:"✔ ";color:var(--good)}.ko::before{content:"✖ ";color:var(--crit)}.run::before{content:"● ";color:var(--accent)}
 .meter{position:relative;width:120px;height:8px;border-radius:4px;background:var(--track);display:inline-block;vertical-align:middle}
 .meter i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--fill)}
@@ -344,7 +422,7 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 </main>
 <script>
 const TABS=[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
-["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
+["top","TOP 10 combinées du direct"],["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
 let A=null,aTime=0,aBusy=false;  // une seule demande à la fois (sinon elles s'empilent et rien ne finit)
 async function loadAnalyse(force){if(aBusy||(!force&&A&&Date.now()-aTime<60000))return;aBusy=true;aTime=Date.now();
  try{A=await (await fetch("/api/analyse",{cache:"no-store"})).json()}catch(e){A={message:"Analyse impossible : "+e,classement:[]}}
@@ -365,6 +443,35 @@ function viewAn(){if(!A){loadAnalyse(true);return `<div class="empty">Analyse de
   table("anr",[["Marché","symbole"],["TF","timeframe"],["Bot","strategie_id",botBtn],["Stratégie","strategie"],["Réglage","risque"],["Trades","trades",null,1],["Trades / mois","trades_mois",v=>v==null?"—":"~"+fmt(v,0),1],
    ["Réussite","reussite_pct",v=>fmt(v,0)+" %",1],["R moyen","r_moyen",rr,1],["R total","r_total",rr,1],["t (solidité)","t",v=>fmt(v,2),1],
    ["Jours","jours",null,1],["Meilleur jour (part du profit)","meilleur_jour_part",v=>v==null?"—":fmt(v,0)+" %",1]],filt(A.classement||[],"symbole","timeframe"))}
+let T10=null,tBusy=false,tTimer=null;
+async function loadTop(start){if(tBusy)return;tBusy=true;
+ try{T10=await (await fetch("/api/top10"+(start?"?lancer=1":""),{cache:"no-store"})).json()}catch(e){T10={etat:"erreur",message:"Compilation impossible : "+e}}
+ tBusy=false;clearTimeout(tTimer);if(T10.etat==="en cours")tTimer=setTimeout(()=>loadTop(false),2000);render()}
+function viewTop(){if(!T10){loadTop(false);return `<div class="empty">Chargement…</div>`}
+ const run=T10.etat==="en cours",R=T10.resultat||{},top=R.top||[];
+ const pct=T10.total?Math.round(T10.fait/T10.total*100):0;
+ const head=`<p style="margin:4px 0 10px"><button class="cmpbtn" ${run?"disabled":""} onclick="loadTop(true)">
+  ${run?"Compilation en cours…":"Compiler toutes les stratégies du direct → TOP 10 des combinaisons"}</button>
+  ${run?` <span class="meter" style="width:220px"><i style="width:${pct}%"></i></span> ${pct} % <span class="mut">(démarré à ${esc(T10.debut)}, environ 1 à 5 minutes)</span>`:""}</p>
+  <p class="note">${esc(T10.message||"")}${R.periode?` · période ${esc(R.periode)} · ${fmt(R.jours,0)} jours de bourse · ${fmt(R.strategies,0)} stratégies dans le direct · ${esc(R.regles||"")}`:""}${R.calcule_le?" · calculé le "+esc(R.calcule_le):""}</p>
+  <p class="note">Chaque combinaison tourne sur UN seul compte : 1 % max par trade, perte possible max 2,5 % par jour (si tous les stops sautent).
+  Classement : d'abord celles qui ratent au plus 2 % des challenges, puis le moins de jours pour réussir, puis la réussite.
+  Les chiffres viennent des trades EN DIRECT (prix jamais vus pendant la recherche).</p>`;
+ if(!top.length)return head+(run?"":`<div class="empty">Pas encore de TOP 10.</div>`);
+ const val=v=>v==null?"—":v;
+ const rows=top.map(c=>{const r=c.resultat||{};
+  const comps=c.composants.map(x=>`<div title="${esc(x.strategie)}">${esc(x.symbole)} ${esc(x.timeframe)} · ${esc(String(x.strategie).slice(0,55))} <span class="mut">(${fmt(x.risk_pct,1)} %/trade, ${x.trades_direct} trades, ${fmt(x.r_total_direct,1,true)}R)</span></div>`).join("");
+  return `<tr><td class="n"><b>${c.rang}</b></td><td>${c.conforme?'<span class="tag ok">conforme</span>':'<span class="tag ko">trop risquée</span>'}</td>
+   <td style="font-size:12px;line-height:1.5">${comps}</td>
+   <td class="n">${r.ftmo_pass==null?"—":fmt(r.ftmo_pass,0)+" %"}</td><td class="n">${r.ftmo_echec_p1==null?"—":fmt(r.ftmo_echec_p1,1)+" %"}</td>
+   <td class="n">${r.jours_attendus==null?"—":"~"+fmt(r.jours_attendus,0)+" j"}</td>
+   <td class="n">${`<span class="${cls(r.rendement_pct)}">${fmt(r.rendement_pct,2,true)} %</span>`}</td>
+   <td class="n">${fmt(r.pire_jour,2)} %</td><td class="n">${fmt(r.dd_max,2)} %</td>
+   <td class="n">~${fmt(r.trades_mois,0)}</td><td class="n">${val(r.trades)}</td><td class="n">${val(r.reussis)} / ${val(r.rates)}</td>
+   <td><button class="botbtn" data-top="${c.rang}">Créer le bot MT5</button></td></tr>`}).join("");
+ return head+`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Stratégies de la combinaison</th><th>Réussite challenge</th><th>Échecs</th>
+  <th>Réussi en</th><th>Gain en direct</th><th>Pire jour</th><th>DD max</th><th>Trades / mois</th><th>Trades</th><th>Challenges réussis / ratés (vrais jours)</th><th>Bot</th></tr></thead>
+  <tbody>${rows}</tbody></table></div>`}
 let M=null,mTime=0,mBusy=false;
 async function loadMarches(force){if(mBusy||(!force&&M&&Date.now()-mTime<60000))return;mBusy=true;mTime=Date.now();
  try{M=await (await fetch("/api/marches",{cache:"no-store"})).json()}catch(e){M={message:"Classement impossible : "+e,marches:[]}}
@@ -406,7 +513,7 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   const att=c[3]?' class="n"':long?` class="s" title="${esc(r[c[1]])}"`:"";
   return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
- e.stopPropagation();b.disabled=true;const q=b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
+ e.stopPropagation();b.disabled=true;const q=b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
  try{const r=await (await fetch("/api/bot?"+q,{cache:"no-store"})).json();alert(r.message)}catch(err){alert("Erreur : "+err)}b.disabled=false});
 document.getElementById("view").addEventListener("click",e=>{const th=e.target.closest("th");if(!th)return;
  const id=th.closest("table").dataset.id,i=+th.dataset.i;const s=sortState[id];
@@ -496,7 +603,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();if(D.profil){const t="Plateforme — "+D.profil.nom+" ("+fmt(D.profil.capital,0)+" $)";const h=document.querySelector("h1");if(h.textContent!==t){h.textContent=t;document.title=t}}document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- const v={comb:viewComb,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ const v={comb:viewComb,top:viewTop,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;

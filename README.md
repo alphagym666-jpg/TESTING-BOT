@@ -664,6 +664,27 @@ même gestion : le stop est déplacé chez le courtier, la fermeture passe au ma
   chaque composant, le portefeuille du Chef FTMO, les comptes perso / financé et, sur la plateforme, le rythme en
   direct comparé au rythme attendu.
 
+## TOP 10 des combinaisons du direct (bouton de la plateforme)
+
+Onglet **« TOP 10 combinées du direct »** de la plateforme de paper trading, bouton **« Compiler toutes les
+stratégies du direct → TOP 10 des combinaisons »** :
+
+- prend TOUTES les stratégies qui tournent sur la plateforme (pas celles en pause), garde les gagnantes avec au
+  moins 5 trades en direct ;
+- le Chef des combinaisons part de chacune des 12 meilleures (et d'un départ libre), ajoute à chaque étape la
+  stratégie qui fait réussir le challenge le plus vite (jusqu'à 6), avec 2 dosages du risque (0,5 % ou 1 % par
+  trade) ;
+- chaque combinaison tourne sur UN seul compte : 1 % max par trade, perte possible max 2,5 % par jour, règles du
+  challenge FTMO (même sur la plateforme d'un compte perso) ;
+- classement comme le TOP 10 du Directeur : d'abord celles qui ratent au plus 2 % des challenges, puis le moins de
+  jours pour réussir, puis la réussite ;
+- pour chacune : réussite et échecs du challenge, jours pour réussir, gain en direct, pire jour, DD max,
+  trades par mois, challenges réussis / ratés sur les vrais jours, et un bouton **« Créer le bot MT5 »**.
+
+Le calcul tourne en arrière-plan (1 à 5 minutes, barre d'avancement) et est enregistré dans `top10_direct.json`
+(le dernier TOP 10 réapparaît après un redémarrage). Avec moins de 20 jours de bourse en direct, le classement
+bouge encore : la page le dit.
+
 ## Meilleur bot par marché
 
 Onglet **« Meilleur bot par marché »** de la plateforme : pour chaque marché, la stratégie qui marche le mieux EN

@@ -85,6 +85,47 @@ def strategy_table(t: pd.DataFrame, min_trades: int = 5) -> pd.DataFrame:
     return tab
 
 
+def _evaluator(t: pd.DataFrame, rules: FtmoRules, risk_pct: float, day_budget: float, total_budget: float,
+               lo, hi, n_days: int, n_sim: int):
+    """Évalue une combinaison (stratégies + risque de chacune) sur UN seul compte, avec la perte possible max
+    par jour : gain, pire journée, drawdown, challenges réussis / ratés sur les vrais jours, simulation FTMO."""
+    by_id = {sid: g[["entry_time", "exit_time", "r"]].reset_index(drop=True) for sid, g in t.groupby("strategie_id")}
+    span = max(7.0, (hi - lo).total_seconds() / 86400 + 1)
+
+    def evaluate(keys, weights, n=None):
+        merged = pd.concat([by_id[k].assign(w=weights[k]) for k in keys], ignore_index=True)
+        merged = apply_risk_rules(merged, None, None, risk_pct, day_budget=day_budget)
+        if total_budget:
+            merged = merged[merged["r"].notna()]
+        d = daily_table(merged, risk_pct, lo, hi)
+        res = simulate(d, rules, n or n_sim, seed=0) if len(d) >= 15 else {}
+        c = count_challenges(d, rules)
+        cum = d["pnl"].cumsum().to_numpy(float) if len(d) else np.zeros(1)
+        res.update(rendement_pct=float(d["pnl"].sum()) if len(d) else 0.0,
+                   pire_jour=float(d["worst"].min()) if len(d) else 0.0, trades=int(len(merged)),
+                   reussis=c["reussis"], rates=c["rates"], par_jour=float(d["pnl"].sum()) / max(n_days, 1),
+                   dd_max=round(float(np.max(np.maximum.accumulate(np.concatenate([[0.0], cum]))[1:] - cum)), 2),
+                   trades_mois=round(len(merged) / span * 30.44, 1))
+        res["jours_attendus"] = expected_days(res)
+        return res
+    return evaluate
+
+
+def _better(day_budget: float, max_fail: float = 2.0):
+    def better(a, b):
+        if b is None:
+            return True
+        a_ok = a.get("ftmo_echec_p1", 0) <= max_fail and a["pire_jour"] > -day_budget * 1.05
+        b_ok = b.get("ftmo_echec_p1", 0) <= max_fail and b["pire_jour"] > -day_budget * 1.05
+        if a_ok != b_ok:
+            return a_ok
+        ea, eb = a["jours_attendus"], b["jours_attendus"]
+        if math.isfinite(ea) or math.isfinite(eb):
+            return ea < eb * 0.95 or (ea <= eb * 1.05 and a["rendement_pct"] > b["rendement_pct"])
+        return a["par_jour"] > b["par_jour"] * 1.02  # données trop courtes pour simuler : gain par jour
+    return better
+
+
 def analyse(root: str | Path, rules: FtmoRules = FtmoRules(), risk_pct: float = 1.0, day_budget: float = 2.5,
             total_budget: float = 10.0, min_trades: int = 5, max_components: int = 6, n_sim: int = 1500,
             trades: pd.DataFrame | None = None, strategies: dict | None = None) -> dict:
@@ -105,33 +146,8 @@ def analyse(root: str | Path, rules: FtmoRules = FtmoRules(), risk_pct: float = 
                periode=f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}", classement=tab.head(100).to_dict("records"))
 
     cand = tab[tab["fiable"] & (tab["r_total"] > 0) & (tab["r_moyen"] > 0)].head(30)["strategie_id"].tolist()
-    by_id = {sid: g[["entry_time", "exit_time", "r"]].reset_index(drop=True) for sid, g in t.groupby("strategie_id")}
-
-    def evaluate(keys, weights):
-        merged = pd.concat([by_id[k].assign(w=weights[k]) for k in keys], ignore_index=True)
-        merged = apply_risk_rules(merged, None, None, risk_pct, day_budget=day_budget)
-        if total_budget:
-            merged = merged[merged["r"].notna()]
-        d = daily_table(merged, risk_pct, lo, hi)
-        res = simulate(d, rules, n_sim, seed=0) if len(d) >= 15 else {}
-        c = count_challenges(d, rules)
-        res.update(rendement_pct=float(d["pnl"].sum()) if len(d) else 0.0,
-                   pire_jour=float(d["worst"].min()) if len(d) else 0.0, trades=int(len(merged)),
-                   reussis=c["reussis"], rates=c["rates"], par_jour=float(d["pnl"].sum()) / max(n_days, 1))
-        res["jours_attendus"] = expected_days(res)
-        return res
-
-    def better(a, b):
-        if b is None:
-            return True
-        a_ok = a.get("ftmo_echec_p1", 0) <= 2.0 and a["pire_jour"] > -day_budget * 1.05
-        b_ok = b.get("ftmo_echec_p1", 0) <= 2.0 and b["pire_jour"] > -day_budget * 1.05
-        if a_ok != b_ok:
-            return a_ok
-        ea, eb = a["jours_attendus"], b["jours_attendus"]
-        if math.isfinite(ea) or math.isfinite(eb):
-            return ea < eb * 0.95 or (ea <= eb * 1.05 and a["rendement_pct"] > b["rendement_pct"])
-        return a["par_jour"] > b["par_jour"] * 1.02  # données trop courtes pour simuler : gain par jour
+    evaluate = _evaluator(t, rules, risk_pct, day_budget, total_budget, lo, hi, n_days, n_sim)
+    better = _better(day_budget)
     keys, weights, best = [], {}, None
     while cand and len(keys) < max_components:
         pick = None
@@ -168,6 +184,123 @@ def analyse(root: str | Path, rules: FtmoRules = FtmoRules(), risk_pct: float = 
                           f"(il en faut au moins {MIN_DAYS_RELIABLE}). Les chiffres vont bouger ; laissez tourner.")
     else:
         out["message"] = f"{n_days} jours de bourse de trades en direct : les chiffres commencent à être fiables."
+    return out
+
+
+def rank_key(res: dict, day_budget: float = 2.5, max_fail: float = 2.0):
+    """Ordre du TOP 10 (comme le Directeur) : 1. échecs sous la limite et pire journée sous le budget
+    2. jours attendus pour réussir 3. réussite 4. échecs 5. gain par jour (si trop peu de jours pour simuler)."""
+    ech, j, p = res.get("ftmo_echec_p1"), res.get("jours_attendus"), res.get("ftmo_pass")
+    bad = ech is None or ech != ech or ech > max_fail or res.get("pire_jour", 0) <= -day_budget * 1.05
+    return (bad, round(j) if j is not None and math.isfinite(j) else 10**9,
+            -(p if p is not None and p == p else 0), ech if ech is not None and ech == ech else 100,
+            -res.get("par_jour", 0.0))
+
+
+def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules: FtmoRules = FtmoRules(),
+                     risk_pct: float = 1.0, day_budget: float = 2.5, total_budget: float = 10.0,
+                     min_trades: int = 5, max_components: int = 6, n_top: int = 10, n_seeds: int = 12,
+                     n_cand: int = 20, n_sim: int = 1500, n_quick: int = 200, max_fail: float = 2.0,
+                     progress=None) -> dict:
+    """COMPILE TOUTES les stratégies du direct et renvoie le TOP 10 des combinaisons pour passer le challenge.
+
+    Chaque combinaison tourne sur UN seul compte (risque max risk_pct par trade, perte possible max day_budget %
+    par jour). Le Chef des combinaisons part de chacune des meilleures stratégies (et d'un départ libre), ajoute
+    à chaque étape la stratégie qui fait réussir le challenge le plus vite, avec 2 façons de doser le risque
+    (0,5 % ou risk_pct par trade, ou tout à 0,5 %). Chaque étape est une combinaison candidate. Les meilleures
+    sont ensuite revérifiées avec la simulation complète et classées comme le TOP 10 du Directeur."""
+    strategies = strategies or {}
+    out = {"trades": int(len(trades)), "strategies": 0, "jours": 0, "fiable": False, "top": [], "essais": 0,
+           "message": ""}
+    if not len(trades):
+        out["message"] = "Pas encore de trades en paper trading : laissez tourner la plateforme."
+        return out
+    t = trades.assign(entry_time=to_dt(trades["ouverture"]), exit_time=to_dt(trades["fermeture"]))
+    lo, hi = t["entry_time"].min().normalize(), t["exit_time"].max().normalize()
+    n_days = len(pd.bdate_range(lo, hi))
+    out.update(strategies=int(t["strategie_id"].nunique()), jours=n_days, fiable=n_days >= MIN_DAYS_RELIABLE,
+               periode=f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}")
+    g = t.groupby("strategie_id")["r"]   # des dizaines de milliers de comptes : seulement les gagnantes assez actives
+    t = t[t["strategie_id"].map(g.size()).ge(min_trades) & t["strategie_id"].map(g.sum()).gt(0)]
+    tab = strategy_table(t, min_trades)
+    good = tab[tab["fiable"] & (tab["r_total"] > 0) & (tab["r_moyen"] > 0)]
+    cand = good.head(n_cand)["strategie_id"].tolist()
+    out["candidates"] = len(cand)
+    if not cand:
+        out["message"] = (f"Aucune stratégie gagnante avec au moins {min_trades} trades en direct pour l'instant : "
+                          "laissez tourner la plateforme.")
+        return out
+    evaluate = _evaluator(t, rules, risk_pct, day_budget, total_budget, lo, hi, n_days, n_sim)
+    better = _better(day_budget, max_fail)
+    modes = [sorted({0.5, risk_pct}), [min(0.5, risk_pct)]]
+    seeds = [None] + cand[:n_seeds]
+    total, done = len(seeds) * len(modes), 0
+    found: dict[frozenset, tuple] = {}   # mêmes stratégies : on garde le meilleur dosage
+
+    def keep(keys, weights, res):
+        k = frozenset(keys)
+        if k not in found or rank_key(res, day_budget, max_fail) < rank_key(found[k][2], day_budget, max_fail):
+            found[k] = (list(keys), dict(weights), res)
+    for seed in seeds:
+        for ws in modes:
+            keys, weights, best = [], {}, None
+            if seed is not None:
+                w0, best = None, None
+                for w in ws:
+                    r = evaluate([seed], {seed: w}, n_quick)
+                    if best is None or better(r, best):
+                        w0, best = w, r
+                keys, weights = [seed], {seed: w0}
+                keep(keys, weights, best)
+            while len(keys) < max_components:
+                pick = None
+                for k in cand:
+                    if k in keys:
+                        continue
+                    for w in ws:
+                        res = evaluate(keys + [k], {**weights, k: w}, n_quick)
+                        out["essais"] += 1
+                        if better(res, best) and (pick is None or better(res, pick[2])):
+                            pick = (k, w, res)
+                if pick is None:
+                    break
+                keys.append(pick[0])
+                weights[pick[0]] = pick[1]
+                best = pick[2]
+                keep(keys, weights, best)
+            done += 1
+            if progress:
+                progress(done, total)
+    # revérification complète des meilleures, puis classement final
+    short = sorted(found.values(), key=lambda x: rank_key(x[2], day_budget, max_fail))[:max(3 * n_top, 20)]
+    final = [(keys, weights, evaluate(keys, weights)) for keys, weights, _ in short]
+    final.sort(key=lambda x: rank_key(x[2], day_budget, max_fail))
+    info = tab.set_index("strategie_id")
+    for i, (keys, weights, res) in enumerate(final[:n_top], 1):
+        comps = []
+        for k in keys:
+            s, r = strategies.get(k, {}), info.loc[k]
+            comps.append({"strategie_id": k, "symbole": s.get("symbole", r["symbole"]),
+                          "timeframe": s.get("timeframe", r["timeframe"]), "candidate": s.get("candidate"),
+                          "strategie": r["strategie"], "risque_config": r["risque"], "risk_pct": weights[k],
+                          "trades_direct": int(r["trades"]), "r_total_direct": float(r["r_total"]),
+                          "trades_mois": float(r["trades_mois"])})
+        ok = not rank_key(res, day_budget, max_fail)[0]
+        out["top"].append({
+            "rang": i, "nom": f"N°{i} du TOP 10 du direct", "source": "direct", "conforme": ok,
+            "regles": {"day_budget": day_budget, "total_budget": total_budget, "day_stop": None, "max_open": None},
+            "resultat": {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+                         for k, v in res.items() if not isinstance(v, (list, dict))},
+            "composants": comps, "jours_de_donnees": n_days,
+            "cree_le": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")})
+    n_ok = sum(1 for c in out["top"] if c["conforme"])
+    msg = (f"{len(found)} combinaisons différentes construites à partir de {len(cand)} stratégies gagnantes "
+           f"({out['essais']} essais) : {n_ok} respectent la limite d'échecs ({max_fail:g} %) et le budget de "
+           f"{day_budget:g} %/jour.").replace(".5 %", ",5 %")
+    if not out["fiable"]:
+        msg += (f" ATTENTION : seulement {n_days} jours de bourse en direct (il en faut au moins {MIN_DAYS_RELIABLE}) : "
+                "le classement va encore bouger.")
+    out["message"] = msg
     return out
 
 
