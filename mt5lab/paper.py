@@ -16,6 +16,7 @@ import hashlib
 import html
 import json
 import math
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
@@ -343,6 +344,7 @@ class PaperEngine:
         self._currencies: dict[str, set] = {}
         self._side: int | None = None  # sens du trade en cours d'ouverture (règle des marchés corrélés)
         self.mt5 = conn.mt5
+        self.mt5_lock = threading.Lock()  # MT5 : un seul appel à la fois (backtests de la plateforme)
         self.out = Path(out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
         self.risk_pct = risk_pct
@@ -1189,7 +1191,8 @@ class PaperEngine:
         try:
             while True:
                 try:
-                    self.step()
+                    with self.mt5_lock:
+                        self.step()
                     errors = 0
                     if server:
                         server.publish(self.snapshot())

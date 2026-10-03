@@ -72,6 +72,12 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"etat": "erreur", "message": f"Compilation impossible : {exc}"}, ensure_ascii=False)
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
+        elif path == "/api/backtest":  # bouton « Backtest » d'une combinaison du TOP 10 du direct
+            try:
+                body = json.dumps(backtest_live(self.server.engine, self.path), ensure_ascii=False, default=str)
+            except Exception as exc:
+                body = json.dumps({"etat": "erreur", "message": f"Backtest impossible : {exc}"}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path == "/api/botfichier":  # bouton « Bot MT5 » des rapports (comparaison, Directeur, fiches...)
             try:
                 body = json.dumps(bot_from_report(self.server.engine, self.path), ensure_ascii=False)
@@ -170,6 +176,110 @@ def _run_top10(engine, job):
         job.update(etat="erreur", message=f"Compilation impossible : {exc}")
 
 
+def _top_comb(engine, rank) -> dict | None:
+    top = (top10_live(engine).get("resultat") or {}).get("top") or []
+    i = int(rank) - 1
+    if not 0 <= i < len(top):
+        return None
+    comb = dict(top[i])
+    comb["composants"] = [{**c, "candidate": c.get("candidate") or engine.slots[c["strategie_id"]].candidate}
+                          for c in comb["composants"]]
+    return comb
+
+
+def _platform_data(engine):
+    """Historique MT5 de chaque marché, préparé comme pour la recherche (coûts réels, nouvelles, inter-marchés,
+    COT). Les appels à MT5 se font à tour de rôle avec le paper trading (verrou)."""
+    import contextlib
+
+    from .cot import add_cot, uses_cot
+    from .data import add_ext
+    from .paper import ext_needed
+    lock = getattr(engine, "mt5_lock", None) or contextlib.nullcontext()
+    conn, raw = engine.c, {}
+
+    def rates(sym, tf):
+        if (sym, tf) not in raw:
+            with lock:
+                raw[(sym, tf)] = conn.rates_years(sym, tf)
+        return raw[(sym, tf)]
+
+    def get(sym, tf, cand=None):
+        df = rates(sym, tf)
+        others = {}
+        for o in sorted(ext_needed(cand or {})):
+            try:
+                others[o] = rates(o, tf)["close"]
+            except Exception as exc:
+                print(f"[backtest] inter-marchés : {o} {tf} indisponible ({exc})")
+        if others:
+            df = add_ext(df, others)
+        if cand and uses_cot(cand):
+            df = add_cot(df, sym, engine._cot_table())
+        comm = getattr(engine, "_comm", {}).get(sym, getattr(engine, "_comm_default", 0.0))
+        with lock:
+            df = conn.enrich(df, sym, 0.0, comm, getattr(engine, "news", None), getattr(engine, "news_window", 30))
+            return df, conn.typical_cost(df, sym, 0.0, comm)
+    return get
+
+
+def backtest_live(engine, url: str) -> dict:
+    """Bouton « Backtest » : rejoue une combinaison du TOP 10 du direct sur tout l'historique MT5 (en
+    arrière-plan) ; la page demande l'avancement toutes les 2 secondes."""
+    import hashlib
+    from urllib.parse import parse_qs, urlparse
+    q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+    comb = _top_comb(engine, q.get("top", "0"))
+    if comb is None:
+        return {"etat": "erreur", "message": "Recompilez d'abord le TOP 10 (bouton de l'onglet)."}
+    key = hashlib.md5(json.dumps([[c["strategie_id"], c["risk_pct"]] for c in comb["composants"]],
+                                 sort_keys=True).encode()).hexdigest()[:12]
+    jobs = engine.__dict__.setdefault("_bt_jobs", {})
+    job = jobs.get(key)
+    if job is None:  # déjà fait avant un redémarrage ?
+        try:
+            res = json.loads((engine.out / "backtests" / f"{key}.json").read_text(encoding="utf-8"))
+            job = jobs[key] = {"etat": "fini", "fait": 1, "total": 1, "resultat": res, "message": res.get("message", "")}
+        except (OSError, ValueError):
+            pass
+    if q.get("lancer") and not (job and job["etat"] == "en cours"):
+        import time as _time
+        job = jobs[key] = {"etat": "en cours", "fait": 0, "total": len(comb["composants"]) + 1, "resultat": None,
+                           "debut": _time.strftime("%H:%M:%S"), "message": "Téléchargement de l'historique MT5…"}
+        threading.Thread(target=_run_backtest, args=(engine, comb, key, job), daemon=True).start()
+    if job is None:
+        return {"etat": "jamais", "message": "Cliquez sur « Backtest » pour rejouer cette combinaison sur l'historique."}
+    return {**job, "rang": int(q.get("top", 0)), "cle": key}
+
+
+def _run_backtest(engine, comb, key, job):
+    import time as _time
+
+    from .backtest_combinee import backtest_combination
+    from .ftmo import FtmoRules
+    try:
+        get = _platform_data(engine)
+        cands = {(c["symbole"], c["timeframe"]): c["candidate"] for c in comb["composants"]}
+
+        def progress(done, total, what):
+            job.update(fait=done, total=total, message=what)
+        rules = FtmoRules() if getattr(engine, "profile", None) else engine.ftmo
+        risk = max(float(c["risk_pct"]) for c in comb["composants"])
+        res = backtest_combination(comb, lambda s, tf: get(s, tf, cands.get((s, tf))), rules, risk,
+                                   progress=progress, log=print)
+        res["calcule_le"] = _time.strftime("%Y-%m-%d %H:%M")
+        res["nom"] = comb.get("nom", "")
+        try:
+            (engine.out / "backtests").mkdir(exist_ok=True)
+            (engine.out / "backtests" / f"{key}.json").write_text(json.dumps(res, ensure_ascii=False, default=str),
+                                                                  encoding="utf-8")
+        except OSError:
+            pass
+        job.update(etat="fini" if res.get("ok") else "erreur", resultat=res, message=res["message"])
+    except Exception as exc:
+        job.update(etat="erreur", message=f"Backtest impossible : {exc}")
+
+
 MIN_TRADES_MARKET = 10   # trades en direct avant de conseiller un bot pour un marché
 
 
@@ -238,13 +348,10 @@ def make_bot(engine, url: str) -> dict:
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
     if q.get("top"):  # une combinaison du TOP 10 du direct (règles du challenge, même sur un compte perso)
-        res = (top10_live(engine).get("resultat") or {}).get("top") or []
-        i = int(q["top"]) - 1
-        if not 0 <= i < len(res):
+        comb = _top_comb(engine, q["top"])
+        if comb is None:
             return {"ok": False, "message": "Recompilez d'abord le TOP 10 (bouton de l'onglet)."}
-        comb = {k: v for k, v in res[i].items() if k not in ("resultat",)}
-        comb["composants"] = [{**c, "candidate": c.get("candidate") or engine.slots[c["strategie_id"]].candidate}
-                              for c in comb["composants"]]
+        comb.pop("resultat", None)
         from .ftmo import FtmoRules
         ftmo = FtmoRules() if getattr(engine, "profile", None) else engine.ftmo
         capital = 100_000.0 if getattr(engine, "profile", None) else next(iter(engine.slots.values())).capital
@@ -396,6 +503,14 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .botbtn:hover{border-color:currentColor}
 .cmpbtn{font:inherit;font-size:14px;font-weight:600;padding:8px 16px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
 .cmpbtn:disabled{opacity:.6;cursor:wait}
+.btbtn{font:inherit;font-size:12px;padding:3px 9px;border-radius:8px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;white-space:nowrap}
+.btbtn:disabled{opacity:.5;cursor:wait}
+.panel{background:var(--surface);border:1px solid var(--accent);border-radius:12px;padding:12px 14px;margin:0 0 14px}
+.eqwrap{position:relative;max-width:980px}.eq{width:100%;height:auto;display:block}
+.eq text{fill:var(--muted);font-size:11px}.eq .gl{stroke:var(--grid);stroke-width:1}.eq .zl{stroke:var(--axis);stroke-width:1}
+.eq .ln{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}.eq .rec{fill:var(--accent);opacity:.06}
+.eqtip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:4px 8px;font-size:12px;white-space:nowrap;display:none;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.cmp td,.cmp th{padding:4px 10px}.months td{text-align:right;font-variant-numeric:tabular-nums;padding:4px 6px}
 .ok::before{content:"✔ ";color:var(--good)}.ko::before{content:"✖ ";color:var(--crit)}.run::before{content:"● ";color:var(--accent)}
 .meter{position:relative;width:120px;height:8px;border-radius:4px;background:var(--track);display:inline-block;vertical-align:middle}
 .meter i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--fill)}
@@ -462,16 +577,79 @@ function viewTop(){if(!T10){loadTop(false);return `<div class="empty">Chargement
  const rows=top.map(c=>{const r=c.resultat||{};
   const comps=c.composants.map(x=>`<div title="${esc(x.strategie)}">${esc(x.symbole)} ${esc(x.timeframe)} · ${esc(String(x.strategie).slice(0,55))} <span class="mut">(${fmt(x.risk_pct,1)} %/trade, ${x.trades_direct} trades, ${fmt(x.r_total_direct,1,true)}R)</span></div>`).join("");
   return `<tr><td class="n"><b>${c.rang}</b></td><td>${c.conforme?'<span class="tag ok">conforme</span>':'<span class="tag ko">trop risquée</span>'}</td>
+   <td><button class="btbtn" data-bt="${c.rang}" title="Rejouer cette combinaison sur tout l'historique MT5">Backtest</button> <button class="botbtn" data-top="${c.rang}">Créer le bot MT5</button></td>
    <td style="font-size:12px;line-height:1.5">${comps}</td>
    <td class="n">${r.ftmo_pass==null?"—":fmt(r.ftmo_pass,0)+" %"}</td><td class="n">${r.ftmo_echec_p1==null?"—":fmt(r.ftmo_echec_p1,1)+" %"}</td>
    <td class="n">${r.jours_attendus==null?"—":"~"+fmt(r.jours_attendus,0)+" j"}</td>
    <td class="n">${`<span class="${cls(r.rendement_pct)}">${fmt(r.rendement_pct,2,true)} %</span>`}</td>
    <td class="n">${fmt(r.pire_jour,2)} %</td><td class="n">${fmt(r.dd_max,2)} %</td>
    <td class="n">~${fmt(r.trades_mois,0)}</td><td class="n">${val(r.trades)}</td><td class="n">${val(r.reussis)} / ${val(r.rates)}</td>
-   <td><button class="botbtn" data-top="${c.rang}">Créer le bot MT5</button></td></tr>`}).join("");
- return head+`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Stratégies de la combinaison</th><th>Réussite challenge</th><th>Échecs</th>
-  <th>Réussi en</th><th>Gain en direct</th><th>Pire jour</th><th>DD max</th><th>Trades / mois</th><th>Trades</th><th>Challenges réussis / ratés (vrais jours)</th><th>Bot</th></tr></thead>
+</tr>`}).join("");
+ return head+viewBT()+`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Historique / bot</th><th>Stratégies de la combinaison</th><th>Réussite challenge</th><th>Échecs</th>
+  <th>Réussi en</th><th>Gain en direct</th><th>Pire jour</th><th>DD max</th><th>Trades / mois</th><th>Trades</th><th>Challenges réussis / ratés (vrais jours)</th></tr></thead>
   <tbody>${rows}</tbody></table></div>`}
+let BT=null,BTr=null,btBusy=false,btTimer=null;
+async function loadBT(rang,start){if(btBusy)return;btBusy=true;BTr=rang;
+ const get=async go=>(await fetch(`/api/backtest?top=${rang}`+(go?"&lancer=1":""),{cache:"no-store"})).json();
+ try{BT=await get(start===true);if(start==="auto"&&BT.etat==="jamais")BT=await get(true)}catch(e){BT={etat:"erreur",message:"Backtest impossible : "+e}}
+ btBusy=false;clearTimeout(btTimer);if(BT.etat==="en cours")btTimer=setTimeout(()=>loadBT(BTr,false),2000);render()}
+function eqSvg(c,rec){if(!c||c.length<2)return "";const W=900,H=240,L=46,R=10,T=10,B=24,v=c.map(x=>x[1]);
+ let lo=Math.min(0,...v),hi=Math.max(0,...v);if(hi-lo<1e-9)hi=lo+1;const pad=(hi-lo)*.06;lo-=pad;hi+=pad;
+ const X=i=>L+i/(c.length-1)*(W-L-R),Y=y=>T+(hi-y)/(hi-lo)*(H-T-B);
+ const st=Math.pow(10,Math.floor(Math.log10((hi-lo)/4)));const step=[1,2,5,10].map(k=>k*st).find(k=>(hi-lo)/k<=5);
+ let g="";for(let y=Math.ceil(lo/step)*step;y<=hi;y+=step)g+=`<line class="${Math.abs(y)<1e-9?"zl":"gl"}" x1="${L}" x2="${W-R}" y1="${Y(y)}" y2="${Y(y)}"/><text x="${L-6}" y="${Y(y)+4}" text-anchor="end">${fmt(Math.abs(y)<1e-9?0:y,0,true)} %</text>`;
+ const ri=c.findIndex(x=>x[0]>=rec);const recR=ri>0?`<rect class="rec" x="${X(ri)}" y="${T}" width="${W-R-X(ri)}" height="${H-T-B}"/><text x="${X(ri)+6}" y="${T+12}">période récente</text>`:"";
+ const yrs=[];let last="";c.forEach((x,i)=>{const yy=x[0].slice(0,4);if(yy!==last){last=yy;yrs.push(i)}});
+ const ticks=yrs.filter((_,k)=>yrs.length<=12||k%Math.ceil(yrs.length/12)===0).map(i=>`<text x="${X(i)}" y="${H-6}" text-anchor="middle">${c[i][0].slice(0,4)}</text>`).join("");
+ const d=c.map((x,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(x[1]).toFixed(1)).join("");
+ return `<div class="eqwrap"><svg class="eq" viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe du compte en % sur l'historique">${recR}${g}${ticks}<path class="ln" d="${d}"/>
+  <line class="cur" x1="0" x2="0" y1="${T}" y2="${H-B}" stroke="var(--axis)" style="display:none"/><circle class="dotc" r="4.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2" style="display:none"/>
+  <rect x="${L}" y="${T}" width="${W-L-R}" height="${H-T-B}" fill="transparent" class="hit" data-l="${L}" data-w="${W-L-R}" data-t="${T}" data-h="${H-T-B}" data-lo="${lo}" data-hi="${hi}"/></svg><div class="eqtip"></div></div>`}
+document.getElementById("view").addEventListener("mousemove",e=>{const hit=e.target.closest(".eq .hit");const wrap=e.target.closest(".eqwrap");
+ if(!wrap)return;const svg=wrap.querySelector("svg"),tip=wrap.querySelector(".eqtip"),cur=svg.querySelector(".cur"),dot=svg.querySelector(".dotc");
+ if(!hit){tip.style.display=cur.style.display=dot.style.display="none";return}
+ const c=(BT&&BT.resultat&&BT.resultat.courbe)||[];if(!c.length)return;const r=svg.getBoundingClientRect(),k=900/r.width;
+ const L=+hit.dataset.l,Wd=+hit.dataset.w,T=+hit.dataset.t,Hh=+hit.dataset.h,lo=+hit.dataset.lo,hi=+hit.dataset.hi;
+ const x=(e.clientX-r.left)*k,i=Math.max(0,Math.min(c.length-1,Math.round((x-L)/Wd*(c.length-1))));
+ const px=L+i/(c.length-1)*Wd,py=T+(hi-c[i][1])/(hi-lo)*Hh;
+ cur.setAttribute("x1",px);cur.setAttribute("x2",px);cur.style.display="";dot.setAttribute("cx",px);dot.setAttribute("cy",py);dot.style.display="";
+ tip.innerHTML=`<b>${esc(c[i][0])}</b> · compte ${fmt(c[i][1],2,true)} %`;tip.style.display="block";
+ const left=px/k;tip.style.left=Math.min(left+12,r.width-170)+"px";tip.style.top=Math.max(0,py/k-34)+"px"});
+document.getElementById("view").addEventListener("click",e=>{const b=e.target.closest(".btbtn");if(!b)return;e.stopPropagation();
+ loadBT(+b.dataset.bt,"auto");setTimeout(()=>{const p=document.querySelector(".panel");if(p)p.scrollIntoView({behavior:"smooth",block:"start"})},300)});
+function viewBT(){if(!BT||!BTr)return "";const run=BT.etat==="en cours",R=BT.resultat;
+ const pct=BT.total?Math.round(BT.fait/BT.total*100):0;
+ let h=`<div class="panel"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Backtest de la combinaison n°${BTr} sur l'historique MT5</h3>
+  <a href="#" onclick="BT=null;BTr=null;render();return false" class="mut">fermer</a></div>`;
+ if(run)return h+`<p><span class="meter" style="width:220px"><i style="width:${pct}%"></i></span> ${pct} % · ${esc(BT.message)} <span class="mut">(démarré à ${esc(BT.debut||"")})</span></p></div>`;
+ if(!R||!R.ok)return h+`<p class="neg">${esc(BT.message||"")}</p>${R?compTable(R):""}</div>`;
+ const A=R.tout,Rc=R.recent;
+ const row=(lab,k,f)=>`<tr><td>${lab}</td><td class="n">${f(A[k])}</td><td class="n">${f(Rc[k])}</td></tr>`;
+ const pc=(d,s)=>v=>v==null?"—":`<span class="${s?cls(v):""}">${fmt(v,d,s)} %</span>`,nb=d=>v=>v==null?"—":fmt(v,d),days=v=>v==null?"—":"~"+fmt(v,0)+" j";
+ h+=`<p class="note">${esc(R.message)} · ${esc(R.regles||"")} · ${fmt(R.refuses,0)} signaux refusés par la perte possible max par jour · calculé le ${esc(R.calcule_le||"")}
+  · <a href="#" onclick="loadBT(BTr,true);return false">refaire</a></p>
+  <p class="note" style="color:var(--ink)"><b>À lire honnêtement :</b> ces stratégies ont été trouvées en cherchant sur une partie de ce même historique, donc
+  « tout l'historique » est optimiste. La colonne <b>période récente</b> (les ${fmt(35,0)} % les plus récents, la période de validation de la recherche) et le paper trading sont les chiffres qui comptent.</p>
+  ${eqSvg(R.courbe,R.debut_recent)}
+  <div class="row" style="align-items:flex-start;gap:18px;margin-top:10px">
+  <table class="cmp" style="width:auto"><thead><tr><th></th><th>Tout l'historique</th><th>Période récente</th></tr></thead><tbody>
+  <tr><td>Période</td><td class="n">${esc(A.periode)}</td><td class="n">${esc(Rc.periode)}</td></tr>
+  ${row("Gain total (risque fixe)","rendement_pct",pc(1,true))}${row("Réussite du challenge (simulée)","ftmo_pass",pc(0))}
+  ${row("Échecs (limite de perte touchée)","ftmo_echec_p1",pc(1))}${row("Challenge réussi en","jours_attendus",days)}
+  <tr><td>Challenges enchaînés sur les vrais jours</td><td class="n">${A.reussis} réussis / ${A.rates} ratés</td><td class="n">${Rc.reussis} réussis / ${Rc.rates} ratés</td></tr>
+  ${row("Pire journée","pire_jour",pc(2,true))}${row("Drawdown max","dd_max",pc(2))}${row("Trades","trades",nb(0))}
+  ${row("Trades par mois","trades_mois",nb(0))}${row("Trades gagnants","reussite_trades",pc(0))}${row("R moyen par trade","r_moyen",v=>v==null?"—":rr(v))}
+  ${row("Jours tradés perdants","jours_negatifs_pct",pc(0))}${row("Trades gardés pendant un week-end","week_end_pct",pc(0))}${row("Durée moyenne d'un trade","duree_moy_h",v=>v==null?"—":fmt(v,1)+" h")}
+  </tbody></table>
+  <table class="cmp" style="width:auto"><thead><tr><th>Année</th><th>Gain</th><th>Pire jour</th><th>Trades</th></tr></thead><tbody>
+  ${(R.annees||[]).map(y=>`<tr><td>${y.annee}</td><td class="n"><span class="${cls(y.pct)}">${fmt(y.pct,1,true)} %</span></td><td class="n">${fmt(y.pire_jour,2)} %</td><td class="n">${y.trades}</td></tr>`).join("")}</tbody></table></div>`;
+ const M={};(R.mois||[]).forEach(m=>{(M[m.annee]=M[m.annee]||{})[m.mois]=m.pct});
+ const mn=["janv","févr","mars","avr","mai","juin","juil","août","sept","oct","nov","déc"];
+ h+=`<h4 style="margin:14px 0 6px">Gain par mois (%)</h4><div class="scroll" style="max-height:none"><table class="months"><thead><tr><th>Année</th>${mn.map(x=>`<th>${x}</th>`).join("")}</tr></thead><tbody>`+
+  Object.keys(M).sort().map(y=>`<tr><td style="text-align:left">${y}</td>${mn.map((_,i)=>{const v=M[y][i+1];return `<td>${v==null?"":`<span class="${cls(v)}">${fmt(v,1,true)}</span>`}</td>`}).join("")}</tr>`).join("")+`</tbody></table></div>`;
+ return h+compTable(R)+`</div>`}
+function compTable(R){return `<h4 style="margin:14px 0 6px">Chaque stratégie de la combinaison sur l'historique</h4>`+table("btc",[["Marché","symbole"],["TF","timeframe"],["Stratégie","strategie"],["Risque/trade","risk_pct",v=>fmt(v,1)+" %",1],
+ ["Trades","trades",null,1],["R total","r_total",rr,1],["Trades gagnants","reussite",v=>v==null?"—":fmt(v,0)+" %",1],["Historique","debut",(v,r)=>v?esc(v)+" → "+esc(r.fin):"—"],["Problème","erreur",v=>v?`<span class="neg">${esc(v)}</span>`:""]],R.composants||[])}
 let M=null,mTime=0,mBusy=false;
 async function loadMarches(force){if(mBusy||(!force&&M&&Date.now()-mTime<60000))return;mBusy=true;mTime=Date.now();
  try{M=await (await fetch("/api/marches",{cache:"no-store"})).json()}catch(e){M={message:"Classement impossible : "+e,marches:[]}}
@@ -607,10 +785,11 @@ function render(){if(!D)return;tiles();if(D.profil){const t="Plateforme — "+D.
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;
- el.innerHTML=v();
+ const html=v();if(tab===lastTab&&html===lastHtml){return}lastHtml=html;
+ el.innerHTML=html;
  if(tab===lastTab)el.querySelectorAll(".scroll").forEach((x,i)=>{if(keep[i]){x.scrollTop=keep[i][0];x.scrollLeft=keep[i][1]}});
  lastTab=tab;window.scrollTo(0,wy)}
-let lastTab=null;
+let lastTab=null,lastHtml=null;
 function fillSelect(id,vals){const el=document.getElementById(id),cur=el.value,first=el.options[0].outerHTML;
  el.innerHTML=first+[...vals].sort().map(v=>`<option${v===cur?" selected":""}>${esc(v)}</option>`).join("")}
 async function poll(){try{const r=await fetch("/api/etat",{cache:"no-store"});D=await r.json();

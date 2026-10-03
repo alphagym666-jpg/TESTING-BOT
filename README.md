@@ -681,6 +681,15 @@ stratégies du direct → TOP 10 des combinaisons »** :
 - pour chacune : réussite et échecs du challenge, jours pour réussir, gain en direct, pire jour, DD max,
   trades par mois, challenges réussis / ratés sur les vrais jours, et un bouton **« Créer le bot MT5 »**.
 
+**Bouton « Backtest »** sur chaque combinaison : elle est rejouée sur TOUT l'historique MT5 (chaque stratégie sur
+son marché et son timeframe, mêmes coûts que la recherche : spread, commission, glissement, swaps, nouvelles),
+sur un seul compte avec les mêmes règles de risque. La page montre la courbe du compte, le gain par année et par
+mois, la pire journée, le drawdown max, les trades par mois, les challenges FTMO réussis / ratés en les
+enchaînant sur les vrais jours et la réussite simulée, pour TOUT l'historique et pour la PÉRIODE RÉCENTE seule
+(les 35 % les plus récents). Les stratégies ont été trouvées sur une partie de cet historique : « tout
+l'historique » est optimiste, la période récente et le paper trading sont les chiffres honnêtes. Résultats
+enregistrés dans `backtests/` (ils réapparaissent après un redémarrage, lien « refaire » pour recalculer).
+
 Le calcul tourne en arrière-plan (1 à 5 minutes, barre d'avancement) et est enregistré dans `top10_direct.json`
 (le dernier TOP 10 réapparaît après un redémarrage). Avec moins de 20 jours de bourse en direct, le classement
 bouge encore : la page le dit.

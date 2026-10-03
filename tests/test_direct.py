@@ -122,3 +122,66 @@ def test_platform_top10_bot(tmp_path, monkeypatch):
     assert got["comb"]["composants"][0]["candidate"] == st["s0"]["candidate"] and got["risk"] == 0.5
     assert got["ftmo"].target1 == 10.0 and got["cap"] == 100_000.0 and "profil" not in got["comb"]
     assert not pf.make_bot(eng, "/api/bot?top=5")["ok"]
+
+
+def _cand(fast, slow):
+    return {"signal": {"type": "single", "name": "ema_cross", "params": {"fast": fast, "slow": slow}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.5, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+
+
+def _synthetic_data(sym, tf):
+    import zlib
+
+    from mt5lab.data import synthetic
+    return synthetic(12000, seed=zlib.crc32(sym.encode()) % 1000), 0.00012
+
+
+def test_backtest_of_a_combination():
+    from mt5lab.backtest_combinee import backtest_combination
+    comb = {"composants": [{"symbole": "XAUUSD", "timeframe": "H1", "candidate": _cand(9, 21), "risk_pct": 1.0},
+                           {"symbole": "EURUSD", "timeframe": "H1", "candidate": _cand(12, 50), "risk_pct": 0.5},
+                           {"symbole": "BIDON", "timeframe": "H1", "candidate": _cand(5, 20), "risk_pct": 1.0}],
+            "regles": {"day_budget": 2.5}}
+
+    def data(sym, tf):
+        if sym == "BIDON":
+            raise RuntimeError("pas de données")
+        return _synthetic_data(sym, tf)
+    steps = []
+    res = backtest_combination(comb, data, n_sim=300, progress=lambda a, b, m: steps.append(a), log=lambda m: None)
+    assert res["ok"] and steps[-1] == 4
+    a, r = res["tout"], res["recent"]
+    assert a["trades"] > r["trades"] > 0 and a["pire_jour"] > -2.5 * 1.15     # perte possible max par jour respectée
+    assert res["composants"][2]["erreur"] and res["composants"][0]["trades"] > 0
+    assert len(res["courbe"]) <= 502 and abs(res["courbe"][-1][1] - a["rendement_pct"]) < 0.05
+    assert abs(sum(m["pct"] for m in res["mois"]) - a["rendement_pct"]) < 0.05
+    assert res["debut_recent"] >= a["periode"][:10]
+    json.dumps(res)
+
+
+def test_platform_backtest_button(tmp_path, monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    import mt5lab.plateforme as pf
+    from mt5lab.ftmo import FtmoRules
+    slots = {"s0": SimpleNamespace(symbol="XAUUSD", timeframe="H1", candidate=_cand(9, 21)),
+             "s1": SimpleNamespace(symbol="EURUSD", timeframe="H1", candidate=_cand(12, 50))}
+    eng = SimpleNamespace(out=tmp_path, slots=slots, ftmo=FtmoRules(), risk_pct=1.0, profile=None)
+    eng._top10_job = {"etat": "fini", "resultat": {"top": [{"rang": 1, "nom": "N°1", "regles": {"day_budget": 2.5},
+                      "composants": [{"strategie_id": "s0", "symbole": "XAUUSD", "timeframe": "H1", "risk_pct": 1.0},
+                                     {"strategie_id": "s1", "symbole": "EURUSD", "timeframe": "H1", "risk_pct": 0.5}]}]}}
+    monkeypatch.setattr(pf, "_platform_data", lambda e: lambda s, tf, cand=None: _synthetic_data(s, tf))
+    assert pf.backtest_live(eng, "/api/backtest?top=1")["etat"] == "jamais"
+    assert pf.backtest_live(eng, "/api/backtest?top=4&lancer=1")["etat"] == "erreur"
+    job = pf.backtest_live(eng, "/api/backtest?top=1&lancer=1")
+    for _ in range(300):
+        if job["etat"] != "en cours":
+            break
+        time.sleep(0.2)
+        job = pf.backtest_live(eng, "/api/backtest?top=1")
+    assert job["etat"] == "fini", job["message"]
+    assert job["resultat"]["tout"]["trades"] > 0 and list((tmp_path / "backtests").glob("*.json"))
+    del eng._bt_jobs                                           # après un redémarrage : le backtest enregistré
+    assert pf.backtest_live(eng, "/api/backtest?top=1")["etat"] == "fini"
