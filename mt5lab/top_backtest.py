@@ -191,6 +191,16 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
             e.pop("resultat", None)
             out_c.append(e)
         say("Chef des combinaisons", 1, 1)
+    say("classement croisé backtest × paper trading", 0, 1)
+    cross = cross_ranking(trades, window, live, strategies, risk_pct, rules, label, rconf, n=n_top,
+                          min_bt=min_trades, n_sim=min(n_sim, 1500))
+    for e in out_c:   # combinaisons : le paper confirme-t-il le backtest ? (gain par jour)
+        e["ratio"] = _ratio(e["direct"].get("rendement_pct"), e["direct"].get("jours"),
+                            (e["backtest"].get("tout") or {}).get("rendement_pct"), 252 * years)
+    for e in out_s:
+        k = e["composants"][0]["strategie_id"]
+        e["ratio"] = next((x["ratio"] for lst in cross["listes"].values() for x in lst
+                           if x["strategie_id"] == k), cross["ratios"].get(k))
     n_ok = sum(1 for x in out_s if x["conforme"])
     msg = (f"{len(trades)} stratégies du direct rejouées sur les {years:g} dernières années"
            + (f" (les {max_strategies} plus actives)" if capped else "")
@@ -199,6 +209,94 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
     if errors:
         msg += f" Marchés sans données : {'; '.join(errors[:5])}."
     return {"ok": True, "seules": out_s, "combinees": out_c, "strategies_testees": len(trades),
-            "gagnantes": len(quick), "plafond": capped, "annees": years, "erreurs": errors,
+            "gagnantes": len(quick), "plafond": capped, "croise": cross, "annees": years, "erreurs": errors,
             "periode": f"{lo_all:%Y-%m-%d} → {hi_all:%Y-%m-%d}", "regles": rules.label(), "message": msg}
 
+
+
+def _ratio(live_pct, live_days, bt_pct, bt_days):
+    """Le paper trading fait combien % du backtest (gain par jour) ? None si on ne peut pas comparer."""
+    if not live_days or live_pct is None or not bt_pct or bt_pct <= 0:
+        return None
+    return round(float(live_pct / live_days) / float(bt_pct / bt_days) * 100, 0)
+
+
+def _tstat(r) -> float:
+    r = pd.Series(r, dtype=float)
+    sd = r.std(ddof=1) if len(r) > 1 else 0.0
+    return round(float(r.mean() / sd * (len(r) ** 0.5)), 2) if sd and sd > 0 else 0.0
+
+
+def cross_ranking(trades: dict, window: dict, live: pd.DataFrame | None, strategies: dict, risk_pct: float,
+                  rules: FtmoRules, label, rconf, n: int = 10, min_bt: int = 10, min_live: int = 5,
+                  n_sim: int = 1500) -> dict:
+    """CLASSEMENT CROISÉ backtest × paper trading des stratégies seules.
+
+    Pour chaque stratégie : solidité t (R moyen / écart-type x racine du nombre de trades : tient compte du nombre
+    de trades) sur le backtest et sur le paper, puis son RANG en % parmi toutes (100 % = la meilleure).
+      - « bonnes partout »           : le plus petit des deux rangs est le plus haut (bonne en backtest ET en paper)
+      - « bonnes en paper seulement » : rang paper bien au-dessus du rang backtest
+      - « bonnes en backtest seulement » : rang backtest bien au-dessus du rang paper (le backtest ne se confirme pas)
+    Ratio : R moyen du paper / R moyen du backtest (100 % = le paper fait exactement comme le backtest)."""
+    out = {"listes": {"partout": [], "paper": [], "backtest": []}, "ratios": {}, "min_paper": min_live,
+           "comparees": 0}
+    if live is None or not len(live):
+        out["message"] = "Pas encore de trades en paper trading à comparer."
+        return out
+    tab = strategy_table(live[live["strategie_id"].isin(trades.keys())], 1)
+    if not len(tab):
+        out["message"] = "Aucune stratégie backtestée n'a encore tradé en paper."
+        return out
+    rows = []
+    for r in tab.to_dict("records"):
+        k = r["strategie_id"]
+        tr = trades.get(k)
+        if tr is None or len(tr) < min_bt:
+            continue
+        rb = tr["r"].to_numpy(float)
+        bt = {"trades": int(len(rb)), "r_moyen": round(float(rb.mean()), 3), "r_total": round(float(rb.sum()), 1),
+              "t": _tstat(rb), "gain_pct": round(float(rb.sum() * risk_pct), 1),
+              "reussite": round(float((rb > 0).mean() * 100), 0)}
+        pp = {"trades": int(r["trades"]), "r_moyen": r["r_moyen"], "r_total": r["r_total"], "t": r["t"],
+              "gain_pct": round(float(r["r_total"] * risk_pct), 1), "reussite": r["reussite_pct"],
+              "jours": r["jours"]}
+        ratio = round(pp["r_moyen"] / bt["r_moyen"] * 100, 0) if bt["r_moyen"] > 0 else None
+        out["ratios"][k] = ratio
+        if pp["trades"] >= min_live:
+            rows.append({"strategie_id": k, "bt": bt, "paper": pp, "ratio": ratio})
+    out["comparees"] = len(rows)
+    if not rows:
+        out["message"] = f"Aucune stratégie n'a encore {min_live} trades en paper ET {min_bt} trades dans le backtest."
+        return out
+    pb = pd.Series([x["bt"]["t"] for x in rows]).rank(pct=True).to_numpy()
+    pl = pd.Series([x["paper"]["t"] for x in rows]).rank(pct=True).to_numpy()
+    for x, a, b in zip(rows, pb, pl):
+        x["rang_bt"], x["rang_paper"] = round(float(a) * 100, 0), round(float(b) * 100, 0)
+    lists = {
+        "partout": sorted([x for x in rows if x["bt"]["r_moyen"] > 0 and x["paper"]["r_moyen"] > 0],
+                          key=lambda x: (-min(x["rang_bt"], x["rang_paper"]), -(x["rang_bt"] + x["rang_paper"]))),
+        "paper": sorted([x for x in rows if x["paper"]["r_moyen"] > 0 and x["rang_paper"] - x["rang_bt"] >= 25],
+                        key=lambda x: (-(x["rang_paper"] - x["rang_bt"]), -x["rang_paper"])),
+        "backtest": sorted([x for x in rows if x["bt"]["r_moyen"] > 0 and x["rang_bt"] - x["rang_paper"] >= 25],
+                           key=lambda x: (-(x["rang_bt"] - x["rang_paper"]), -x["rang_bt"])),
+    }
+    for name, lst in lists.items():
+        for i, x in enumerate(lst[:n], 1):
+            x = dict(x)   # une stratégie peut être dans deux listes : chacune son rang
+            k = x["strategie_id"]
+            st = strategies[k]
+            x.update(rang=i, symbole=st["symbole"], timeframe=st["timeframe"], strategie=label(k),
+                     risque_config=rconf(k), en_pause=bool(st.get("en_pause")),
+                     score=min(x["rang_bt"], x["rang_paper"]) if name == "partout" else
+                     abs(x["rang_paper"] - x["rang_bt"]))
+            rows_ = [{"symbole": st["symbole"], "timeframe": st["timeframe"], "strategie": x["strategie"],
+                      "risk_pct": risk_pct, "trades": 0, "r_total": 0.0, "erreur": None,
+                      "debut": f"{window[k][0]:%Y-%m-%d}", "fin": f"{window[k][1]:%Y-%m-%d}"}]
+            x["backtest"] = account_report([trades[k].assign(w=risk_pct, comp=0)], rows_, *window[k], rules,
+                                           {"day_budget": DAY_BUDGET}, risk_pct, n_sim)
+            x["direct"] = live_summary(live, [k], {k: risk_pct}, rules, risk_pct)
+            out["listes"][name].append(x)
+    out["message"] = (f"{len(rows)} stratégies comparées (au moins {min_live} trades en paper et {min_bt} dans le "
+                      f"backtest) : {len(lists['partout'])} gagnantes partout, {len(lists['paper'])} bien meilleures "
+                      f"en paper qu'en backtest, {len(lists['backtest'])} bien meilleures en backtest qu'en paper.")
+    return out

@@ -267,3 +267,30 @@ def test_platform_top2ans_and_bots(tmp_path, monkeypatch):
     assert pf.make_bot(eng, "/api/bot?id=s13")["ok"]                    # une stratégie seule de la combinaison
     del eng._top2_job
     assert pf.top2ans_live(eng)["etat"] == "fini"                       # après un redémarrage
+
+
+def test_cross_ranking_backtest_vs_paper():
+    from mt5lab.top_backtest import top_backtest
+    strategies = _bt_strategies()
+    rng = np.random.default_rng(5)
+    rows = []
+    for k in strategies:
+        p = 0.55 if int(k[1:]) % 3 == 0 else 0.25        # un tiers gagne en paper, le reste perd
+        for d in pd.bdate_range("2026-08-03", periods=12):
+            rows.append({"strategie_id": k, "symbole": strategies[k]["symbole"], "timeframe": "H1", "strategie": k,
+                         "risque": "x", "ouverture": f"{d:%Y-%m-%d} 10:00:00", "fermeture": f"{d:%Y-%m-%d} 12:00:00",
+                         "r": float(rng.choice([2.0, -1.0], p=[p, 1 - p]))})
+    res = top_backtest(strategies, lambda s, tf, c: _synthetic_data(s, tf), live=pd.DataFrame(rows), n_sim=200,
+                       n_top=5, log=lambda m: None)
+    X = res["croise"]
+    assert X["comparees"] > 0 and set(X["listes"]) == {"partout", "paper", "backtest"}
+    for x in X["listes"]["partout"]:
+        assert x["bt"]["r_moyen"] > 0 and x["paper"]["r_moyen"] > 0 and x["backtest"]["ok"]
+    for x in X["listes"]["paper"]:
+        assert x["rang_paper"] - x["rang_bt"] >= 25
+    for x in X["listes"]["backtest"]:
+        assert x["rang_bt"] - x["rang_paper"] >= 25
+    p = X["listes"]["partout"]
+    assert [x["rang"] for x in p] == list(range(1, len(p) + 1))
+    assert all(min(a["rang_bt"], a["rang_paper"]) >= min(b["rang_bt"], b["rang_paper"]) for a, b in zip(p, p[1:]))
+    json.dumps(res, default=str)

@@ -758,7 +758,7 @@ async function loadTop2(start){if(t2Busy)return;t2Busy=true;
  try{T2=await (await fetch("/api/top2ans"+(start?"?lancer=1":""),{cache:"no-store"})).json()}catch(e){T2={etat:"erreur",message:"Calcul impossible : "+e}}
  t2Busy=false;clearTimeout(t2Timer);if(T2.etat==="en cours")t2Timer=setTimeout(()=>loadTop2(false),2000);render()}
 document.getElementById("view").addEventListener("click",e=>{const b=e.target.closest(".v2btn");if(!b)return;e.stopPropagation();
- SEL2={k:b.dataset.k,r:+b.dataset.r};render();setTimeout(()=>{const p=document.querySelector(".panel");if(p)p.scrollIntoView({behavior:"smooth",block:"start"})},100)});
+ SEL2={k:b.dataset.k,r:+b.dataset.r,l:b.dataset.l};render();setTimeout(()=>{const p=document.querySelector(".panel");if(p)p.scrollIntoView({behavior:"smooth",block:"start"})},100)});
 function liveBox(L,single){if(!L||!L.trades)return `<div class="livebox"><b>En paper trading :</b> <span class="mut">pas encore de trade en direct.</span></div>`;
  return `<div class="livebox"><b>En paper trading jusqu'à maintenant</b> (depuis le ${esc(L.depuis)}, ${fmt(L.jours,0)} jours de bourse) :
   ${fmt(L.trades,0)} trades · ${rr(L.r_total)} · ${fmt(L.reussite,0)} % gagnants · gain <span class="${cls(L.rendement_pct)}">${fmt(L.rendement_pct,2,true)} %</span>
@@ -771,7 +771,27 @@ function bt2Cells(B){const a=(B&&B.tout)||{};const pc=(v,d)=>v==null?"—":fmt(v
   <td class="n">${a.jours_attendus==null?"—":"~"+fmt(a.jours_attendus,0)+" j"}</td><td class="n">${a.reussis??"—"} / ${a.rates??"—"}</td>
   <td class="n">${fmt(a.pire_jour,2)} %</td><td class="n">${fmt(a.dd_max,2)} %</td><td class="n">${fmt(a.trades,0)}</td><td class="n">~${fmt(a.trades_mois,0)}</td>`}
 const BT2H=`<th>Gain 2 ans</th><th>Réussite challenge</th><th>Échecs</th><th>Réussi en</th><th>Challenges réussis / ratés</th><th>Pire jour</th><th>DD max</th><th>Trades</th><th>Trades / mois</th>`;
-const PAPH=`<th>Trades paper</th><th>Gain paper</th><th>Challenges paper</th><th>Paper depuis</th>`;
+const PAPH=`<th>Trades paper</th><th>Gain paper</th><th>Challenges paper</th><th>Paper depuis</th><th title="Le paper trading fait combien % du backtest (100 % = pareil)">Paper / backtest</th>`;
+function ratioCell(v){if(v==null)return `<td class="n mut">—</td>`;const c=v>=70?"pos":v<30?"neg":"";return `<td class="n"><span class="${c}">${fmt(v,0)} %</span></td>`}
+const XL={partout:"Bonnes partout (backtest ET paper)",paper:"Bonnes en paper, pas en backtest",backtest:"Bonnes en backtest, pas en paper"};
+let XSEL="partout";
+function crossView(X){if(!X)return "";const L=(X.listes||{})[XSEL]||[];
+ const tabs=Object.keys(XL).map(k=>`<button class="${k===XSEL?"cmpbtn":"botbtn"}" style="${k===XSEL?"font-size:13px;padding:5px 12px":""}" onclick="XSEL='${k}';render()">${XL[k]} (${((X.listes||{})[k]||[]).length})</button>`).join(" ");
+ const why={partout:"Les plus solides : bien classées dans le backtest des 2 ans ET en paper trading. Ce sont elles à mettre en premier sur un vrai compte.",
+  paper:"Elles marchent en paper trading mais leur backtest est faible : peut-être une bonne période passagère. À surveiller, pas à miser gros.",
+  backtest:"Elles brillaient dans le backtest mais pas en paper : le backtest ne se confirme pas (chance, marché qui a changé, coûts réels). Prudence."}[XSEL];
+ let h=`<h3 class="sec">Classement croisé : backtest 2 ans × paper trading</h3>
+  <p class="note">${esc(X.message||"")} Rang = position parmi toutes les stratégies comparées (100 % = la meilleure), d'après la solidité t (R moyen / écart-type × racine du nombre de trades).
+  « Paper / backtest » = R moyen du paper ÷ R moyen du backtest (100 % = le paper fait comme le backtest).</p><p>${tabs}</p><p class="note"><b>${esc(XL[XSEL])} :</b> ${why}</p>`;
+ if(!L.length)return h+`<p class="note">Aucune stratégie dans cette liste pour l'instant.</p>`;
+ return h+`<div class="scroll"><table><thead><tr><th>#</th><th>Backtest / bot</th><th>Marché</th><th>TF</th><th>Stratégie</th>
+  <th>Rang backtest</th><th>Rang paper</th><th>Trades 2 ans</th><th>R moyen 2 ans</th><th>Gain 2 ans</th><th>t backtest</th>
+  <th>Trades paper</th><th>R moyen paper</th><th>Gain paper</th><th>t paper</th><th title="R moyen du paper ÷ R moyen du backtest">Paper / backtest</th></tr></thead><tbody>`+
+  L.map(x=>`<tr><td class="n"><b>${x.rang}</b></td><td><button class="v2btn btbtn" data-k="x" data-l="${XSEL}" data-r="${x.rang}">Voir le backtest</button> <button class="botbtn" data-id="${esc(x.strategie_id)}">Bot MT5</button>${x.en_pause?' <span class="tag ko">en pause</span>':""}</td>
+   <td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)} · ${esc(x.risque_config)}">${esc(x.strategie)}</td>
+   <td class="n"><b>${fmt(x.rang_bt,0)} %</b></td><td class="n"><b>${fmt(x.rang_paper,0)} %</b></td>
+   <td class="n">${fmt(x.bt.trades,0)}</td><td class="n">${rr(x.bt.r_moyen)}</td><td class="n"><span class="${cls(x.bt.gain_pct)}">${fmt(x.bt.gain_pct,1,true)} %</span></td><td class="n">${fmt(x.bt.t,2)}</td>
+   <td class="n">${fmt(x.paper.trades,0)}</td><td class="n">${rr(x.paper.r_moyen)}</td><td class="n"><span class="${cls(x.paper.gain_pct)}">${fmt(x.paper.gain_pct,1,true)} %</span></td><td class="n">${fmt(x.paper.t,2)}</td>${ratioCell(x.ratio)}</tr>`).join("")+`</tbody></table></div>`}
 function stateTag(e){return (e.conforme?'<span class="tag ok">conforme</span>':'<span class="tag ko">trop risquée</span>')+(e.hors_top?' <span class="tag">hors TOP 10</span>':"")}
 function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargement…</div>`}
  const run=T2.etat==="en cours",R=T2.resultat||{},C=R.combinees||[],S=R.seules||[];
@@ -784,8 +804,10 @@ function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargemen
   <b>2 dernières années</b> de MT5 (spread, commission, glissement, swaps, nouvelles), sur un compte avec 1 % max par trade et 2,5 % de perte possible max par jour.
   À côté : ce qu'elle a donné <b>en paper trading</b> jusqu'à maintenant. <b>À lire honnêtement :</b> le n°1 parmi des milliers de backtests est en partie chanceux ;
   celle qui est bonne sur 2 ans <b>ET</b> en paper trading est la plus solide.</p>`;
- if(SEL2){const L=SEL2.k==="c"?C:S,e=L.find(x=>x.rang===SEL2.r);
-  if(e&&e.backtest){const B=e.backtest,title=SEL2.k==="c"?`${esc(e.nom)}${e.origine&&e.origine!=="Chef des combinaisons"?" · "+esc(e.origine):""}`:`${esc(e.nom)} : ${esc(e.composants[0].symbole)} ${esc(e.composants[0].timeframe)}`;
+ const X=(R.croise&&R.croise.listes)||{};
+ if(SEL2){const L=SEL2.k==="c"?C:SEL2.k==="s"?S:(X[SEL2.l]||[]),e=L.find(x=>x.rang===SEL2.r);
+  if(e&&e.backtest){if(SEL2.k==="x")e.composants=[{strategie_id:e.strategie_id,symbole:e.symbole,timeframe:e.timeframe}];
+   const B=e.backtest,title=SEL2.k==="c"?`${esc(e.nom)}${e.origine&&e.origine!=="Chef des combinaisons"?" · "+esc(e.origine):""}`:SEL2.k==="x"?`${esc(XL[SEL2.l])} n°${e.rang} : ${esc(e.symbole)} ${esc(e.timeframe)}`:`${esc(e.nom)} : ${esc(e.composants[0].symbole)} ${esc(e.composants[0].timeframe)}`;
    h+=`<div class="panel"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Backtest 2 ans — ${title}</h3>
     <span>${SEL2.k==="c"?`<button class="botbtn" data-bt2="${e.rang}">Créer le bot MT5 de cette combinaison</button>`:`<button class="botbtn" data-id="${esc(e.composants[0].strategie_id)}">Créer le bot MT5</button>`}
     <a href="#" onclick="SEL2=null;render();return false" class="mut" style="margin-left:10px">fermer</a></span></div>`+
@@ -794,13 +816,14 @@ function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargemen
  if(!C.length&&!S.length)return h+(run?"":`<div class="empty">Pas encore de TOP 10 backtest.</div>`);
  const comps=e=>e.composants.map(x=>`<div title="${esc(x.strategie)}">${miniBot(x.strategie_id)}${esc(x.symbole)} ${esc(x.timeframe)} · ${esc(String(x.strategie).slice(0,50))}
   <span class="mut">(${fmt(x.risk_pct,1)} %/trade · 2 ans : ${fmt(x.trades_bt,0)} trades ${fmt(x.r_total_bt,1,true)}R · paper : ${x.direct_trades?fmt(x.direct_trades,0)+" trades "+fmt(x.direct_r,1,true)+"R":"pas encore"})</span>${x.en_pause?' <span class="tag ko">en pause</span>':""}</div>`).join("");
+ h+=crossView(R.croise);
  h+=`<h3 class="sec">TOP 10 des stratégies COMBINÉES (backtest 2 ans)</h3>`+(C.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Stratégies de la combinaison (bot de chacune)</th><th>Origine</th>${BT2H}${PAPH}</tr></thead><tbody>`+
   C.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}</td><td><button class="v2btn btbtn" data-k="c" data-r="${e.rang}">Voir le backtest</button> <button class="botbtn" data-bt2="${e.rang}">Bot MT5 combinée</button></td>
-   <td style="font-size:12px;line-height:1.5">${comps(e)}</td><td>${esc(e.origine||"")}</td>${bt2Cells(e.backtest)}${paperCells(e.direct)}</tr>`).join("")+`</tbody></table></div>`:`<p class="note">Pas de combinaison.</p>`);
+   <td style="font-size:12px;line-height:1.5">${comps(e)}</td><td>${esc(e.origine||"")}</td>${bt2Cells(e.backtest)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`).join("")+`</tbody></table></div>`:`<p class="note">Pas de combinaison.</p>`);
  h+=`<h3 class="sec">TOP 10 des stratégies SEULES (backtest 2 ans)</h3>`+(S.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th>${BT2H}${PAPH}</tr></thead><tbody>`+
   S.map(e=>{const x=e.composants[0];return `<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}${x.en_pause?' <span class="tag ko">en pause</span>':""}</td>
    <td><button class="v2btn btbtn" data-k="s" data-r="${e.rang}">Voir le backtest</button> <button class="botbtn" data-id="${esc(x.strategie_id)}">Bot MT5</button></td>
-   <td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)}">${esc(x.strategie)}</td><td class="s" title="${esc(x.risque_config)}">${esc(x.risque_config)}</td>${bt2Cells(e.backtest)}${paperCells(e.direct)}</tr>`}).join("")+`</tbody></table></div>`:`<p class="note">Pas de stratégie seule.</p>`);
+   <td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)}">${esc(x.strategie)}</td><td class="s" title="${esc(x.risque_config)}">${esc(x.risque_config)}</td>${bt2Cells(e.backtest)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`}).join("")+`</tbody></table></div>`:`<p class="note">Pas de stratégie seule.</p>`);
  return h}
 let M=null,mTime=0,mBusy=false;
 async function loadMarches(force){if(mBusy||(!force&&M&&Date.now()-mTime<60000))return;mBusy=true;mTime=Date.now();

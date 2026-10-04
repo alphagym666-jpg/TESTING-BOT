@@ -713,6 +713,13 @@ Onglet **« TOP 10 backtest 2 ans »** de la plateforme, bouton **« Backtester 
 - **un bot pour chaque** : « Bot MT5 combinée » pour la combinaison, et un petit bouton **« Bot »** devant CHAQUE
   stratégie d'une combinaison pour la prendre seule (aussi dans l'onglet « TOP 10 combinées du direct »).
 
+**Classement croisé backtest × paper trading** (en haut de l'onglet) : pour chaque stratégie avec au moins 5 trades
+en paper et 10 dans le backtest, son RANG (100 % = la meilleure) d'après la solidité t, dans le backtest et en
+paper, et le ratio « paper / backtest » (R moyen du paper ÷ R moyen du backtest ; 100 % = pareil). Trois listes :
+**bonnes partout** (backtest ET paper : les plus solides), **bonnes en paper seulement** (à surveiller),
+**bonnes en backtest seulement** (le backtest ne se confirme pas : prudence). Bot MT5 et « Voir le backtest » sur
+chaque ligne ; colonne « Paper / backtest » aussi dans les TOP 10 seules et combinées.
+
 Enregistré dans `top_backtest_2ans.json`. Le n°1 parmi des milliers de backtests est en partie chanceux : la
 stratégie bonne sur 2 ans ET en paper trading est la plus solide.
 
