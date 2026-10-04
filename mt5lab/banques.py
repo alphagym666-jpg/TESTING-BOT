@@ -56,6 +56,8 @@ TEAM_E = [
     (22, "Arbitragiste statistique", "Écart anormal avec un marché lié (NASDAQ/US30, EURUSD/GBPUSD...)",
      ["pair_z", "ext_div"]),
     (23, "Positionnement des fonds", "Rapport COT de la CFTC : positions des gros spéculateurs", ["cot"]),
+    (24, "Analyste des annonces", "Avant / après les annonces importantes (NFP, CPI, banques centrales)",
+     ["news_after", "news_before"]),
 ]
 
 TEAM_D = [

@@ -72,6 +72,12 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"etat": "erreur", "message": f"Compilation impossible : {exc}"}, ensure_ascii=False)
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
+        elif path == "/api/analyse_trades":  # onglet « Analyse des trades » (excursions, contexte, fantômes)
+            try:
+                body = json.dumps(analyse_trades_live(self.server.engine, self.path), ensure_ascii=False, default=str)
+            except Exception as exc:
+                body = json.dumps({"message": f"Analyse impossible : {exc}"}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path == "/api/top2ans":  # TOP 10 backtest 2 ans des stratégies qui tradent en direct
             try:
                 body = json.dumps(top2ans_live(self.server.engine, start="lancer=1" in self.path),
@@ -176,6 +182,35 @@ def _run_top10(engine, job):
         job.update(etat="fini", resultat=res, message=res["message"])
     except Exception as exc:
         job.update(etat="erreur", message=f"Compilation impossible : {exc}")
+
+
+def analyse_trades_live(engine, url: str) -> dict:
+    """Ce que les trades du paper trading apprennent : stops et objectifs (excursions), quand ça marche (heure,
+    jour, type de marché, annonces) et trades refusés par la stratégie combinée (fantômes)."""
+    import time as _time
+    from urllib.parse import parse_qs, urlparse
+
+    import pandas as pd
+
+    from .analyse_trades import analyse
+    q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+    gpath = engine.out / "fantomes.csv"
+    gsize = gpath.stat().st_size if gpath.exists() else 0
+    key = (engine.total_trades if hasattr(engine, "total_trades") else 0, gsize, q.get("id"), q.get("sym"), q.get("tf"))
+    cache = getattr(engine, "_at_cache", None)
+    if cache and cache[0] == key and _time.time() - cache[1] < 30:
+        return cache[2]
+    t = _live_trades(engine)
+    ghosts = pd.read_csv(gpath) if gsize else None
+    rr_of = {k: sl.cfg.rr for k, sl in engine.slots.items()} if engine.slots else {}
+    res = analyse(t, ghosts, rr_of, q.get("id") or None, q.get("sym") or None, q.get("tf") or None)
+    if len(t):
+        n = t.groupby("strategie_id").agg(n=("r", "size"), sym=("symbole", "first"), tf=("timeframe", "first"),
+                                          strat=("strategie", "first")).sort_values("n", ascending=False).head(400)
+        res["liste"] = [{"id": k, "label": f"{r.sym} {r.tf} · {str(r.strat)[:70]} ({r.n} trades)"}
+                        for k, r in n.iterrows()]
+    engine._at_cache = (key, _time.time(), res)
+    return res
 
 
 YEARS_BT = 2.0   # backtest des 2 dernières années
@@ -635,7 +670,7 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 </main>
 <script>
 const TABS=[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
-["top","TOP 10 combinées du direct"],["bt2","TOP 10 backtest 2 ans"],["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
+["top","TOP 10 combinées du direct"],["bt2","TOP 10 backtest 2 ans"],["at","Analyse des trades"],["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
 let A=null,aTime=0,aBusy=false;  // une seule demande à la fois (sinon elles s'empilent et rien ne finit)
 async function loadAnalyse(force){if(aBusy||(!force&&A&&Date.now()-aTime<60000))return;aBusy=true;aTime=Date.now();
  try{A=await (await fetch("/api/analyse",{cache:"no-store"})).json()}catch(e){A={message:"Analyse impossible : "+e,classement:[]}}
@@ -825,6 +860,47 @@ function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargemen
    <td><button class="v2btn btbtn" data-k="s" data-r="${e.rang}">Voir le backtest</button> <button class="botbtn" data-id="${esc(x.strategie_id)}">Bot MT5</button></td>
    <td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)}">${esc(x.strategie)}</td><td class="s" title="${esc(x.risque_config)}">${esc(x.risque_config)}</td>${bt2Cells(e.backtest)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`}).join("")+`</tbody></table></div>`:`<p class="note">Pas de stratégie seule.</p>`);
  return h}
+let AT=null,atKey="",atBusy=false,atSec="exc",atId="";
+async function loadAT(force){const k=[atId,fSym.value,fTf.value].join("|");if(atBusy||(!force&&AT&&k===atKey))return;atBusy=true;atKey=k;
+ try{AT=await (await fetch(`/api/analyse_trades?id=${encodeURIComponent(atId)}&sym=${encodeURIComponent(fSym.value)}&tf=${encodeURIComponent(fTf.value)}`,{cache:"no-store"})).json()}catch(e){AT={message:"Analyse impossible : "+e}}
+ atBusy=false;render()}
+function rTxt(v){return v==null?"—":`<span class="${cls(v)}">${fmt(v,1,true)}R</span>`}
+function viewAT(){loadAT(false);if(!AT)return `<div class="empty">Analyse des trades en cours…</div>`;
+ const secs=[["exc","Stops & objectifs (MAE / MFE)"],["ctx","Quand ça marche"],["gh","Trades refusés (fantômes)"]];
+ let h=`<p class="note">Ce que chaque trade du paper trading apprend. Filtres : marché et timeframe en haut de la page, et une stratégie :
+  <select onchange="atId=this.value;loadAT(true)"><option value="">Toutes les stratégies</option>${(AT.liste||[]).map(x=>`<option value="${esc(x.id)}"${x.id===atId?" selected":""}>${esc(x.label)}</option>`).join("")}</select>
+  · <a href="#" onclick="loadAT(true);return false">actualiser</a></p><p>`+secs.map(([k,l])=>`<button class="${k===atSec?"cmpbtn":"botbtn"}" style="${k===atSec?"font-size:13px;padding:5px 12px":""}" onclick="atSec='${k}';render()">${l}</button>`).join(" ")+`</p>`;
+ if(atSec==="exc"){const E=AT.excursions||{},G=E.global;
+  h+=`<p class="note">${esc(E.message||"")}</p><p class="note"><b>Comment lire :</b> MAE = jusqu'où le prix est allé CONTRE le trade, MFE = jusqu'où il est allé EN SA FAVEUR (en R).
+   Les variantes sont calculées sur les prix réellement vus : « stop au point d'entrée à +1R », « objectif plus proche », « stop plus serré » (même risque en argent, donc plus de lots).
+   Les frais ne sont pas recomptés : avec un stop plus serré, le spread pèse plus lourd. Un objectif plus loin ou un stop plus large se testent dans le backtest.</p>`;
+  if(G)h+=`<div class="tiles"><div class="tile"><div class="mut">Trades avec excursions</div><div class="v">${fmt(G.trades,0)}</div></div>
+   <div class="tile"><div class="mut">Perdants qui étaient passés à +1R</div><div class="v">${fmt(G.perdants_passes_1r,0)} %</div><div class="mut" style="font-size:12px">un stop au point d'entrée à +1R les aurait sortis à 0</div></div>
+   <div class="tile"><div class="mut">Tous les trades : R réel → avec BE à +1R</div><div class="v">${rTxt(G.actuel)} → ${rTxt(G.be_1r)}</div></div>
+   <div class="tile"><div class="mut">Gagnants : recul médian avant de gagner</div><div class="v">${G.gagnants_mae_med==null?"—":fmt(G.gagnants_mae_med,2)+"R"}</div><div class="mut" style="font-size:12px">petit = le stop pourrait être plus serré</div></div>
+   <div class="tile"><div class="mut">Perdants : avance médiane avant de perdre</div><div class="v">${G.perdants_mfe_med==null?"—":fmt(G.perdants_mfe_med,2)+"R"}</div><div class="mut" style="font-size:12px">grand = l'objectif est peut-être trop loin</div></div></div>`;
+  const S=E.strategies||[];if(S.length){const tpk=[...new Set(S.flatMap(x=>Object.keys(x.tp||{})))].sort((a,b)=>a-b);
+   h+=`<div class="scroll"><table><thead><tr><th>Bot</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Trades</th><th>Conseil (prix réels)</th><th>R réel</th><th>BE à +1R</th>
+    ${tpk.map(k=>`<th>Objectif ${k}R</th>`).join("")}<th>Stop ×0,75</th><th>Stop ×0,5</th><th>Perdants passés à +1R</th><th>Recul médian des gagnants</th><th>Avance médiane des perdants</th></tr></thead><tbody>`+
+    S.map(x=>`<tr><td>${miniBot(x.strategie_id)}</td><td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)} · ${esc(x.risque)}">${esc(x.strategie)}</td><td class="n">${x.trades}</td>
+     <td>${x.conseil==="garder le réglage actuel"?'<span class="mut">garder le réglage actuel</span>':`<b>${esc(x.conseil)}</b>`}</td><td class="n">${rTxt(x.r_actuel)}</td><td class="n">${rTxt(x.r_be)}</td>
+     ${tpk.map(k=>`<td class="n">${x.tp&&x.tp[k]!=null?rTxt(x.tp[k]):'<span class="mut">—</span>'}</td>`).join("")}<td class="n">${rTxt(x.sl&&x.sl["0.75"])}</td><td class="n">${rTxt(x.sl&&x.sl["0.5"])}</td>
+     <td class="n">${fmt(x.perdants_passes_1r,0)} %</td><td class="n">${x.gagnants_mae_med==null?"—":fmt(x.gagnants_mae_med,2)+"R"}</td><td class="n">${x.perdants_mfe_med==null?"—":fmt(x.perdants_mfe_med,2)+"R"}</td></tr>`).join("")+`</tbody></table></div>`}
+  return h}
+ if(atSec==="ctx"){const C=AT.contexte||{};h+=`<p class="note">${esc(C.message||"")}</p>`;
+  const lst=(L,title,good)=>L&&L.length?`<div class="tile" style="border-color:${good?"var(--good)":"var(--crit)"}"><div class="mut">${title}</div>${L.slice(0,8).map(x=>`<div style="margin-top:4px"><b>${esc(x.quoi)}</b> : ${x.trades} trades, ${rr(x.r_moyen)} en moyenne, ${fmt(x.reussite,0)} % gagnants (t ${fmt(x.t,1)})</div>`).join("")}</div>`:"";
+  h+=`<div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr))">${lst(C.a_eviter,"Moments à éviter (à vérifier dans le backtest avant de filtrer)",false)}${lst(C.points_forts,"Points forts",true)}</div>`;
+  Object.values(C.tables||{}).forEach(T=>{const m=Math.max(...T.lignes.map(x=>Math.abs(x.r_total)),1e-9);
+   h+=`<h4 style="margin:14px 0 6px">${esc(T.titre)}</h4><div class="bars" style="grid-template-columns:200px 1fr 400px;max-width:1150px">`+T.lignes.map(x=>{const w=Math.abs(x.r_total)/m*50;
+    return `<div>${esc(x.valeur)}</div><div class="bar" title="${esc(x.valeur)} : ${x.trades} trades, R total ${fmt(x.r_total,1,true)}"><span class="zero" style="left:50%"></span><i class="${x.r_total<0?"neg":""}" style="${x.r_total<0?"right:50%":"left:50%"};width:${w}%"></i></div>
+     <div class="mut" style="font-size:12px">${rTxt(x.r_total)} · ${x.trades} trades · ${rr(x.r_moyen)}/trade · ${fmt(x.reussite,0)} % · t ${fmt(x.t,1)}</div>`}).join("")+`</div>`});
+  return h}
+ const F=AT.fantomes||{};h+=`<p class="note">${esc(F.message||"")}</p>`;
+ if(F.total)h+=`<div class="tiles"><div class="tile"><div class="mut">Signaux refusés suivis</div><div class="v">${fmt(F.trades,0)}</div></div><div class="tile"><div class="mut">Ce qu'ils auraient fait</div><div class="v">${rTxt(F.total.r_total)}</div><div class="mut" style="font-size:12px">${fmt(F.total.reussite,0)} % gagnants · ${rr(F.total.r_moyen)}/trade</div></div></div>`;
+ if((F.par_raison||[]).length)h+=`<h4 style="margin:12px 0 6px">Par raison du refus</h4>`+table("ghr",[["Raison","raison"],["Trades","trades",null,1],["Gagnants","reussite",v=>v==null?"—":fmt(v,0)+" %",1],["R moyen","r_moyen",rr,1],["R total","r_total",rTxt,1],
+  ["Verdict","r_total",v=>v<0?'<span class="tag ok">la règle protège</span>':'<span class="tag ko">la règle coûte des gains</span>']],F.par_raison);
+ if((F.par_strategie||[]).length)h+=`<h4 style="margin:12px 0 6px">Par stratégie</h4>`+table("ghs",[["Bot","strategie_id",v=>miniBot(v)],["Marché","symbole"],["TF","timeframe"],["Stratégie","strategie"],["Combinée","groupe"],["Trades","trades",null,1],["R total","r_total",rTxt,1],["Gagnants","reussite",v=>v==null?"—":fmt(v,0)+" %",1]],F.par_strategie);
+ return h}
 let M=null,mTime=0,mBusy=false;
 async function loadMarches(force){if(mBusy||(!force&&M&&Date.now()-mTime<60000))return;mBusy=true;mTime=Date.now();
  try{M=await (await fetch("/api/marches",{cache:"no-store"})).json()}catch(e){M={message:"Classement impossible : "+e,marches:[]}}
@@ -956,7 +1032,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();if(D.profil){const t="Plateforme — "+D.profil.nom+" ("+fmt(D.profil.capital,0)+" $)";const h=document.querySelector("h1");if(h.textContent!==t){h.textContent=t;document.title=t}}document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- const v={comb:viewComb,top:viewTop,bt2:viewTop2,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ const v={comb:viewComb,top:viewTop,bt2:viewTop2,at:viewAT,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;

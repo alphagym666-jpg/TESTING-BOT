@@ -625,3 +625,71 @@ def test_bot_button_in_reports_goes_through_platform(setup):
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen("http://127.0.0.1:8874" + q("x" * 32, one))
     assert mk.sent == []
+
+
+def test_excursions_and_context_recorded_for_each_trade(setup):
+    mk, tmp = setup
+    eng = _engine(tmp)
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    p = eng.slots["s1"].position
+    e, rk = p.entry, p.risk
+    # contre le trade (-0,5R), puis +1,25R, retour sous l'entrée, puis le stop
+    mk.push_ticks([e - 0.5 * rk, e + 1.25 * rk, e - 0.1 * rk])     # un achat se clôture au bid
+    eng.step()
+    q = eng.slots["s1"].position
+    assert q.mfe == pytest.approx(1.25 * rk, rel=0.01) and q.after1r_min < 0
+    mk.push_ticks([p.sl - 0.00001])
+    eng.step()
+    t = pd.read_csv(tmp / "paper" / "trades.csv")
+    row = t.iloc[-1]
+    assert row["mfe_r"] == pytest.approx(1.25, abs=0.02) and row["mae_r"] >= 1.0
+    assert row["min_apres_1r_r"] < 0                       # un BE à +1R l'aurait sorti à 0
+    assert "regime" in t.columns and "nouvelle_avant_min" in t.columns
+    from mt5lab.analyse_trades import variants
+    v = variants(t["r"].to_numpy(float), t["mae_r"].to_numpy(float), t["mfe_r"].to_numpy(float),
+                 pd.to_numeric(t["min_apres_1r_r"], errors="coerce").to_numpy(float), 2.0)
+    assert v["be_1r"] == 0.0 and v["tp"]["1"] == 1.0 and v["actuel"] < -0.9
+
+
+def test_old_trades_file_gets_new_columns(setup):
+    mk, tmp = setup
+    (tmp / "paper").mkdir()
+    old = "strategie_id,symbole,timeframe,r\ns1,EURUSD,H1,1.5\n"
+    (tmp / "paper" / "trades.csv").write_text(old, encoding="utf-8")
+    eng = _engine(tmp)
+    from mt5lab.paper import TRADE_FIELDS
+    t = pd.read_csv(tmp / "paper" / "trades.csv")
+    assert list(t.columns) == TRADE_FIELDS and t["r"].iloc[0] == 1.5 and eng.total_trades == 1
+
+
+def test_refused_signals_become_ghost_trades(setup):
+    from mt5lab.analyse_trades import fantomes
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    mk, tmp = setup
+    cand = lambda rr: {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+                       "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": rr, "management": "none",
+                                "max_hold": 200, "direction": "both"}}
+    slots = [Slot(f"c{i}", "EURUSD", "H1", cand(rr), group="combo", risk_pct=0.9) for i, rr in enumerate((2.0, 3.0))]
+    eng = PaperEngine(MT5Connector().connect(verbose=False), slots, tmp / "paper", risk_pct=0.5,
+                      groups={"combo": {"capital": 100_000, "day_budget": 1.0}})
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    ghost = [s for s in eng.slots.values() if s.ghost]
+    assert len(ghost) == 1 and ghost[0].ghost.ghost_reason == "perte possible max du jour"
+    eng.save()                                            # le fantôme survit à un redémarrage
+    eng2 = PaperEngine(MT5Connector().connect(verbose=False),
+                       [Slot(f"c{i}", "EURUSD", "H1", cand(rr), group="combo", risk_pct=0.9) for i, rr in enumerate((2.0, 3.0))],
+                       tmp / "paper", risk_pct=0.5, groups={"combo": {"capital": 100_000, "day_budget": 1.0}})
+    g2 = [s for s in eng2.slots.values() if s.ghost]
+    assert len(g2) == 1
+    mk.push_ticks([g2[0].ghost.tp + 0.0001])
+    eng2.step()
+    f = pd.read_csv(tmp / "paper" / "fantomes.csv")
+    assert len(f) == 1 and f["sortie"].iloc[0] == "take profit" and f["r"].iloc[0] == pytest.approx(3.0, abs=0.05)
+    res = fantomes(f)
+    assert res["par_raison"][0]["raison"] == "perte possible max du jour" and "coûtent" in res["message"]
+    assert mk.sent == []

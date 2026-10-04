@@ -29,6 +29,12 @@ SYMBOL_ALIASES = {
     "DAX": ["GER40", "DE40", "GER30"],
     "GER40": ["DE40", "GER30", "DAX40"],
     "US30": ["DJ30", "WS30", "DJI30"],
+    # marchés macro (ingrédients inter-marchés, pas tradés)
+    "DXY": ["USDX", "DX", "USDIDX", "DOLLARINDEX", "DXY.cash"],
+    "VIX": ["VIX.cash", "VOLX", "VIXX", "UVXY"],
+    "US10Y": ["UST10Y", "US10YR", "USTN10", "TNOTE", "T10Y", "USTNOTE"],
+    "USOIL": ["WTI", "XTIUSD", "USOIL.cash", "CRUDE", "OILUSD"],
+    "US500": ["SP500", "SPX500", "US500.cash", "SPX"],
 }
 
 # marchés qui bougent ensemble : (groupe, sens). Deux positions du même groupe et de même « exposition »
@@ -308,6 +314,7 @@ class MT5Connector:
             df["swap_long"], df["swap_short"] = sl, ss
         if news is not None and len(news):
             df["news_block"] = news_mask(df.index, news, self.currencies(symbol), news_window)
+            df = add_news_cols(df, news, self.currencies(symbol))  # ingrédients « avant / après une annonce »
         return df
 
     def diagnose(self, symbols=("EURUSD",), timeframe: str = "H1") -> bool:
@@ -468,6 +475,79 @@ def news_blocked(news: pd.DataFrame | None, currencies: set[str], when, window: 
     when = pd.Timestamp(when)
     ev = news.loc[news["currency"].isin(currencies), "time"]
     return bool(((ev - when).abs() <= pd.Timedelta(minutes=window)).any())
+
+
+NEWS_CAP = 1440.0   # minutes : au-delà d'une journée, « pas d'annonce proche »
+
+
+def _events(news: pd.DataFrame | None, currencies: set[str]) -> np.ndarray:
+    if news is None or not len(news):
+        return np.array([], dtype="datetime64[ns]")
+    return np.sort(news.loc[news["currency"].isin(currencies), "time"].to_numpy(dtype="datetime64[ns]"))
+
+
+def add_news_cols(df: pd.DataFrame, news: pd.DataFrame | None, currencies: set[str]) -> pd.DataFrame:
+    """Colonnes « news_prev_min » (minutes depuis la dernière annonce importante d'une devise du marché) et
+    « news_next_min » (minutes jusqu'à la prochaine, l'heure des annonces est connue à l'avance : pas de futur),
+    plafonnées à 1 440. Ingrédients des inventeurs (ex. « entrer 30 à 90 min APRÈS une annonce »)."""
+    ev = _events(news, currencies)
+    if not len(ev) or not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    t = df.index.to_numpy(dtype="datetime64[ns]")
+    i = np.searchsorted(ev, t, side="right")
+    prev = np.where(i > 0, (t - ev[np.maximum(i - 1, 0)]) / np.timedelta64(1, "m"), NEWS_CAP)
+    j = np.searchsorted(ev, t, side="left")
+    nxt = np.where(j < len(ev), (ev[np.minimum(j, len(ev) - 1)] - t) / np.timedelta64(1, "m"), NEWS_CAP)
+    df = df.copy()
+    df["news_prev_min"] = np.minimum(prev, NEWS_CAP).astype(np.float32)
+    df["news_next_min"] = np.minimum(nxt, NEWS_CAP).astype(np.float32)
+    return df
+
+
+def news_distance(news: pd.DataFrame | None, currencies: set[str], when) -> tuple[float | None, float | None]:
+    """(minutes depuis la dernière annonce importante, minutes jusqu'à la prochaine) à l'instant `when`."""
+    ev = _events(news, currencies)
+    if not len(ev):
+        return None, None
+    t = np.datetime64(pd.Timestamp(when).to_datetime64(), "ns")
+    i = np.searchsorted(ev, t, side="right")
+    j = np.searchsorted(ev, t, side="left")
+    prev = float((t - ev[i - 1]) / np.timedelta64(1, "m")) if i > 0 else NEWS_CAP
+    nxt = float((ev[j] - t) / np.timedelta64(1, "m")) if j < len(ev) else NEWS_CAP
+    return min(prev, NEWS_CAP), min(nxt, NEWS_CAP)
+
+
+def uses_news(obj) -> bool:
+    """Une stratégie se sert-elle des annonces comme ingrédient ? (paper trading : colonnes à ajouter)"""
+    import json
+    return '"f": "news_' in json.dumps(obj)
+
+
+# ---------------------------------------------------------------------------------------------- marchés macro
+# Marchés qui influencent les marchés tradés : dollar, volatilité, taux, pétrole, actions US. Ils ne sont pas
+# tradés : leurs clôtures servent d'ingrédients aux inventeurs (inter-marchés) quand le courtier les propose.
+MACRO = {"DXY": "indice du dollar", "VIX": "volatilité (VIX)", "US10Y": "taux US 10 ans", "USOIL": "pétrole (WTI)",
+         "US500": "S&P 500"}
+
+
+def macro_symbols(conn, exclude=(), log=print) -> list[str]:
+    """Les marchés macro que ce courtier propose (noms trouvés automatiquement), hors marchés déjà tradés."""
+    out = []
+    taken = {conn.resolve(x) for x in exclude if _safe_resolve(conn, x)}
+    for name in MACRO:
+        real = _safe_resolve(conn, name)
+        if real and real not in taken:
+            out.append(name)
+    log(f"[macro] marchés macro disponibles chez ce courtier : {', '.join(out) if out else 'aucun'}"
+        + (f" (absents : {', '.join(m for m in MACRO if m not in out)})" if len(out) < len(MACRO) else ""))
+    return out
+
+
+def _safe_resolve(conn, name):
+    try:
+        return conn.resolve(name)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------------------------- inter-marchés

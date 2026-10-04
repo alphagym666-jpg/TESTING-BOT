@@ -308,6 +308,17 @@ def f_cot(df, n):
     return df[col].astype(float) if col in df.columns else _nan(df)
 
 
+@feature("news_after", False, [1], "minutes depuis la dernière annonce importante (NFP, CPI, banques centrales...)")
+def f_news_after(df, n):
+    """Calendrier économique MT5 (mql5/ExportNews.mq5) : colonne ajoutée par data.add_news_cols."""
+    return df["news_prev_min"].astype(float) if "news_prev_min" in df.columns else _nan(df)
+
+
+@feature("news_before", False, [1], "minutes avant la prochaine annonce importante")
+def f_news_before(df, n):
+    return df["news_next_min"].astype(float) if "news_next_min" in df.columns else _nan(df)
+
+
 # ---------------------------------------------------------------- inter-marchés : un marché qui en annonce un autre
 # Les données d'un marché peuvent contenir les clôtures d'autres marchés (colonnes « ext:NASDAQ », « ext:XAUUSD »...,
 # ajoutées par data.add_ext, alignées sans regarder le futur). Les inventeurs cherchent alors des règles comme
@@ -368,7 +379,7 @@ def f_pair_z(df, n, s):
 # caractéristiques jouées en fenêtres (entre a et b) : bornes et largeurs possibles
 BETWEEN = {"hour": (0, 24, [2, 3, 4, 6, 8], "h"), "dow": (0, 5, [1, 2, 3], " (jour)"), "minute": (0, 60, [5, 10, 15, 30], " min")}
 BANK_FEATURES = ["vp_poc", "vp_va", "sweep", "prev_day_pos", "round_dist", "session_move", "vwap_dist", "vol_spike", "asia_pos",
-                 "month_end", "dow", "minute", "hour"]
+                 "month_end", "dow", "minute", "hour", "news_after", "news_before"]
 
 _CACHE: dict = {}
 
@@ -436,7 +447,7 @@ AGENT_POOLS = {
     10: list(FEATURES),
     # équipe D : inventeurs qui partent des failles trouvées par l'équipe C
     16: ["sweep", "prev_day_pos", "don_pos", "rsi", "body", "wick"],
-    17: ["session_move", "hour", "dow", "minute", "momentum", "adx"],
+    17: ["session_move", "hour", "dow", "minute", "momentum", "adx", "news_after", "news_before"],
     18: ["round_dist", "prev_day_pos", "stoch", "bb_b", "zscore"],
     19: ["vwap_dist", "vol_spike", "zscore", "macd_h", "rsi"],
     20: list(FEATURES),

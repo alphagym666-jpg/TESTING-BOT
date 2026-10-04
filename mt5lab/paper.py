@@ -30,12 +30,37 @@ from . import indicators as ind
 from .backtest import RR_LEVELS, RiskConfig, _stop_distance
 from .evaluator import compute_signal, describe, signal_key
 from .cot import add_cot, uses_cot
+from .data import uses_news
 from .ftmo import FtmoRules, lock_text
 from .strategies import REGISTRY, apply_filter, expand_grid
 
 TRADE_FIELDS = ["strategie_id", "symbole", "timeframe", "strategie", "risque", "sens", "lots", "ouverture",
                 "prix_entree", "sl_initial", "sl_final", "tp", "fermeture", "prix_sortie", "raison", "duree_min",
-                "pips", "r", "pnl", "solde", "spread_entree_pts"]
+                "pips", "r", "pnl", "solde", "spread_entree_pts", "mae_r", "mfe_r", "min_apres_1r_r", "regime",
+                "nouvelle_avant_min", "nouvelle_apres_min"]
+GHOST_FIELDS = ["strategie_id", "symbole", "timeframe", "strategie", "risque", "groupe", "raison_refus", "sens",
+                "ouverture", "prix_entree", "sl_initial", "tp", "fermeture", "prix_sortie", "sortie", "r", "mae_r",
+                "mfe_r", "regime"]
+
+
+def _upgrade_csv(path: Path, fieldnames: list):
+    """Ancien fichier avec moins de colonnes : réécrit une fois avec les nouvelles colonnes (vides pour les
+    anciens trades), sinon les nouvelles lignes seraient décalées."""
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh), None)
+        if not header or header == fieldnames or not set(header) <= set(fieldnames):
+            return
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(rows)
+        tmp.replace(path)
+    except (OSError, csv.Error):
+        pass
 
 
 @dataclass
@@ -54,6 +79,16 @@ class Position:
     best: float = 0.0     # meilleur cours de clôture depuis l'entrée (sortie intelligente)
     opened_msc: int = 0
     shadow: bool = False  # composant en pause : trade suivi pour le contrôle, mais hors du compte combiné
+    # EXCURSIONS (en prix, depuis l'entrée) : jusqu'où le prix est allé contre le trade (mae) et en sa faveur (mfe),
+    # et le pire point APRÈS avoir touché +1R (None = +1R jamais touché) : sert à juger stops, objectifs et BE
+    mae: float = 0.0
+    mfe: float = 0.0
+    after1r_min: float | None = None
+    # CONTEXTE à l'ouverture : type de marché, minutes depuis / jusqu'à l'annonce importante la plus proche
+    regime: str = ""
+    news_prev: float | None = None
+    news_next: float | None = None
+    ghost_reason: str = ""  # trade FANTÔME : signal refusé par les règles de la combinée (raison du refus)
 
     @property
     def sl_initial(self) -> float:
@@ -93,6 +128,7 @@ class Slot:
     risk_pct: float | None = None    # risque propre à ce composant (sinon le risque général)
     paused: bool = False             # mis en pause par le contrôleur de qualité (sous-performance en direct)
     pause_reason: str = ""
+    ghost: Position | None = None    # trade FANTÔME en cours (signal refusé par les règles de la combinée)
 
     @property
     def cfg(self) -> RiskConfig:
@@ -101,7 +137,7 @@ class Slot:
 
 SAVED = [f.name for f in fields(Slot) if f.name not in ("id", "symbol", "timeframe", "candidate", "verdict",
                                                           "expected_avg_r", "expected_wr", "capital", "position",
-                                                          "group", "risk_pct")]
+                                                          "group", "risk_pct", "ghost")]
 
 
 @dataclass
@@ -381,6 +417,7 @@ class PaperEngine:
         self.events: deque = deque(maxlen=400)
         self.started = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._load_state()
+        _upgrade_csv(self.out / "trades.csv", TRADE_FIELDS)
         self._load_history()  # tous les trades déjà pris restent visibles après un redémarrage
         try:  # définition de chaque stratégie suivie : sert à l'analyse du direct et aux bots
             (self.out / "strategies.json").write_text(json.dumps(
@@ -405,6 +442,7 @@ class PaperEngine:
                     if k in d:
                         setattr(s, k, d[k])
                 s.position = Position(**d["position"]) if d.get("position") else None
+                s.ghost = Position(**d["ghost"]) if d.get("ghost") else None
         self.last_bar.update(st.get("last_bar", {}))
         self.last_msc.update({k: int(v) for k, v in st.get("last_msc", {}).items()})
         for name, d in st.get("groups", {}).items():
@@ -441,12 +479,14 @@ class PaperEngine:
         self.recent = rows[-keep:]
 
     def save(self):
-        active = {sid: s for sid, s in self.slots.items() if s.trades or s.position or s.ftmo_status != "en cours"}
+        active = {sid: s for sid, s in self.slots.items()
+                  if s.trades or s.position or s.ghost or s.ftmo_status != "en cours"}
         st = {"started": self.started, "last_bar": self.last_bar, "last_msc": self.last_msc, "real_acc": self.real_acc,
               "recent": self.recent[-1000:], "events": list(self.events),
               "groups": {n: {k: getattr(g, k) for k in GROUP_SAVED} for n, g in self.groups.items()},
               "slots": {sid: {**{k: getattr(s, k) for k in SAVED},
-                              "position": asdict(s.position) if s.position else None}
+                              "position": asdict(s.position) if s.position else None,
+                              "ghost": asdict(s.ghost) if s.ghost else None}
                         for sid, s in active.items()}}
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(st), encoding="utf-8")
@@ -528,13 +568,17 @@ class PaperEngine:
     def group_allows(self, s: Slot, when: str) -> bool:
         """Règles de risque de la stratégie combinée, vérifiées avant chaque nouveau trade."""
         g = self.groups.get(s.group)
+        self._refuse_reason = ""
         if g is None:
             return True
         if g.session and not in_session(when, g.session):
+            self._refuse_reason = "hors de l'horaire choisi"
             return False  # hors de l'horaire choisi : pas de nouvelle entrée (les positions ouvertes continuent)
         if g.weekend_close and near_weekend(when):
+            self._refuse_reason = "approche du week-end"
             return False  # compte Standard : pas de nouvelle position à l'approche du week-end
         if g.ftmo_status != "en cours" and self.bridge is None:
+            self._refuse_reason = "challenge terminé"
             return False  # avec le bot, le compte réel a ses propres garde-fous : on continue à donner les signaux
         if when[:10] != g.day:
             self._roll_day(g, g.balance, when)
@@ -545,18 +589,18 @@ class PaperEngine:
         total_loss = max(0.0, g.capital - g.balance, (g.capital - real["solde"]) if real else 0.0,
                          self._total_used(g, g.balance),
                          self._total_used(g, real["solde"], real.get("eod_high")) if real else 0.0)
-        ok = True
+        ok, why = True, ""
         if g.max_open is not None and len(members) >= g.max_open:
-            ok = False
+            ok, why = False, "positions max atteintes"
         elif g.day_stop is not None and day_loss >= g.day_stop * g.capital / 100:
-            ok = False
+            ok, why = False, "stop du jour"
         elif g.day_lock and float(g.day_lock.get("facteur", 0)) <= 0 and self._locked(g):
-            ok = False  # frein de bonne journée : la journée est déjà bonne, on garde le gain jusqu'à demain
+            ok, why = False, "frein de bonne journée"  # la journée est déjà bonne, on garde le gain jusqu'à demain
         elif g.day_budget is not None:
             open_risk = sum(x.position.risk_money for x in members) * 1.1
             new_risk = self.risk_budget(s) * 1.1
             if (day_loss + open_risk + new_risk) / g.capital * 100 > g.day_budget + 1e-9:
-                ok = False
+                ok, why = False, "perte possible max du jour"
         if ok and g.max_corr is not None and self._side is not None:
             from .data import correlation_of
             cl, sign = correlation_of(s.symbol)
@@ -564,13 +608,15 @@ class PaperEngine:
                 same = sum(1 for x in members if correlation_of(x.symbol)[0] == cl
                            and x.position.side * correlation_of(x.symbol)[1] == self._side * sign)
                 ok = same < g.max_corr
+                why = why if ok else "marchés corrélés déjà en position"
         if ok and g.total_budget is not None:  # même si tous les stops sautent, la perte totale reste sous le plafond
             open_risk = sum(x.position.risk_money for x in members) * 1.1
             new_risk = self.risk_budget(s) * 1.1
             if (total_loss + open_risk + new_risk) / g.capital * 100 > g.total_budget + 1e-9:
-                ok = False
+                ok, why = False, "perte totale max"
         if not ok:
             g.skipped += 1
+            self._refuse_reason = why
         return ok
 
     def pips(self, symbol: str, move: float) -> float:
@@ -675,6 +721,7 @@ class PaperEngine:
         shadow = bool(s.group and s.paused)
         self._side = side
         if s.group and not shadow and not self.group_allows(s, when):
+            self._ghost(s, side, price, dist, when, tick)
             return
         lots = self._lots(s.symbol, self.risk_budget(s), dist)
         acc = self.groups.get(s.group) if s.group else s
@@ -692,6 +739,7 @@ class PaperEngine:
         s.position = Position(side, price, price - side * dist, tp, dist, lots,
                               self._money(s.symbol, dist, lots), when, (tick.ask - tick.bid) / info.point,
                               opened_msc=int(getattr(tick, "time_msc", 0)), shadow=shadow)
+        self._context(s, s.position, when)
         if when[:10] not in s.trade_days:
             s.trade_days.append(when[:10])
         g = None if shadow else self.groups.get(s.group)
@@ -712,6 +760,83 @@ class PaperEngine:
         self.event(when, "OUVERTURE", s, f"{'ACHAT' if side > 0 else 'VENTE'} {lots} lots @ {price:.{d}f} | "
                                          f"SL {s.position.sl:.{d}f} | TP {'signal' if tp is None else f'{tp:.{d}f}'} | "
                                          f"{describe(s.candidate)} [{s.cfg.label()}]")
+
+    def _ccy(self, symbol: str) -> set:
+        if symbol not in self._currencies:
+            try:
+                self._currencies[symbol] = self.c.currencies(symbol)
+            except Exception:
+                self._currencies[symbol] = {"USD"}
+        return self._currencies[symbol]
+
+    def _context(self, s: Slot, p: Position, when: str):
+        """Contexte du trade à l'ouverture : type de marché (météo) et annonce importante la plus proche."""
+        p.regime = str((self.meteo.get(s.symbol) or {}).get(s.timeframe, "") or "")
+        if self.news is not None:
+            from .data import news_distance
+            try:
+                p.news_prev, p.news_next = news_distance(self.news, self._ccy(s.symbol), when)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _track(p: Position, px: np.ndarray):
+        """Met à jour les excursions d'une position avec les prix de sortie possibles (bid d'un achat, ask d'une
+        vente) reçus depuis le dernier passage."""
+        if not len(px):
+            return
+        exc = (np.asarray(px, dtype=float) - p.entry) * p.side
+        p.mfe = max(p.mfe, float(exc.max()))
+        p.mae = max(p.mae, float(-exc.min()))
+        if p.after1r_min is None:
+            hit = np.flatnonzero(exc >= p.risk)
+            if len(hit):
+                p.after1r_min = float(exc[hit[0]:].min())
+        else:
+            p.after1r_min = min(p.after1r_min, float(exc.min()))
+
+    @staticmethod
+    def _excursion_cols(p: Position) -> dict:
+        rk = p.risk if p.risk > 0 else float("nan")
+        return {"mae_r": round(p.mae / rk, 3), "mfe_r": round(p.mfe / rk, 3),
+                "min_apres_1r_r": "" if p.after1r_min is None else round(p.after1r_min / rk, 3),
+                "regime": p.regime, "nouvelle_avant_min": "" if p.news_prev is None else round(p.news_prev),
+                "nouvelle_apres_min": "" if p.news_next is None else round(p.news_next)}
+
+    def _ghost(self, s: Slot, side: int, price: float, dist: float, when: str, tick):
+        """Signal REFUSÉ par les règles de la stratégie combinée : on le suit quand même comme trade FANTÔME
+        (hors compte, sans argent) pour savoir si les règles protègent ou coûtent des bons trades."""
+        why = getattr(self, "_refuse_reason", "")
+        if s.ghost is not None or not why or why == "challenge terminé":
+            return
+        info = self.c.symbol_info(s.symbol)
+        tp = price + side * s.cfg.rr * dist if s.cfg.rr else None
+        s.ghost = Position(side, price, price - side * dist, tp, dist, 0.0, 0.0, when,
+                           (tick.ask - tick.bid) / info.point, opened_msc=int(getattr(tick, "time_msc", 0)),
+                           ghost_reason=why)
+        self._context(s, s.ghost, when)
+        self._dirty = True
+
+    def _close_ghost(self, s: Slot, price: float, when: str, reason: str):
+        p = s.ghost
+        r = (price - p.entry) * p.side / p.risk if p.risk > 0 else 0.0
+        dg = self.c.symbol_info(s.symbol).digits
+        row = {"strategie_id": s.id, "symbole": s.symbol, "timeframe": s.timeframe, "strategie": describe(s.candidate),
+               "risque": s.cfg.label(), "groupe": s.group, "raison_refus": p.ghost_reason,
+               "sens": "ACHAT" if p.side > 0 else "VENTE", "ouverture": p.opened, "prix_entree": round(p.entry, dg),
+               "sl_initial": round(p.sl_initial, dg), "tp": None if p.tp is None else round(p.tp, dg),
+               "fermeture": when, "prix_sortie": round(price, dg), "sortie": reason, "r": round(r, 3),
+               "mae_r": round(p.mae / p.risk, 3) if p.risk > 0 else "",
+               "mfe_r": round(p.mfe / p.risk, 3) if p.risk > 0 else "", "regime": p.regime}
+        path = self.out / "fantomes.csv"
+        new = not path.exists()
+        with open(path, "a", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=GHOST_FIELDS)
+            if new:
+                w.writeheader()
+            w.writerow(row)
+        s.ghost = None
+        self._dirty = True
 
     def _bot(self, s: Slot) -> bool:
         """Les ordres du bot MT5 ne concernent que les composants actifs de la stratégie combinée."""
@@ -816,7 +941,8 @@ class PaperEngine:
                "sl_final": round(p.sl, dg), "tp": None if p.tp is None else round(p.tp, dg), "fermeture": when,
                "prix_sortie": price, "raison": reason, "duree_min": dur_min,
                "pips": round(self.pips(s.symbol, (price - p.entry) * p.side), 1), "r": round(r, 3),
-               "pnl": round(pnl, 2), "solde": round(s.balance, 2), "spread_entree_pts": round(p.spread_pts, 1)}
+               "pnl": round(pnl, 2), "solde": round(s.balance, 2), "spread_entree_pts": round(p.spread_pts, 1),
+               **self._excursion_cols(p)}
         new = not (self.out / "trades.csv").exists()
         with open(self.out / "trades.csv", "a", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=TRADE_FIELDS)
@@ -901,7 +1027,7 @@ class PaperEngine:
             return
         last = self.last_msc.get(symbol)
         self.last_msc[symbol] = int(tick.time_msc)
-        open_slots = [s for s in self.slots.values() if s.symbol == symbol and s.position]
+        open_slots = [s for s in self.slots.values() if s.symbol == symbol and (s.position or s.ghost)]
         if not open_slots:
             return
         ticks = None
@@ -914,27 +1040,38 @@ class PaperEngine:
             ticks = np.array([(tick.time_msc, tick.bid, tick.ask)],
                              dtype=[("time_msc", "i8"), ("bid", "f8"), ("ask", "f8")])
         for s in open_slots:
-            p = s.position
-            t = ticks[ticks["time_msc"] > p.opened_msc]
-            if not len(t):
-                continue
-            px = t["bid"] if p.side > 0 else t["ask"]   # un achat se clôture au bid, une vente à l'ask
-            hit_sl = (px <= p.sl) if p.side > 0 else (px >= p.sl)
-            hit_tp = np.zeros(len(px), bool) if p.tp is None else ((px >= p.tp) if p.side > 0 else (px <= p.tp))
-            i_sl = int(np.argmax(hit_sl)) if hit_sl.any() else None
-            i_tp = int(np.argmax(hit_tp)) if hit_tp.any() else None
-            if i_sl is not None and (i_tp is None or i_sl <= i_tp):
-                if p.be_done and abs(p.sl - p.entry) < 1e-12:
-                    why = "break-even"
-                elif (p.sl - p.entry) * p.side > 0:
-                    why = "stop suiveur"
+            for ghost in (False, True):
+                p = s.ghost if ghost else s.position
+                if p is None:
+                    continue
+                t = ticks[ticks["time_msc"] > p.opened_msc]
+                if not len(t):
+                    continue
+                px = t["bid"] if p.side > 0 else t["ask"]   # un achat se clôture au bid, une vente à l'ask
+                hit_sl = (px <= p.sl) if p.side > 0 else (px >= p.sl)
+                hit_tp = np.zeros(len(px), bool) if p.tp is None else ((px >= p.tp) if p.side > 0 else (px <= p.tp))
+                i_sl = int(np.argmax(hit_sl)) if hit_sl.any() else None
+                i_tp = int(np.argmax(hit_tp)) if hit_tp.any() else None
+                end = min(i for i in (i_sl, i_tp, len(px) - 1) if i is not None)
+                self._track(p, px[:end + 1])
+                if ghost:
+                    if i_sl is not None and (i_tp is None or i_sl <= i_tp):
+                        self._close_ghost(s, float(px[i_sl]), _msc(t["time_msc"][i_sl]), "stop loss")
+                    elif i_tp is not None:
+                        self._close_ghost(s, float(p.tp), _msc(t["time_msc"][i_tp]), "take profit")
+                    continue
+                if i_sl is not None and (i_tp is None or i_sl <= i_tp):
+                    if p.be_done and abs(p.sl - p.entry) < 1e-12:
+                        why = "break-even"
+                    elif (p.sl - p.entry) * p.side > 0:
+                        why = "stop suiveur"
+                    else:
+                        why = "stop loss"
+                    self._close(s, float(px[i_sl]), _msc(t["time_msc"][i_sl]), why)
+                elif i_tp is not None:
+                    self._close(s, float(p.tp), _msc(t["time_msc"][i_tp]), "take profit")
                 else:
-                    why = "stop loss"
-                self._close(s, float(px[i_sl]), _msc(t["time_msc"][i_sl]), why)
-            elif i_tp is not None:
-                self._close(s, float(p.tp), _msc(t["time_msc"][i_tp]), "take profit")
-            else:
-                self.update_ftmo(s, s.balance + self.floating(s, tick), _now(tick))
+                    self.update_ftmo(s, s.balance + self.floating(s, tick), _now(tick))
 
     # ------------------------------------------------------------------ bougies
     def on_bar(self, symbol: str, tf: str, closed: pd.DataFrame):
@@ -963,6 +1100,14 @@ class PaperEngine:
                 continue
             if cfg.direction == "long" and sig < 0 or cfg.direction == "short" and sig > 0:
                 sig = 0
+            gp = s.ghost
+            if gp is not None:  # trade fantôme : mêmes sorties sur bougie (signal opposé, durée max), sans gestion
+                gp.bars_held += 1
+                gx = tick.bid if gp.side > 0 else tick.ask
+                if cfg.rr is None and sig == -gp.side:
+                    self._close_ghost(s, gx, _now(tick), "signal opposé")
+                elif gp.bars_held >= cfg.max_hold:
+                    self._close_ghost(s, gx, _now(tick), "durée max")
             p = s.position
             if p:
                 p.bars_held += 1
@@ -1076,6 +1221,9 @@ class PaperEngine:
                 df = add_ext(df, others)
             if any(uses_cot(sl.candidate) for sl in self.by_bar[(sym, tf)]):  # équipe E : rapport COT
                 df = add_cot(df, sym, self._cot_table())
+            if self.news is not None and any(uses_news(sl.candidate) for sl in self.by_bar[(sym, tf)]):
+                from .data import add_news_cols   # ingrédients « avant / après une annonce importante »
+                df = add_news_cols(df, self.news, self._ccy(sym))
             self.on_bar(sym, tf, df.iloc[:-1])
         if self.groups:
             self.update_groups()

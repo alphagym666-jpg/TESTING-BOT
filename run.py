@@ -75,6 +75,9 @@ def period_args(p):
     p.add_argument("--sans-cot", action="store_true", help="ne pas télécharger le rapport COT de la CFTC")
     p.add_argument("--sans-inter-marches", action="store_true",
                    help="ne pas donner aux inventeurs les prix des autres marchés")
+    p.add_argument("--sans-macro", action="store_true",
+                   help="ne pas ajouter les marchés macro (dollar DXY, VIX, taux US 10 ans, pétrole, S&P 500) aux "
+                        "ingrédients des inventeurs")
     p.add_argument("--depuis", default=None,
                    help="ne garder que les données depuis cette date (ex. 2025-01-01) : recherche ET validation "
                         "sur la période récente")
@@ -112,6 +115,18 @@ def with_ext(df, sym, tf, symbols, raw, a):
         except Exception as exc:
             print(f"[inter-marchés] {o} {tf} indisponible : {exc}")
     return add_ext(df, others) if others else df
+
+
+def macro_list(conn, a) -> list:
+    """Marchés macro proposés par le courtier (dollar, VIX, taux, pétrole, S&P 500) : ingrédients inter-marchés."""
+    if getattr(a, "sans_macro", False) or getattr(a, "sans_inter_marches", False):
+        return []
+    from mt5lab.data import macro_symbols
+    try:
+        return macro_symbols(conn, a.symbols)
+    except Exception as exc:
+        print(f"[macro] marchés macro non disponibles ({exc})")
+        return []
 
 
 def real_costs(conn, a):
@@ -186,6 +201,7 @@ def cmd_directeur(a):
     with MT5Connector() as conn:
         real_costs(conn, a)
         raw_cache: dict = {}
+        ext_syms = list(a.symbols) + macro_list(conn, a)
 
         def raw(sym, tf):
             if (sym, tf) not in raw_cache:
@@ -194,7 +210,7 @@ def cmd_directeur(a):
             return raw_cache[(sym, tf)]
 
         def get_data(sym, tf):
-            df = with_ext(raw(sym, tf), sym, tf, a.symbols, raw, a)
+            df = with_ext(raw(sym, tf), sym, tf, ext_syms, raw, a)
             c = commission_for(comm, sym)
             df = conn.enrich(df, sym, a.commission_points, c, news, a.fenetre_nouvelles)
             return df, conn.typical_cost(df, sym, a.commission_points, c)
@@ -259,6 +275,7 @@ def cmd_lab(a):
         with MT5Connector() as conn:
             real_costs(conn, a)
             raw_cache: dict = {}
+            ext_syms = list(a.symbols) + macro_list(conn, a)
 
             def raw(s, t):
                 if (s, t) not in raw_cache:
@@ -273,7 +290,7 @@ def cmd_lab(a):
                 for sym in a.symbols:
                     n += 1
                     try:
-                        df = with_ext(raw(sym, tf), sym, tf, a.symbols, raw, a)
+                        df = with_ext(raw(sym, tf), sym, tf, ext_syms, raw, a)
                     except Exception as exc:
                         print(f"[lab] {sym} {tf} ignoré : {exc}")
                         continue

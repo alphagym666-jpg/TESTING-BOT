@@ -723,6 +723,40 @@ chaque ligne ; colonne « Paper / backtest » aussi dans les TOP 10 seules et co
 Enregistré dans `top_backtest_2ans.json`. Le n°1 parmi des milliers de backtests est en partie chanceux : la
 stratégie bonne sur 2 ans ET en paper trading est la plus solide.
 
+## Analyse des trades (onglet de la plateforme)
+
+Chaque trade du paper trading enregistre maintenant beaucoup plus que son résultat (colonnes ajoutées à
+`trades.csv`, les anciens fichiers sont mis à jour tout seuls au démarrage) :
+
+- **excursions** : `mae_r` (jusqu'où le prix est allé CONTRE le trade, en R), `mfe_r` (jusqu'où il est allé EN SA
+  FAVEUR) et `min_apres_1r_r` (le pire point après avoir touché +1R), mesurés tick par tick ;
+- **contexte** : `regime` (type de marché à l'ouverture), `nouvelle_avant_min` / `nouvelle_apres_min` (minutes
+  depuis / jusqu'à l'annonce importante la plus proche, avec le calendrier `news.csv` de mql5/ExportNews.mq5).
+
+Onglet **« Analyse des trades »** (filtres : marché, timeframe, une stratégie) :
+
+1. **Stops & objectifs** : pour chaque stratégie, sur les prix réellement vus, ce qu'auraient donné un stop au
+   point d'entrée à +1R, un objectif plus proche (0,5R à 4R) ou un stop plus serré (même risque en argent), le %
+   de perdants qui étaient passés à +1R, le recul médian des gagnants et l'avance médiane des perdants, et un
+   conseil. (Un objectif plus loin ou un stop plus large ne se déduisent pas : à tester dans le backtest.)
+2. **Quand ça marche** : R par heure, jour, type de marché et proximité des annonces ; « moments à éviter »
+   (au moins 15 trades et un écart net) et « points forts ». À vérifier dans le backtest avant d'en faire un filtre.
+3. **Trades refusés (fantômes)** : chaque signal refusé par les règles de la stratégie combinée (perte possible
+   max du jour, positions max, marchés corrélés, frein, horaire, week-end) est suivi jusqu'au bout sans argent
+   (`fantomes.csv`, stop / objectif / signal opposé / durée max, sans gestion). Bilan par raison : la règle
+   protège (fantômes perdants) ou coûte des gains (fantômes gagnants).
+
+## Annonces et marchés macro comme ingrédients
+
+- **Annonces** : avec le calendrier `news.csv`, la recherche ajoute à chaque bougie les minutes depuis la dernière
+  annonce importante et jusqu'à la prochaine (`news_prev_min`, `news_next_min` ; l'heure des annonces est connue
+  à l'avance, pas de regard vers le futur). Nouveaux ingrédients des inventeurs `news_after` / `news_before`
+  (ex. « entrer 30 à 90 min après une annonce ») et nouvel analyste de l'équipe E : **Agent 24, Analyste des
+  annonces**. Le paper trading calcule les mêmes colonnes en direct.
+- **Marchés macro** : si le courtier les propose, le dollar (DXY), le VIX, le taux US 10 ans, le pétrole (WTI) et
+  le S&P 500 sont ajoutés aux inter-marchés (noms trouvés automatiquement : USDX, US500.cash...). Ils ne sont pas
+  tradés : ce sont des ingrédients (« QUAND le dollar monte de 2 écarts-types... »). `--sans-macro` pour les retirer.
+
 ## Meilleur bot par marché
 
 Onglet **« Meilleur bot par marché »** de la plateforme : pour chaque marché, la stratégie qui marche le mieux EN
