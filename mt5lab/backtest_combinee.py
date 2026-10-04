@@ -58,43 +58,33 @@ def _stats(t: pd.DataFrame, daily: pd.DataFrame, rules: FtmoRules, n_sim: int, l
     return {k: _clean(v) for k, v in res.items() if not isinstance(v, (list, dict))}
 
 
-def backtest_combination(comb: dict, get_data, rules: FtmoRules = FtmoRules(), risk_pct: float = 1.0,
-                         n_sim: int = 3000, progress=None, log=print) -> dict:
-    """comb : {"composants": [{symbole, timeframe, candidate, risk_pct}, ...], "regles": {...}}
-    get_data(symbole, timeframe) -> (df, coût) comme pour la recherche."""
-    rules_c = comb.get("regles") or {}
-    comps = comb.get("composants") or []
-    parts, rows, lo, hi = [], [], None, None
-    for i, c in enumerate(comps, 1):
-        if progress:
-            progress(i - 1, len(comps) + 1, f"{c['symbole']} {c['timeframe']} : historique et backtest")
-        w = float(c.get("risk_pct") or risk_pct)
-        row = {"symbole": c["symbole"], "timeframe": c["timeframe"], "strategie": c.get("strategie", ""),
-               "risk_pct": w, "trades": 0, "r_total": 0.0, "erreur": None}
-        try:
-            df, cost = get_data(c["symbole"], c["timeframe"])
-            cand = c["candidate"]
-            sig = apply_filter(df, compute_signal(df, cand["signal"]), cand.get("filter", "none"))
-            _, tr = run_backtest(df, sig, RiskConfig(**cand["risk"]), cost=cost, risk_pct=w, return_trades=True)
-        except Exception as exc:
-            row["erreur"] = str(exc)[:200]
-            rows.append(row)
-            log(f"[backtest] {c['symbole']} {c['timeframe']} : impossible ({exc})")
-            continue
-        lo = df.index[0] if lo is None else max(lo, df.index[0])
-        hi = df.index[-1] if hi is None else min(hi, df.index[-1])
-        row.update(debut=f"{df.index[0]:%Y-%m-%d}", fin=f"{df.index[-1]:%Y-%m-%d}")
-        if len(tr):
-            from .manager import _with_corr
-            parts.append(_with_corr(c["symbole"], tr[["entry_time", "exit_time", "r", "side"]].assign(
-                w=w, comp=i - 1)))
-        rows.append(row)
+def component_trades(df: pd.DataFrame, cost: float, cand: dict, w: float, start=None, sig=None) -> pd.DataFrame:
+    """Trades d'UNE stratégie sur l'historique (à partir de start si donné : le signal est calculé sur tout
+    l'historique chargé, pour que les indicateurs soient déjà « chauds » au début de la période)."""
+    if sig is None:
+        sig = apply_filter(df, compute_signal(df, cand["signal"]), cand.get("filter", "none"))
+    if start is not None:
+        m = df.index >= start
+        df, sig = df[m], sig[m]
+    if len(df) < 2:
+        return pd.DataFrame(columns=["entry_time", "exit_time", "r", "side"])
+    _, tr = run_backtest(df, sig, RiskConfig(**cand["risk"]), cost=cost, risk_pct=w, return_trades=True)
+    if not len(tr):
+        return pd.DataFrame(columns=["entry_time", "exit_time", "r", "side"])
+    return tr[["entry_time", "exit_time", "r", "side"]]
+
+
+def account_report(parts: list, rows: list, lo, hi, rules: FtmoRules, rules_c: dict, risk_pct: float,
+                   n_sim: int = 3000) -> dict:
+    """Tous les trades (parts : un DataFrame par composant, colonnes entry_time, exit_time, r, side, w, comp)
+    sur UN seul compte avec les règles de risque, puis les chiffres, la courbe, les mois et les années."""
+    from .manager import _with_corr
     out = {"composants": rows, "ok": False, "message": ""}
-    if progress:
-        progress(len(comps), len(comps) + 1, "un seul compte, règles de risque et challenges FTMO")
-    if not parts or lo is None or hi <= lo:
+    parts = [p for p in parts if p is not None and len(p)]
+    if not parts or lo is None or hi is None or hi <= lo:
         out["message"] = "Aucun trade dans l'historique (ou pas de données MT5 pour ces marchés)."
         return out
+    parts = [_with_corr(rows[int(p["comp"].iloc[0])]["symbole"], p) for p in parts]
     t = pd.concat(parts, ignore_index=True)
     t = t[(to_dt(t["entry_time"]) >= lo) & (to_dt(t["exit_time"]) <= hi)]
     n_raw = len(t)
@@ -102,6 +92,9 @@ def backtest_combination(comb: dict, get_data, rules: FtmoRules = FtmoRules(), r
                          day_budget=rules_c.get("day_budget", 2.5), max_corr=rules_c.get("max_correles"),
                          day_lock=rules_c.get("frein"), vol_target=rules_c.get("volatilite"))
     t = t[t["r"].notna()].reset_index(drop=True)
+    if not len(t):
+        out["message"] = "Aucun trade dans l'historique commun des stratégies."
+        return out
     for k, g in t.groupby("comp"):
         rows[int(k)].update(trades=int(len(g)), r_total=round(float(g["r"].sum()), 1),
                             reussite=round(float((g["r"] > 0).mean() * 100), 0))
@@ -122,13 +115,48 @@ def backtest_combination(comb: dict, get_data, rules: FtmoRules = FtmoRules(), r
     m = daily["pnl"].groupby([daily.index.year, daily.index.month]).sum()
     out["mois"] = [{"annee": int(y), "mois": int(mo), "pct": round(float(v), 2)} for (y, mo), v in m.items()]
     y = daily.groupby(daily.index.year).agg(pct=("pnl", "sum"), pire=("worst", "min"))
+    years = to_dt(t["entry_time"]).year
     out["annees"] = [{"annee": int(k), "pct": round(float(v.pct), 2), "pire_jour": round(float(v.pire), 2),
-                      "trades": int((to_dt(t["entry_time"]).year == k).sum())} for k, v in y.iterrows()]
+                      "trades": int((years == k).sum())} for k, v in y.iterrows()]
     a, r = out["tout"], out["recent"]
     out["message"] = (f"{a['annees']} ans d'historique commun ({a['periode']}) : {a['trades']} trades, "
                       f"{a['rendement_pct']:+.1f} %, {a['reussis']} challenges réussis / {a['rates']} ratés. "
                       f"Période récente seule ({r['periode']}) : {r['rendement_pct']:+.1f} %, "
                       f"{r['reussis']} réussis / {r['rates']} ratés.")
+    return out
+
+
+def backtest_combination(comb: dict, get_data, rules: FtmoRules = FtmoRules(), risk_pct: float = 1.0,
+                         n_sim: int = 3000, progress=None, log=print, start=None) -> dict:
+    """comb : {"composants": [{symbole, timeframe, candidate, risk_pct}, ...], "regles": {...}}
+    get_data(symbole, timeframe) -> (df, coût) comme pour la recherche. start : début du backtest (sinon tout
+    l'historique commun)."""
+    rules_c = comb.get("regles") or {}
+    comps = comb.get("composants") or []
+    parts, rows, lo, hi = [], [], None, None
+    for i, c in enumerate(comps, 1):
+        if progress:
+            progress(i - 1, len(comps) + 1, f"{c['symbole']} {c['timeframe']} : historique et backtest")
+        w = float(c.get("risk_pct") or risk_pct)
+        row = {"symbole": c["symbole"], "timeframe": c["timeframe"], "strategie": c.get("strategie", ""),
+               "risk_pct": w, "trades": 0, "r_total": 0.0, "erreur": None}
+        try:
+            df, cost = get_data(c["symbole"], c["timeframe"])
+            tr = component_trades(df, cost, c["candidate"], w, start)
+        except Exception as exc:
+            row["erreur"] = str(exc)[:200]
+            rows.append(row)
+            log(f"[backtest] {c['symbole']} {c['timeframe']} : impossible ({exc})")
+            continue
+        first = df.index[0] if start is None else max(df.index[0], pd.Timestamp(start))
+        lo = first if lo is None else max(lo, first)
+        hi = df.index[-1] if hi is None else min(hi, df.index[-1])
+        row.update(debut=f"{first:%Y-%m-%d}", fin=f"{df.index[-1]:%Y-%m-%d}")
+        parts.append(tr.assign(w=w, comp=len(rows)))
+        rows.append(row)
+    if progress:
+        progress(len(comps), len(comps) + 1, "un seul compte, règles de risque et challenges FTMO")
+    out = account_report(parts, rows, lo, hi, rules, rules_c, risk_pct, n_sim)
     if progress:
         progress(len(comps) + 1, len(comps) + 1, "terminé")
     return out

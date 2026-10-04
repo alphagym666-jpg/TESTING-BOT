@@ -185,3 +185,85 @@ def test_platform_backtest_button(tmp_path, monkeypatch):
     assert job["resultat"]["tout"]["trades"] > 0 and list((tmp_path / "backtests").glob("*.json"))
     del eng._bt_jobs                                           # après un redémarrage : le backtest enregistré
     assert pf.backtest_live(eng, "/api/backtest?top=1")["etat"] == "fini"
+
+
+def _bt_strategies():
+    out = {}
+    i = 0
+    for sym in ("XAUUSD", "EURUSD", "US30"):
+        for fast, slow in ((5, 20), (9, 21), (12, 50)):
+            for rr in (1.5, 2.0):
+                c = _cand(fast, slow)
+                c["risk"]["rr"] = rr
+                out[f"s{i}"] = {"symbole": sym, "timeframe": "H1", "candidate": c, "trades_direct": i % 4}
+                i += 1
+    return out
+
+
+def test_top_backtest_two_years():
+    from mt5lab.top_backtest import top_backtest
+    strategies = _bt_strategies()
+    live = pd.DataFrame([{"strategie_id": "s1", "symbole": "XAUUSD", "timeframe": "H1", "strategie": "x", "risque": "x",
+                          "ouverture": f"2026-09-0{d} 10:00:00", "fermeture": f"2026-09-0{d} 12:00:00", "r": r}
+                         for d, r in ((1, 2.0), (2, -1.0), (3, 2.0))])
+    extras = [{"nom": "Stratégie combinée en paper : test", "keys": ["s0", "s7"], "weights": {"s0": 0.5, "s7": 0.5}}]
+    phases = []
+    loaded = []
+
+    def data(sym, tf, cands):
+        loaded.append((sym, tf, len(cands)))
+        return _synthetic_data(sym, tf)
+    res = top_backtest(strategies, data, extras=extras, live=live, n_sim=300, n_top=5,
+                       progress=lambda ph, d, n: phases.append(ph), log=lambda m: None)
+    assert res["ok"] and res["strategies_testees"] == len(strategies)
+    assert len(loaded) == 3 and sum(n for _, _, n in loaded) == len(strategies)      # une fois par marché
+    assert any("Chef des combinaisons" in p for p in phases)
+    S, C = res["seules"], res["combinees"]
+    assert 1 <= len(S) <= 5 and [e["rang"] for e in S] == list(range(1, len(S) + 1))
+    for e in S + C:
+        b = e["backtest"]
+        assert b["ok"] and b["courbe"] and b["tout"]["trades"] > 0 and b["tout"]["annees"] <= 2.1
+    names = [e.get("origine") for e in C]
+    assert "Stratégie combinée en paper : test" in names                         # toujours montrée, même hors TOP
+    for e in C:
+        assert all("candidate" not in c and "trades_bt" in c for c in e["composants"])
+    s1 = [e for e in S if e["composants"][0]["strategie_id"] == "s1"]
+    if s1:
+        assert s1[0]["direct"]["trades"] == 3 and s1[0]["direct"]["r_total"] == 3.0
+    json.dumps(res, default=str)
+
+
+def test_platform_top2ans_and_bots(tmp_path, monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    import mt5lab.plateforme as pf
+    from mt5lab.ftmo import FtmoRules
+    st = _bt_strategies()
+    slots = {k: SimpleNamespace(symbol=v["symbole"], timeframe="H1", candidate=v["candidate"], paused=False,
+                                group="G" if k in ("s0", "s7") else "", risk_pct=0.5, capital=100_000.0)
+             for k, v in st.items()}
+    for k, sym in (("s0", "XAUUSD"), ("s7", "EURUSD"), ("s13", "US30")):
+        _write_trades(tmp_path, k, sym, [2.0, -1.0, 1.0])
+    eng = SimpleNamespace(out=tmp_path, slots=slots, recent=[], ftmo=FtmoRules(), risk_pct=1.0, profile=None,
+                          groups={"G": SimpleNamespace(name="G")})
+    monkeypatch.setattr(pf, "_platform_data", lambda e, years=None: lambda s, tf, cand=None: _synthetic_data(s, tf))
+    assert pf.top2ans_live(eng)["etat"] == "jamais"
+    job = pf.top2ans_live(eng, start=True)
+    for _ in range(600):
+        if job["etat"] != "en cours":
+            break
+        time.sleep(0.5)
+    assert job["etat"] == "fini", job["message"]
+    res = job["resultat"]
+    assert res["strategies_testees"] == 3 and (tmp_path / "top_backtest_2ans.json").exists()
+    assert any(e["origine"] == "Stratégie combinée en paper : G" for e in res["combinees"])
+    got = []
+    monkeypatch.setattr(pf, "_build_bot", lambda e, comb, root, cap, ftmo, risk: got.append(comb) or {"ok": True, "message": "ok"})
+    rang = res["combinees"][0]["rang"]
+    assert pf.make_bot(eng, f"/api/bot?bt2={rang}")["ok"]
+    assert all(c["candidate"] == slots[c["strategie_id"]].candidate for c in got[0]["composants"])
+    assert not pf.make_bot(eng, "/api/bot?bt2=99")["ok"]
+    assert pf.make_bot(eng, "/api/bot?id=s13")["ok"]                    # une stratégie seule de la combinaison
+    del eng._top2_job
+    assert pf.top2ans_live(eng)["etat"] == "fini"                       # après un redémarrage

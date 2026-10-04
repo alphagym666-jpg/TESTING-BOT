@@ -72,6 +72,13 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"etat": "erreur", "message": f"Compilation impossible : {exc}"}, ensure_ascii=False)
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
+        elif path == "/api/top2ans":  # TOP 10 backtest 2 ans des stratégies qui tradent en direct
+            try:
+                body = json.dumps(top2ans_live(self.server.engine, start="lancer=1" in self.path),
+                                  ensure_ascii=False, default=str)
+            except Exception as exc:
+                body = json.dumps({"etat": "erreur", "message": f"Calcul impossible : {exc}"}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path == "/api/backtest":  # bouton « Backtest » d'une combinaison du TOP 10 du direct
             try:
                 body = json.dumps(backtest_live(self.server.engine, self.path), ensure_ascii=False, default=str)
@@ -148,13 +155,8 @@ def _run_top10(engine, job):
     from .direct import top_combinations
     from .ftmo import FtmoRules
     try:
-        path = engine.out / "trades.csv"
-        t = pd.read_csv(path) if path.exists() and path.stat().st_size else pd.DataFrame(engine.recent)
         live = {k for k, s in engine.slots.items() if not getattr(s, "paused", False)}  # pas les stratégies en pause
-        if len(t) and "strategie_id" in t.columns:
-            t = t[t["strategie_id"].isin(live)].copy()
-            t["r"] = pd.to_numeric(t["r"], errors="coerce")
-            t = t.dropna(subset=["r"])
+        t = _live_trades(engine, live)
         strategies = {k: {"symbole": s.symbol, "timeframe": s.timeframe, "candidate": s.candidate}
                       for k, s in engine.slots.items() if k in live}
         # toujours les règles du CHALLENGE (même sur la plateforme d'un compte perso) et 1 % max par trade
@@ -176,18 +178,111 @@ def _run_top10(engine, job):
         job.update(etat="erreur", message=f"Compilation impossible : {exc}")
 
 
-def _top_comb(engine, rank) -> dict | None:
-    top = (top10_live(engine).get("resultat") or {}).get("top") or []
-    i = int(rank) - 1
-    if not 0 <= i < len(top):
+YEARS_BT = 2.0   # backtest des 2 dernières années
+
+
+def top2ans_live(engine, start: bool = False) -> dict:
+    """Onglet « TOP 10 backtest 2 ans » : chaque stratégie qui a tradé en direct (et chaque stratégie combinée
+    qui tourne) rejouée sur les 2 dernières années de MT5, TOP 10 seules et combinées, avec le paper trading."""
+    import time as _time
+    job = getattr(engine, "_top2_job", None)
+    if start and not (job and job["etat"] == "en cours"):
+        job = {"etat": "en cours", "fait": 0, "total": 0, "debut": _time.strftime("%H:%M:%S"), "resultat": None,
+               "message": "Préparation…", "etape": "préparation"}
+        engine._top2_job = job
+        threading.Thread(target=_run_top2ans, args=(engine, job), daemon=True).start()
+    if job is None:
+        try:
+            res = json.loads((engine.out / "top_backtest_2ans.json").read_text(encoding="utf-8"))
+            return {"etat": "fini", "fait": 1, "total": 1, "resultat": res,
+                    "message": f"Dernier calcul enregistré ({res.get('calcule_le', '')}). Recliquez pour le refaire."}
+        except (OSError, ValueError):
+            return {"etat": "jamais", "message": "Cliquez sur le bouton pour backtester les stratégies du direct."}
+    return job
+
+
+def _run_top2ans(engine, job):
+    import time as _time
+
+    from .ftmo import FtmoRules
+    from .top_backtest import top_backtest
+    try:
+        t = _live_trades(engine)
+        counts = t["strategie_id"].value_counts() if len(t) else {}
+        traded = set(counts.keys()) if len(t) else set()
+        extras = []
+        for g in getattr(engine, "groups", {}).values():   # stratégies combinées qui tournent en paper
+            members = [k for k, sl in engine.slots.items() if getattr(sl, "group", "") == g.name]
+            if members and traded & set(members):
+                extras.append({"nom": f"Stratégie combinée en paper : {g.name}", "keys": members,
+                               "weights": {k: engine.slots[k].risk_pct or engine.risk_pct for k in members}})
+        top = ((getattr(engine, "_top10_job", None) or {}).get("resultat") or {}).get("top") or []
+        for e in top:   # le TOP 10 du direct : comment il s'en sort sur 2 ans
+            keys = [c["strategie_id"] for c in e["composants"] if c["strategie_id"] in engine.slots]
+            if keys:
+                extras.append({"nom": f"N°{e['rang']} du TOP 10 du direct", "keys": keys,
+                               "weights": {c["strategie_id"]: c["risk_pct"] for c in e["composants"]}})
+        ids = traded | {k for x in extras for k in x["keys"]}
+        if not ids:
+            job.update(etat="erreur", message="Aucune stratégie n'a encore tradé en direct : laissez tourner la plateforme.")
+            return
+        text = t.drop_duplicates("strategie_id").set_index("strategie_id") if len(t) else None
+        strategies = {}
+        for k in ids:
+            sl = engine.slots[k]
+            row = text.loc[k] if text is not None and k in text.index else None
+            txt = {c: (row.get(c) if row is not None and isinstance(row.get(c), str) else None)
+                   for c in ("strategie", "risque")}
+            strategies[k] = {"symbole": sl.symbol, "timeframe": sl.timeframe, "candidate": sl.candidate,
+                             "strategie": txt["strategie"], "risque": txt["risque"],
+                             "en_pause": bool(getattr(sl, "paused", False)), "trades_direct": int(counts.get(k, 0))}
+        rules = FtmoRules() if getattr(engine, "profile", None) else engine.ftmo
+        risk = min(float(engine.risk_pct or 1.0), 1.0)
+
+        def progress(phase, done, total):
+            job.update(etape=phase, fait=done, total=total, message=phase)
+        get = _platform_data(engine, YEARS_BT + 0.25)   # 3 mois de plus : indicateurs prêts au début
+        res = top_backtest(strategies, get, rules, risk, YEARS_BT, live=t, extras=extras, progress=progress,
+                           log=print)
+        res["calcule_le"] = _time.strftime("%Y-%m-%d %H:%M")
+        try:
+            (engine.out / "top_backtest_2ans.json").write_text(json.dumps(res, ensure_ascii=False, default=str),
+                                                               encoding="utf-8")
+        except OSError:
+            pass
+        job.update(etat="fini" if res.get("ok") else "erreur", resultat=res, message=res["message"])
+    except Exception as exc:
+        job.update(etat="erreur", message=f"Calcul impossible : {exc}")
+
+
+def _live_trades(engine, ids=None):
+    """Tous les trades du paper trading (trades.csv) des stratégies encore suivies (ou de `ids`)."""
+    import pandas as pd
+    path = engine.out / "trades.csv"
+    t = pd.read_csv(path) if path.exists() and path.stat().st_size else pd.DataFrame(engine.recent)
+    if len(t) and "strategie_id" in t.columns:
+        t = t[t["strategie_id"].isin(ids if ids is not None else engine.slots.keys())].copy()
+        t["r"] = pd.to_numeric(t["r"], errors="coerce")
+        t = t.dropna(subset=["r"])
+    return t
+
+
+def _top_comb(engine, rank, source: str = "direct") -> dict | None:
+    """Une combinaison d'un TOP 10 (« direct » : TOP 10 du direct ; « bt2 » : TOP 10 backtest 2 ans)."""
+    if source == "bt2":
+        top = (top2ans_live(engine).get("resultat") or {}).get("combinees") or []
+    else:
+        top = (top10_live(engine).get("resultat") or {}).get("top") or []
+    found = [e for e in top if str(e.get("rang")) == str(rank)]
+    if not found:
         return None
-    comb = dict(top[i])
+    comb = dict(found[0])
     comb["composants"] = [{**c, "candidate": c.get("candidate") or engine.slots[c["strategie_id"]].candidate}
                           for c in comb["composants"]]
     return comb
 
 
-def _platform_data(engine):
+def _platform_data(engine, years: float | None = None):
     """Historique MT5 de chaque marché, préparé comme pour la recherche (coûts réels, nouvelles, inter-marchés,
     COT). Les appels à MT5 se font à tour de rôle avec le paper trading (verrou)."""
     import contextlib
@@ -201,7 +296,7 @@ def _platform_data(engine):
     def rates(sym, tf):
         if (sym, tf) not in raw:
             with lock:
-                raw[(sym, tf)] = conn.rates_years(sym, tf)
+                raw[(sym, tf)] = conn.rates_years(sym, tf, years)
         return raw[(sym, tf)]
 
     def get(sym, tf, cand=None):
@@ -220,6 +315,7 @@ def _platform_data(engine):
         with lock:
             df = conn.enrich(df, sym, 0.0, comm, getattr(engine, "news", None), getattr(engine, "news_window", 30))
             return df, conn.typical_cost(df, sym, 0.0, comm)
+    get.clear = raw.clear   # libère la mémoire (historiques déjà utilisés)
     return get
 
 
@@ -347,8 +443,8 @@ def make_bot(engine, url: str) -> dict:
     from .pont import single_strategy
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
-    if q.get("top"):  # une combinaison du TOP 10 du direct (règles du challenge, même sur un compte perso)
-        comb = _top_comb(engine, q["top"])
+    if q.get("top") or q.get("bt2"):  # une combinaison d'un TOP 10 (règles du challenge, même sur un compte perso)
+        comb = _top_comb(engine, q.get("top") or q["bt2"], "direct" if q.get("top") else "bt2")
         if comb is None:
             return {"ok": False, "message": "Recompilez d'abord le TOP 10 (bouton de l'onglet)."}
         comb.pop("resultat", None)
@@ -505,7 +601,9 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 .cmpbtn:disabled{opacity:.6;cursor:wait}
 .btbtn{font:inherit;font-size:12px;padding:3px 9px;border-radius:8px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;white-space:nowrap}
 .btbtn:disabled{opacity:.5;cursor:wait}
-.panel{background:var(--surface);border:1px solid var(--accent);border-radius:12px;padding:12px 14px;margin:0 0 14px}
+.botbtn.mini{font-size:11px;padding:0 6px;margin:1px 6px 1px 0;line-height:1.5}
+.sec{margin:18px 0 8px;font-size:16px}.livebox{border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:6px 0 10px;background:var(--page)}
+.panel{background:var(--surface);border:1px solid var(--accent);border-radius:12px;padding:12px 14px;margin:0 0 14px;scroll-margin-top:96px}
 .eqwrap{position:relative;max-width:980px}.eq{width:100%;height:auto;display:block}
 .eq text{fill:var(--muted);font-size:11px}.eq .gl{stroke:var(--grid);stroke-width:1}.eq .zl{stroke:var(--axis);stroke-width:1}
 .eq .ln{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round}.eq .rec{fill:var(--accent);opacity:.06}
@@ -537,7 +635,7 @@ tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
 </main>
 <script>
 const TABS=[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["strat","Classement des stratégies"],
-["top","TOP 10 combinées du direct"],["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
+["top","TOP 10 combinées du direct"],["bt2","TOP 10 backtest 2 ans"],["an","Meilleurs setups du direct"],["mk","Meilleur bot par marché"],["rr","Meilleur R:R"],["ftmo","Challenges FTMO"],["log","Journal en direct"]];
 let A=null,aTime=0,aBusy=false;  // une seule demande à la fois (sinon elles s'empilent et rien ne finit)
 async function loadAnalyse(force){if(aBusy||(!force&&A&&Date.now()-aTime<60000))return;aBusy=true;aTime=Date.now();
  try{A=await (await fetch("/api/analyse",{cache:"no-store"})).json()}catch(e){A={message:"Analyse impossible : "+e,classement:[]}}
@@ -575,7 +673,7 @@ function viewTop(){if(!T10){loadTop(false);return `<div class="empty">Chargement
  if(!top.length)return head+(run?"":`<div class="empty">Pas encore de TOP 10.</div>`);
  const val=v=>v==null?"—":v;
  const rows=top.map(c=>{const r=c.resultat||{};
-  const comps=c.composants.map(x=>`<div title="${esc(x.strategie)}">${esc(x.symbole)} ${esc(x.timeframe)} · ${esc(String(x.strategie).slice(0,55))} <span class="mut">(${fmt(x.risk_pct,1)} %/trade, ${x.trades_direct} trades, ${fmt(x.r_total_direct,1,true)}R)</span></div>`).join("");
+  const comps=c.composants.map(x=>`<div title="${esc(x.strategie)}">${miniBot(x.strategie_id)}${esc(x.symbole)} ${esc(x.timeframe)} · ${esc(String(x.strategie).slice(0,55))} <span class="mut">(${fmt(x.risk_pct,1)} %/trade, ${x.trades_direct} trades, ${fmt(x.r_total_direct,1,true)}R)</span></div>`).join("");
   return `<tr><td class="n"><b>${c.rang}</b></td><td>${c.conforme?'<span class="tag ok">conforme</span>':'<span class="tag ko">trop risquée</span>'}</td>
    <td><button class="btbtn" data-bt="${c.rang}" title="Rejouer cette combinaison sur tout l'historique MT5">Backtest</button> <button class="botbtn" data-top="${c.rang}">Créer le bot MT5</button></td>
    <td style="font-size:12px;line-height:1.5">${comps}</td>
@@ -593,7 +691,8 @@ async function loadBT(rang,start){if(btBusy)return;btBusy=true;BTr=rang;
  const get=async go=>(await fetch(`/api/backtest?top=${rang}`+(go?"&lancer=1":""),{cache:"no-store"})).json();
  try{BT=await get(start===true);if(start==="auto"&&BT.etat==="jamais")BT=await get(true)}catch(e){BT={etat:"erreur",message:"Backtest impossible : "+e}}
  btBusy=false;clearTimeout(btTimer);if(BT.etat==="en cours")btTimer=setTimeout(()=>loadBT(BTr,false),2000);render()}
-function eqSvg(c,rec){if(!c||c.length<2)return "";const W=900,H=240,L=46,R=10,T=10,B=24,v=c.map(x=>x[1]);
+let EQ=null;
+function eqSvg(c,rec){if(!c||c.length<2)return "";EQ=c;const W=900,H=240,L=46,R=10,T=10,B=24,v=c.map(x=>x[1]);
  let lo=Math.min(0,...v),hi=Math.max(0,...v);if(hi-lo<1e-9)hi=lo+1;const pad=(hi-lo)*.06;lo-=pad;hi+=pad;
  const X=i=>L+i/(c.length-1)*(W-L-R),Y=y=>T+(hi-y)/(hi-lo)*(H-T-B);
  const st=Math.pow(10,Math.floor(Math.log10((hi-lo)/4)));const step=[1,2,5,10].map(k=>k*st).find(k=>(hi-lo)/k<=5);
@@ -608,14 +707,14 @@ function eqSvg(c,rec){if(!c||c.length<2)return "";const W=900,H=240,L=46,R=10,T=
 document.getElementById("view").addEventListener("mousemove",e=>{const hit=e.target.closest(".eq .hit");const wrap=e.target.closest(".eqwrap");
  if(!wrap)return;const svg=wrap.querySelector("svg"),tip=wrap.querySelector(".eqtip"),cur=svg.querySelector(".cur"),dot=svg.querySelector(".dotc");
  if(!hit){tip.style.display=cur.style.display=dot.style.display="none";return}
- const c=(BT&&BT.resultat&&BT.resultat.courbe)||[];if(!c.length)return;const r=svg.getBoundingClientRect(),k=900/r.width;
+ const c=EQ||[];if(!c.length)return;const r=svg.getBoundingClientRect(),k=900/r.width;
  const L=+hit.dataset.l,Wd=+hit.dataset.w,T=+hit.dataset.t,Hh=+hit.dataset.h,lo=+hit.dataset.lo,hi=+hit.dataset.hi;
  const x=(e.clientX-r.left)*k,i=Math.max(0,Math.min(c.length-1,Math.round((x-L)/Wd*(c.length-1))));
  const px=L+i/(c.length-1)*Wd,py=T+(hi-c[i][1])/(hi-lo)*Hh;
  cur.setAttribute("x1",px);cur.setAttribute("x2",px);cur.style.display="";dot.setAttribute("cx",px);dot.setAttribute("cy",py);dot.style.display="";
  tip.innerHTML=`<b>${esc(c[i][0])}</b> · compte ${fmt(c[i][1],2,true)} %`;tip.style.display="block";
  const left=px/k;tip.style.left=Math.min(left+12,r.width-170)+"px";tip.style.top=Math.max(0,py/k-34)+"px"});
-document.getElementById("view").addEventListener("click",e=>{const b=e.target.closest(".btbtn");if(!b)return;e.stopPropagation();
+document.getElementById("view").addEventListener("click",e=>{const b=e.target.closest(".btbtn[data-bt]");if(!b)return;e.stopPropagation();
  loadBT(+b.dataset.bt,"auto");setTimeout(()=>{const p=document.querySelector(".panel");if(p)p.scrollIntoView({behavior:"smooth",block:"start"})},300)});
 function viewBT(){if(!BT||!BTr)return "";const run=BT.etat==="en cours",R=BT.resultat;
  const pct=BT.total?Math.round(BT.fait/BT.total*100):0;
@@ -623,16 +722,19 @@ function viewBT(){if(!BT||!BTr)return "";const run=BT.etat==="en cours",R=BT.res
   <a href="#" onclick="BT=null;BTr=null;render();return false" class="mut">fermer</a></div>`;
  if(run)return h+`<p><span class="meter" style="width:220px"><i style="width:${pct}%"></i></span> ${pct} % · ${esc(BT.message)} <span class="mut">(démarré à ${esc(BT.debut||"")})</span></p></div>`;
  if(!R||!R.ok)return h+`<p class="neg">${esc(BT.message||"")}</p>${R?compTable(R):""}</div>`;
+ return h+btBody(R,{cols:["Tout l'historique","Période récente"],redo:"loadBT(BTr,true)",
+  honest:`<b>À lire honnêtement :</b> ces stratégies ont été trouvées en cherchant sur une partie de ce même historique, donc
+  « tout l'historique » est optimiste. La colonne <b>période récente</b> (les 35 % les plus récents, la période de validation de la recherche) et le paper trading sont les chiffres qui comptent.`})+`</div>`}
+function btBody(R,o){
  const A=R.tout,Rc=R.recent;
  const row=(lab,k,f)=>`<tr><td>${lab}</td><td class="n">${f(A[k])}</td><td class="n">${f(Rc[k])}</td></tr>`;
  const pc=(d,s)=>v=>v==null?"—":`<span class="${s?cls(v):""}">${fmt(v,d,s)} %</span>`,nb=d=>v=>v==null?"—":fmt(v,d),days=v=>v==null?"—":"~"+fmt(v,0)+" j";
- h+=`<p class="note">${esc(R.message)} · ${esc(R.regles||"")} · ${fmt(R.refuses,0)} signaux refusés par la perte possible max par jour · calculé le ${esc(R.calcule_le||"")}
-  · <a href="#" onclick="loadBT(BTr,true);return false">refaire</a></p>
-  <p class="note" style="color:var(--ink)"><b>À lire honnêtement :</b> ces stratégies ont été trouvées en cherchant sur une partie de ce même historique, donc
-  « tout l'historique » est optimiste. La colonne <b>période récente</b> (les ${fmt(35,0)} % les plus récents, la période de validation de la recherche) et le paper trading sont les chiffres qui comptent.</p>
+ let h=`<p class="note">${esc(R.message)} · ${esc(R.regles||"")} · ${fmt(R.refuses,0)} signaux refusés par la perte possible max par jour · calculé le ${esc(R.calcule_le||"")}
+  ${o.redo?` · <a href="#" onclick="${o.redo};return false">refaire</a>`:""}</p>
+  <p class="note" style="color:var(--ink)">${o.honest}</p>${o.extra||""}
   ${eqSvg(R.courbe,R.debut_recent)}
   <div class="row" style="align-items:flex-start;gap:18px;margin-top:10px">
-  <table class="cmp" style="width:auto"><thead><tr><th></th><th>Tout l'historique</th><th>Période récente</th></tr></thead><tbody>
+  <table class="cmp" style="width:auto"><thead><tr><th></th><th>${o.cols[0]}</th><th>${o.cols[1]}</th></tr></thead><tbody>
   <tr><td>Période</td><td class="n">${esc(A.periode)}</td><td class="n">${esc(Rc.periode)}</td></tr>
   ${row("Gain total (risque fixe)","rendement_pct",pc(1,true))}${row("Réussite du challenge (simulée)","ftmo_pass",pc(0))}
   ${row("Échecs (limite de perte touchée)","ftmo_echec_p1",pc(1))}${row("Challenge réussi en","jours_attendus",days)}
@@ -647,9 +749,59 @@ function viewBT(){if(!BT||!BTr)return "";const run=BT.etat==="en cours",R=BT.res
  const mn=["janv","févr","mars","avr","mai","juin","juil","août","sept","oct","nov","déc"];
  h+=`<h4 style="margin:14px 0 6px">Gain par mois (%)</h4><div class="scroll" style="max-height:none"><table class="months"><thead><tr><th>Année</th>${mn.map(x=>`<th>${x}</th>`).join("")}</tr></thead><tbody>`+
   Object.keys(M).sort().map(y=>`<tr><td style="text-align:left">${y}</td>${mn.map((_,i)=>{const v=M[y][i+1];return `<td>${v==null?"":`<span class="${cls(v)}">${fmt(v,1,true)}</span>`}</td>`}).join("")}</tr>`).join("")+`</tbody></table></div>`;
- return h+compTable(R)+`</div>`}
+ return h+compTable(R)}
 function compTable(R){return `<h4 style="margin:14px 0 6px">Chaque stratégie de la combinaison sur l'historique</h4>`+table("btc",[["Marché","symbole"],["TF","timeframe"],["Stratégie","strategie"],["Risque/trade","risk_pct",v=>fmt(v,1)+" %",1],
  ["Trades","trades",null,1],["R total","r_total",rr,1],["Trades gagnants","reussite",v=>v==null?"—":fmt(v,0)+" %",1],["Historique","debut",(v,r)=>v?esc(v)+" → "+esc(r.fin):"—"],["Problème","erreur",v=>v?`<span class="neg">${esc(v)}</span>`:""]],R.composants||[])}
+function miniBot(id){return id?`<button class="botbtn mini" data-id="${esc(id)}" title="Créer le bot MT5 de CETTE stratégie seule">Bot</button>`:""}
+let T2=null,t2Busy=false,t2Timer=null,SEL2=null;
+async function loadTop2(start){if(t2Busy)return;t2Busy=true;
+ try{T2=await (await fetch("/api/top2ans"+(start?"?lancer=1":""),{cache:"no-store"})).json()}catch(e){T2={etat:"erreur",message:"Calcul impossible : "+e}}
+ t2Busy=false;clearTimeout(t2Timer);if(T2.etat==="en cours")t2Timer=setTimeout(()=>loadTop2(false),2000);render()}
+document.getElementById("view").addEventListener("click",e=>{const b=e.target.closest(".v2btn");if(!b)return;e.stopPropagation();
+ SEL2={k:b.dataset.k,r:+b.dataset.r};render();setTimeout(()=>{const p=document.querySelector(".panel");if(p)p.scrollIntoView({behavior:"smooth",block:"start"})},100)});
+function liveBox(L,single){if(!L||!L.trades)return `<div class="livebox"><b>En paper trading :</b> <span class="mut">pas encore de trade en direct.</span></div>`;
+ return `<div class="livebox"><b>En paper trading jusqu'à maintenant</b> (depuis le ${esc(L.depuis)}, ${fmt(L.jours,0)} jours de bourse) :
+  ${fmt(L.trades,0)} trades · ${rr(L.r_total)} · ${fmt(L.reussite,0)} % gagnants · gain <span class="${cls(L.rendement_pct)}">${fmt(L.rendement_pct,2,true)} %</span>
+  · pire jour ${fmt(L.pire_jour,2)} % · challenges enchaînés ${L.reussis} réussis / ${L.rates} ratés${single||L.composants_avec_trades===L.composants?"":` · <span class="mut">${L.composants_avec_trades} stratégies sur ${L.composants} ont déjà tradé</span>`}</div>`}
+function paperCells(L){if(!L||!L.trades)return `<td class="n mut">—</td><td class="n mut">—</td><td class="n mut">—</td><td class="mut">pas encore</td>`;
+ return `<td class="n">${fmt(L.trades,0)}</td><td class="n"><span class="${cls(L.rendement_pct)}">${fmt(L.rendement_pct,2,true)} %</span> <span class="mut">(${fmt(L.r_total,1,true)}R)</span></td>
+  <td class="n">${L.reussis} / ${L.rates}</td><td>${esc(L.depuis)}</td>`}
+function bt2Cells(B){const a=(B&&B.tout)||{};const pc=(v,d)=>v==null?"—":fmt(v,d)+" %";
+ return `<td class="n"><span class="${cls(a.rendement_pct)}">${fmt(a.rendement_pct,1,true)} %</span></td><td class="n">${pc(a.ftmo_pass,0)}</td><td class="n">${pc(a.ftmo_echec_p1,1)}</td>
+  <td class="n">${a.jours_attendus==null?"—":"~"+fmt(a.jours_attendus,0)+" j"}</td><td class="n">${a.reussis??"—"} / ${a.rates??"—"}</td>
+  <td class="n">${fmt(a.pire_jour,2)} %</td><td class="n">${fmt(a.dd_max,2)} %</td><td class="n">${fmt(a.trades,0)}</td><td class="n">~${fmt(a.trades_mois,0)}</td>`}
+const BT2H=`<th>Gain 2 ans</th><th>Réussite challenge</th><th>Échecs</th><th>Réussi en</th><th>Challenges réussis / ratés</th><th>Pire jour</th><th>DD max</th><th>Trades</th><th>Trades / mois</th>`;
+const PAPH=`<th>Trades paper</th><th>Gain paper</th><th>Challenges paper</th><th>Paper depuis</th>`;
+function stateTag(e){return (e.conforme?'<span class="tag ok">conforme</span>':'<span class="tag ko">trop risquée</span>')+(e.hors_top?' <span class="tag">hors TOP 10</span>':"")}
+function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargement…</div>`}
+ const run=T2.etat==="en cours",R=T2.resultat||{},C=R.combinees||[],S=R.seules||[];
+ const pct=T2.total?Math.round(T2.fait/T2.total*100):0;
+ let h=`<p style="margin:4px 0 10px"><button class="cmpbtn" ${run?"disabled":""} onclick="loadTop2(true)">
+  ${run?"Backtest en cours…":"Backtester toutes les stratégies du direct sur les 2 dernières années → TOP 10"}</button>
+  ${run?` <span class="meter" style="width:220px"><i style="width:${pct}%"></i></span> ${pct} % · ${esc(T2.etape||"")} <span class="mut">(démarré à ${esc(T2.debut||"")} ; de quelques minutes à une heure selon le nombre de stratégies)</span>`:""}</p>
+  <p class="note">${esc(T2.message||"")}${R.periode?` · période ${esc(R.periode)} · ${esc(R.regles||"")}`:""}${R.calcule_le?" · calculé le "+esc(R.calcule_le):""}</p>
+  <p class="note">Chaque stratégie qui a pris au moins un trade sur cette plateforme (et chaque stratégie combinée qui tourne) est rejouée sur les
+  <b>2 dernières années</b> de MT5 (spread, commission, glissement, swaps, nouvelles), sur un compte avec 1 % max par trade et 2,5 % de perte possible max par jour.
+  À côté : ce qu'elle a donné <b>en paper trading</b> jusqu'à maintenant. <b>À lire honnêtement :</b> le n°1 parmi des milliers de backtests est en partie chanceux ;
+  celle qui est bonne sur 2 ans <b>ET</b> en paper trading est la plus solide.</p>`;
+ if(SEL2){const L=SEL2.k==="c"?C:S,e=L.find(x=>x.rang===SEL2.r);
+  if(e&&e.backtest){const B=e.backtest,title=SEL2.k==="c"?`${esc(e.nom)}${e.origine&&e.origine!=="Chef des combinaisons"?" · "+esc(e.origine):""}`:`${esc(e.nom)} : ${esc(e.composants[0].symbole)} ${esc(e.composants[0].timeframe)}`;
+   h+=`<div class="panel"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Backtest 2 ans — ${title}</h3>
+    <span>${SEL2.k==="c"?`<button class="botbtn" data-bt2="${e.rang}">Créer le bot MT5 de cette combinaison</button>`:`<button class="botbtn" data-id="${esc(e.composants[0].strategie_id)}">Créer le bot MT5</button>`}
+    <a href="#" onclick="SEL2=null;render();return false" class="mut" style="margin-left:10px">fermer</a></span></div>`+
+    (B.ok?btBody(B,{cols:["2 dernières années","Période récente (8 derniers mois)"],extra:liveBox(e.direct,SEL2.k!=="c"),
+     honest:"Backtest des 2 dernières années. Une partie de cette période a pu servir à la recherche des stratégies, et le classement choisit les meilleures parmi beaucoup : comparez toujours avec le paper trading ci-dessous."}):`<p class="neg">${esc(B.message||"")}</p>`)+`</div>`}}
+ if(!C.length&&!S.length)return h+(run?"":`<div class="empty">Pas encore de TOP 10 backtest.</div>`);
+ const comps=e=>e.composants.map(x=>`<div title="${esc(x.strategie)}">${miniBot(x.strategie_id)}${esc(x.symbole)} ${esc(x.timeframe)} · ${esc(String(x.strategie).slice(0,50))}
+  <span class="mut">(${fmt(x.risk_pct,1)} %/trade · 2 ans : ${fmt(x.trades_bt,0)} trades ${fmt(x.r_total_bt,1,true)}R · paper : ${x.direct_trades?fmt(x.direct_trades,0)+" trades "+fmt(x.direct_r,1,true)+"R":"pas encore"})</span>${x.en_pause?' <span class="tag ko">en pause</span>':""}</div>`).join("");
+ h+=`<h3 class="sec">TOP 10 des stratégies COMBINÉES (backtest 2 ans)</h3>`+(C.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Stratégies de la combinaison (bot de chacune)</th><th>Origine</th>${BT2H}${PAPH}</tr></thead><tbody>`+
+  C.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}</td><td><button class="v2btn btbtn" data-k="c" data-r="${e.rang}">Voir le backtest</button> <button class="botbtn" data-bt2="${e.rang}">Bot MT5 combinée</button></td>
+   <td style="font-size:12px;line-height:1.5">${comps(e)}</td><td>${esc(e.origine||"")}</td>${bt2Cells(e.backtest)}${paperCells(e.direct)}</tr>`).join("")+`</tbody></table></div>`:`<p class="note">Pas de combinaison.</p>`);
+ h+=`<h3 class="sec">TOP 10 des stratégies SEULES (backtest 2 ans)</h3>`+(S.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Réglage</th>${BT2H}${PAPH}</tr></thead><tbody>`+
+  S.map(e=>{const x=e.composants[0];return `<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}${x.en_pause?' <span class="tag ko">en pause</span>':""}</td>
+   <td><button class="v2btn btbtn" data-k="s" data-r="${e.rang}">Voir le backtest</button> <button class="botbtn" data-id="${esc(x.strategie_id)}">Bot MT5</button></td>
+   <td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)}">${esc(x.strategie)}</td><td class="s" title="${esc(x.risque_config)}">${esc(x.risque_config)}</td>${bt2Cells(e.backtest)}${paperCells(e.direct)}</tr>`}).join("")+`</tbody></table></div>`:`<p class="note">Pas de stratégie seule.</p>`);
+ return h}
 let M=null,mTime=0,mBusy=false;
 async function loadMarches(force){if(mBusy||(!force&&M&&Date.now()-mTime<60000))return;mBusy=true;mTime=Date.now();
  try{M=await (await fetch("/api/marches",{cache:"no-store"})).json()}catch(e){M={message:"Classement impossible : "+e,marches:[]}}
@@ -691,7 +843,7 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   const att=c[3]?' class="n"':long?` class="s" title="${esc(r[c[1]])}"`:"";
   return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
- e.stopPropagation();b.disabled=true;const q=b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
+ e.stopPropagation();b.disabled=true;const q=b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;
  try{const r=await (await fetch("/api/bot?"+q,{cache:"no-store"})).json();alert(r.message)}catch(err){alert("Erreur : "+err)}b.disabled=false});
 document.getElementById("view").addEventListener("click",e=>{const th=e.target.closest("th");if(!th)return;
  const id=th.closest("table").dataset.id,i=+th.dataset.i;const s=sortState[id];
@@ -781,7 +933,7 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();if(D.profil){const t="Plateforme — "+D.profil.nom+" ("+fmt(D.profil.capital,0)+" $)";const h=document.querySelector("h1");if(h.textContent!==t){h.textContent=t;document.title=t}}document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- const v={comb:viewComb,top:viewTop,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ const v={comb:viewComb,top:viewTop,bt2:viewTop2,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;

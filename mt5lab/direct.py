@@ -201,15 +201,19 @@ def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules
                      risk_pct: float = 1.0, day_budget: float = 2.5, total_budget: float = 10.0,
                      min_trades: int = 5, max_components: int = 6, n_top: int = 10, n_seeds: int = 12,
                      n_cand: int = 20, n_sim: int = 1500, n_quick: int = 200, max_fail: float = 2.0,
-                     progress=None) -> dict:
+                     progress=None, extras: list | None = None, label: str = "du direct", live: bool = True) -> dict:
     """COMPILE TOUTES les stratégies du direct et renvoie le TOP 10 des combinaisons pour passer le challenge.
 
     Chaque combinaison tourne sur UN seul compte (risque max risk_pct par trade, perte possible max day_budget %
     par jour). Le Chef des combinaisons part de chacune des meilleures stratégies (et d'un départ libre), ajoute
     à chaque étape la stratégie qui fait réussir le challenge le plus vite, avec 2 façons de doser le risque
     (0,5 % ou risk_pct par trade, ou tout à 0,5 %). Chaque étape est une combinaison candidate. Les meilleures
-    sont ensuite revérifiées avec la simulation complète et classées comme le TOP 10 du Directeur."""
+    sont ensuite revérifiées avec la simulation complète et classées comme le TOP 10 du Directeur.
+
+    extras : combinaisons déjà faites à classer avec les autres ([{"nom", "keys", "weights"}], par ex. la stratégie
+    combinée qui tourne en paper trading). live = False : les trades viennent d'un BACKTEST (pas du direct)."""
     strategies = strategies or {}
+    extras = extras or []
     out = {"trades": int(len(trades)), "strategies": 0, "jours": 0, "fiable": False, "top": [], "essais": 0,
            "message": ""}
     if not len(trades):
@@ -221,15 +225,21 @@ def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules
     out.update(strategies=int(t["strategie_id"].nunique()), jours=n_days, fiable=n_days >= MIN_DAYS_RELIABLE,
                periode=f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}")
     g = t.groupby("strategie_id")["r"]   # des dizaines de milliers de comptes : seulement les gagnantes assez actives
+    t_all = t
     t = t[t["strategie_id"].map(g.size()).ge(min_trades) & t["strategie_id"].map(g.sum()).gt(0)]
     tab = strategy_table(t, min_trades)
+    present = set(t_all["strategie_id"].unique())
+    extras = [x for x in extras if x.get("keys") and set(x["keys"]) <= present]
     good = tab[tab["fiable"] & (tab["r_total"] > 0) & (tab["r_moyen"] > 0)]
     cand = good.head(n_cand)["strategie_id"].tolist()
     out["candidates"] = len(cand)
-    if not cand:
+    if not cand and not extras:
         out["message"] = (f"Aucune stratégie gagnante avec au moins {min_trades} trades en direct pour l'instant : "
-                          "laissez tourner la plateforme.")
+                          "laissez tourner la plateforme." if live else
+                          f"Aucune stratégie gagnante avec au moins {min_trades} trades dans le backtest.")
         return out
+    ids = set(t["strategie_id"].unique()) | {k for x in extras for k in x["keys"]}
+    t = t_all[t_all["strategie_id"].isin(ids)]
     evaluate = _evaluator(t, rules, risk_pct, day_budget, total_budget, lo, hi, n_days, n_sim)
     better = _better(day_budget, max_fail)
     modes = [sorted({0.5, risk_pct}), [min(0.5, risk_pct)]]
@@ -273,10 +283,18 @@ def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules
                 progress(done, total)
     # revérification complète des meilleures, puis classement final
     short = sorted(found.values(), key=lambda x: rank_key(x[2], day_budget, max_fail))[:max(3 * n_top, 20)]
-    final = [(keys, weights, evaluate(keys, weights)) for keys, weights, _ in short]
+    final = [(keys, weights, evaluate(keys, weights), "Chef des combinaisons") for keys, weights, _ in short]
+    for x in extras:   # combinaisons déjà faites : classées avec les autres, sous leur nom
+        k = frozenset(x["keys"])
+        final = [f for f in final if frozenset(f[0]) != k]
+        w = {key: float(x["weights"].get(key) or risk_pct) for key in x["keys"]}
+        final.append((list(x["keys"]), w, evaluate(list(x["keys"]), w), x.get("nom", "")))
     final.sort(key=lambda x: rank_key(x[2], day_budget, max_fail))
-    info = tab.set_index("strategie_id")
-    for i, (keys, weights, res) in enumerate(final[:n_top], 1):
+    extra_names = {x.get("nom", "") for x in extras}
+    shown = [(i, f) for i, f in enumerate(final, 1) if i <= n_top or f[3] in extra_names]  # déjà en place : toujours
+    info = strategy_table(t[t["strategie_id"].isin({k for _, f in shown for k in f[0]})], 1) \
+        .set_index("strategie_id")
+    for i, (keys, weights, res, origin) in shown:
         comps = []
         for k in keys:
             s, r = strategies.get(k, {}), info.loc[k]
@@ -287,17 +305,20 @@ def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules
                           "trades_mois": float(r["trades_mois"])})
         ok = not rank_key(res, day_budget, max_fail)[0]
         out["top"].append({
-            "rang": i, "nom": f"N°{i} du TOP 10 du direct", "source": "direct", "conforme": ok,
+            "rang": i, "nom": f"N°{i} du TOP 10 {label}" if i <= n_top else f"{origin} : n°{i} du classement {label}", "source": "direct" if live else "backtest",
+            "origine": origin, "conforme": ok, "hors_top": i > n_top,
             "regles": {"day_budget": day_budget, "total_budget": total_budget, "day_stop": None, "max_open": None},
             "resultat": {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
                          for k, v in res.items() if not isinstance(v, (list, dict))},
             "composants": comps, "jours_de_donnees": n_days,
             "cree_le": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")})
-    n_ok = sum(1 for c in out["top"] if c["conforme"])
+    n_ok = sum(1 for c in out["top"] if c["conforme"] and not c["hors_top"])
     msg = (f"{len(found)} combinaisons différentes construites à partir de {len(cand)} stratégies gagnantes "
            f"({out['essais']} essais) : {n_ok} respectent la limite d'échecs ({max_fail:g} %) et le budget de "
            f"{day_budget:g} %/jour.").replace(".5 %", ",5 %")
-    if not out["fiable"]:
+    if extras:
+        msg += f" + {len(extras)} combinaison(s) déjà en place classée(s) avec les autres."
+    if live and not out["fiable"]:
         msg += (f" ATTENTION : seulement {n_days} jours de bourse en direct (il en faut au moins {MIN_DAYS_RELIABLE}) : "
                 "le classement va encore bouger.")
     out["message"] = msg

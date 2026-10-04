@@ -22,6 +22,9 @@ import pandas as pd
 
 def to_dt(values) -> pd.DatetimeIndex:
     """Dates de trades : les trades D1 sont écrits '2019-01-28', les intraday '2019-01-28 13:00:00'."""
+    if isinstance(values, (pd.Series, pd.Index, np.ndarray)) and pd.api.types.is_datetime64_dtype(values) \
+            and getattr(values, "tz", None) is None:   # déjà des dates : pas besoin de relire du texte (rapide)
+        return pd.DatetimeIndex(values)
     return pd.DatetimeIndex(pd.to_datetime(pd.Series(values).astype(str), format="mixed"))
 
 
@@ -78,19 +81,23 @@ def daily_table(trades: pd.DataFrame, risk_pct: float, start=None, end=None) -> 
     cw_ex = np.concatenate([[0.0], np.cumsum(w[o_ex])])
     open_w = cw_ent[np.searchsorted(entry[o_ent], exit_, "left")] - cw_ex[np.searchsorted(exit_[o_ex], exit_, "right")]
     open_w = np.maximum(open_w, 0.0)
+    # par jour (les trades sont triés par sortie : chaque jour est un bloc contigu) : P&L et pire moment
     day = pd.DatetimeIndex(exit_).normalize()
-    df = pd.DataFrame({"day": day, "pnl": pnl, "open_w": open_w})
-    df["cum"] = df.groupby("day")["pnl"].cumsum()
-    df["worst"] = df["cum"] - df["open_w"]
-    g = df.groupby("day").agg(pnl=("pnl", "sum"), worst=("worst", "min"))
-    g["worst"] = np.minimum(g["worst"], 0.0)
-    entry_days = set(pd.DatetimeIndex(entry).normalize())
-    start = pd.Timestamp(start).normalize() if start is not None else g.index.min()
-    end = pd.Timestamp(end).normalize() if end is not None else g.index.max()
-    days = pd.bdate_range(start, end).union(g.index)
-    out = g.reindex(days, fill_value=0.0)
-    out["traded"] = [d in entry_days for d in out.index]
-    return out
+    dnum = day.asi8
+    starts = np.flatnonzero(np.concatenate([[True], dnum[1:] != dnum[:-1]]))
+    cum = np.cumsum(pnl)
+    cum_in_day = cum - np.repeat(np.concatenate([[0.0], cum[starts[1:] - 1]]), np.diff(np.append(starts, len(pnl))))
+    g_index = day[starts].rename("day")
+    g_pnl = np.add.reduceat(pnl, starts)
+    g_worst = np.minimum(np.minimum.reduceat(cum_in_day - open_w, starts), 0.0)
+    start = pd.Timestamp(start).normalize() if start is not None else g_index.min()
+    end = pd.Timestamp(end).normalize() if end is not None else g_index.max()
+    days = pd.bdate_range(start, end).union(g_index)
+    pos = days.get_indexer(g_index)
+    out_pnl, out_worst = np.zeros(len(days)), np.zeros(len(days))
+    out_pnl[pos], out_worst[pos] = g_pnl, g_worst
+    traded = days.isin(pd.DatetimeIndex(entry).normalize().unique())
+    return pd.DataFrame({"pnl": out_pnl, "worst": out_worst, "traded": traded}, index=days)
 
 
 def holding_stats(trades: pd.DataFrame) -> dict:
@@ -144,16 +151,25 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
     has_corr = max_corr is not None and "cluster" in t.columns and "expo" in t.columns
     realized: dict = {}                  # jour -> P&L réalisé %
     vol_cache: dict = {}                 # jour -> facteur de volatilité
-    for i, row in enumerate(t.itertuples()):
-        while open_heap and open_heap[0][0] <= row.e_dt:
+    # tableaux numpy (heures en nanosecondes, jours en entiers) : beaucoup plus rapide qu'une boucle sur les lignes
+    day_ns = 86_400 * 10**9
+    e_ns = t["e_dt"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
+    x_ns = t["x_dt"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
+    r_arr = t["r"].to_numpy(dtype=float)
+    w_arr = t["w"].to_numpy(dtype=float)
+    cl_arr = t["cluster"].to_numpy() if has_corr else None
+    ex_arr = t["expo"].to_numpy() if has_corr else None
+    for i in range(len(t)):
+        e = e_ns[i]
+        while open_heap and open_heap[0][0] <= e:
             x, p, _w, _c, _e = heapq.heappop(open_heap)
-            realized[x.normalize()] = realized.get(x.normalize(), 0.0) + p
-        today = realized.get(row.e_dt.normalize(), 0.0)
+            realized[x // day_ns] = realized.get(x // day_ns, 0.0) + p
+        d0 = e // day_ns
+        today = realized.get(d0, 0.0)
         if day_stop is not None and today <= -day_stop:
             continue
-        w = row.w
+        w = w_arr[i]
         if vol_target:
-            d0 = row.e_dt.normalize()
             if d0 not in vol_cache:
                 past = [v for d, v in sorted(realized.items()) if d < d0][-int(vol_target.get("jours", 20)):]
                 vol_cache[d0] = vol_factor(past, float(vol_target["cible"]))
@@ -161,11 +177,11 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
         if day_lock and today >= float(day_lock["seuil"]):
             if float(day_lock.get("facteur", 0)) <= 0:
                 continue
-            w = row.w * float(day_lock["facteur"])
+            w = w_arr[i] * float(day_lock["facteur"])
         if max_open is not None and len(open_heap) >= max_open:
             continue
-        if has_corr and row.cluster and row.expo and \
-                sum(1 for o in open_heap if o[3] == row.cluster and o[4] == row.expo) >= max_corr:
+        if has_corr and cl_arr[i] and ex_arr[i] and \
+                sum(1 for o in open_heap if o[3] == cl_arr[i] and o[4] == ex_arr[i]) >= max_corr:
             continue
         if day_budget is not None:
             open_risk = sum(o[2] for o in open_heap) * safety
@@ -173,8 +189,8 @@ def apply_risk_rules(trades: pd.DataFrame, day_stop: float | None = None, max_op
                 continue
         keep[i] = True
         new_w[i] = w
-        heapq.heappush(open_heap, (row.x_dt, row.r * w, w,
-                                   row.cluster if has_corr else "", row.expo if has_corr else 0))
+        heapq.heappush(open_heap, (int(x_ns[i]), r_arr[i] * w, w,
+                                   cl_arr[i] if has_corr else "", ex_arr[i] if has_corr else 0))
     t["w"] = new_w
     return t.loc[keep].drop(columns=["e_dt", "x_dt"]).reset_index(drop=True)
 

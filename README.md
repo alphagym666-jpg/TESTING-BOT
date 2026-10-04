@@ -694,6 +694,28 @@ Le calcul tourne en arrière-plan (1 à 5 minutes, barre d'avancement) et est en
 (le dernier TOP 10 réapparaît après un redémarrage). Avec moins de 20 jours de bourse en direct, le classement
 bouge encore : la page le dit.
 
+## TOP 10 backtest 2 ans (stratégies du direct)
+
+Onglet **« TOP 10 backtest 2 ans »** de la plateforme, bouton **« Backtester toutes les stratégies du direct sur les
+2 dernières années → TOP 10 »** :
+
+- chaque stratégie qui a pris au moins un trade sur la plateforme (et chaque composant d'une stratégie combinée
+  qui tourne) est rejouée sur les **2 dernières années** de MT5 (spread, commission, glissement, swaps,
+  nouvelles) ; même signal avec plusieurs R:R = calculé une seule fois ; jusqu'à 6 000 stratégies (les plus
+  actives d'abord) ;
+- **TOP 10 des stratégies SEULES** et **TOP 10 des stratégies COMBINÉES** (Chef des combinaisons sur les trades du
+  backtest, un seul compte, 1 % max par trade, 2,5 % de perte possible max par jour), classées pour passer le
+  challenge. La stratégie combinée qui tourne en paper et les combinaisons du TOP 10 du direct sont classées avec
+  les autres et toujours montrées (« hors TOP 10 » si elles n'y sont pas) ;
+- pour chacune, à côté du backtest : ce qu'elle a donné **en paper trading** jusqu'à maintenant (trades, gain,
+  challenges enchaînés, depuis quand) ;
+- **« Voir le backtest »** : courbe du compte, 2 ans contre période récente (8 derniers mois), années, mois ;
+- **un bot pour chaque** : « Bot MT5 combinée » pour la combinaison, et un petit bouton **« Bot »** devant CHAQUE
+  stratégie d'une combinaison pour la prendre seule (aussi dans l'onglet « TOP 10 combinées du direct »).
+
+Enregistré dans `top_backtest_2ans.json`. Le n°1 parmi des milliers de backtests est en partie chanceux : la
+stratégie bonne sur 2 ans ET en paper trading est la plus solide.
+
 ## Meilleur bot par marché
 
 Onglet **« Meilleur bot par marché »** de la plateforme : pour chaque marché, la stratégie qui marche le mieux EN
