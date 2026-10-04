@@ -753,6 +753,19 @@ Partout :
   (LANCER_BOT.bat) et respecte donc exactement les heures de chaque stratégie. Les heures sont écrites dans
   LaboBot.mq5 et LISEZMOI_BOT.txt. Boutons « Bot » d'une stratégie dans ses heures (`id@8-11`).
 
+## Classement général backtest × paper (seules ET combinées)
+
+En haut de l'onglet « TOP 10 backtest 2 ans » :
+
+- **CLASSEMENT GÉNÉRAL** : toutes les stratégies seules et combinées (24 h/24 ou dans leurs meilleures heures 🕘) qui
+  ont déjà tradé en paper, dans UN seul classement. Rang backtest = position pour passer le challenge sur les 2 ans
+  (échecs, jours pour réussir, réussite) ; rang paper = gain par jour en paper trading (mêmes risques). Le n°1 est
+  celle dont le PLUS FAIBLE des deux rangs est le plus haut : bonne dans les deux, pas seulement dans un ;
+- **TOP 10 des COMBINÉES bonnes en backtest ET en paper** : le Chef des combinaisons ne part que des stratégies
+  « bonnes partout » (24 h/24 ou dans leurs heures), puis chaque combinée est classée sur ses deux rangs ;
+- le classement croisé des stratégies seules (bonnes partout / en paper seulement / en backtest seulement) ;
+- partout : backtest détaillé, $ par jour sur 1 an (financé 100k, perso 5k), paper trading, bots FTMO et perso 5k.
+
 ## Planning de la journée : la meilleure stratégie à chaque heure
 
 En plus de la meilleure plage de CHAQUE stratégie, le labo regarde TOUTES les stratégies ensemble :

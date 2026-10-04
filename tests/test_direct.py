@@ -295,4 +295,25 @@ def test_cross_ranking_backtest_vs_paper():
     p = X["listes"]["partout"]
     assert [x["rang"] for x in p] == list(range(1, len(p) + 1))
     assert all(min(a["rang_bt"], a["rang_paper"]) >= min(b["rang_bt"], b["rang_paper"]) for a, b in zip(p, p[1:]))
+    # combinées faites avec les stratégies bonnes partout, classées sur le backtest ET le paper
+    CX = res["combinees_croisees"]
+    assert CX and [e["rang"] for e in CX] == list(range(1, len(CX) + 1))
+    good = set(X["partout_ids"])
+    for e in CX:
+        assert all(c["strategie_id"] in good for c in e["composants"])
+        assert e["backtest"]["ok"] and e["direct"]["trades"] > 0 and "perso" in e["comptes"]
+    assert all(min(a["rang_bt"], a["rang_paper"]) >= min(b["rang_bt"], b["rang_paper"]) for a, b in zip(CX, CX[1:]))
+    # classement GÉNÉRAL : seules et combinées ensemble, sur le backtest ET le paper
+    G = res["general"]
+    assert {"seule"} <= {g["type"] for g in G} and any(g["type"].startswith("combinée") for g in G)
+    assert [g["rang"] for g in G] == list(range(1, len(G) + 1))
+    assert all(min(a["rang_bt"], a["rang_paper"]) >= min(b["rang_bt"], b["rang_paper"]) for a, b in zip(G, G[1:]))
+    assert len({frozenset(c["strategie_id"] for c in g["composants"]) for g in G}) == len(G)
+    from types import SimpleNamespace
+
+    import mt5lab.plateforme as pf
+    slots = {k: SimpleNamespace(candidate=v["candidate"]) for k, v in strategies.items()}
+    eng = SimpleNamespace(slots=slots, _top2_job={"etat": "fini", "resultat": res})
+    comb = pf._top_comb(eng, 1, "bt2x")
+    assert comb and all(c["candidate"] for c in comb["composants"])
     json.dumps(res, default=str)

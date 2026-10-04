@@ -280,6 +280,32 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
                                   "ouverture": tr["entry_time"].to_numpy(), "fermeture": tr["exit_time"].to_numpy(),
                                   "r": tr["r"].to_numpy(float)}))
     out_c, msg_c = [], ""
+
+    def finish(e):
+        """Une combinaison du Chef : backtest détaillé, projections sur 1 an, paper trading de chaque composant."""
+        keys = [c["strategie_id"] for c in e["composants"]]
+        weights = {c["strategie_id"]: c["risk_pct"] for c in e["composants"]}
+        parts, crow = [], []
+        for c in e["composants"]:
+            k = c["strategie_id"]
+            c.pop("candidate", None)
+            c["trades_bt"], c["r_total_bt"] = c.pop("trades_direct", 0), c.pop("r_total_direct", 0.0)
+            c["en_pause"] = bool(strategies[k].get("en_pause"))
+            lv = live_summary(live, [k], {k: c["risk_pct"]}, rules, risk_pct)
+            c["direct_trades"], c["direct_r"] = lv.get("trades", 0), lv.get("r_total")
+            parts.append(trades[k].assign(w=c["risk_pct"], comp=len(crow)))
+            crow.append({"symbole": c["symbole"], "timeframe": c["timeframe"], "strategie": c["strategie"],
+                         "risk_pct": c["risk_pct"], "trades": 0, "r_total": 0.0, "erreur": None,
+                         "debut": f"{window[k][0]:%Y-%m-%d}", "fin": f"{window[k][1]:%Y-%m-%d}"})
+        lo = max(window[k][0] for k in keys)
+        hi = min(window[k][1] for k in keys)
+        e["backtest"] = account_report(parts, crow, lo, hi, rules, e["regles"], risk_pct, n_sim)
+        e["comptes"] = projections([(trades[k], weights[k]) for k in keys], lo, hi, risk_pct)
+        e["direct"] = live_summary(live, keys, weights, rules, risk_pct)
+        e["ratio"] = _ratio(e["direct"].get("rendement_pct"), e["direct"].get("jours"),
+                            (e["backtest"].get("tout") or {}).get("rendement_pct"), 252 * years)
+        e.pop("resultat", None)
+        return e
     if rows:
         frame = pd.concat(rows, ignore_index=True)
         frame = frame[(to_dt(frame["ouverture"]) >= lo_all) & (to_dt(frame["fermeture"]) <= hi_all)]
@@ -290,34 +316,45 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
                                progress=lambda d, n: say("Chef des combinaisons", d, n))
         msg_c = res.get("message", "")
         for e in res.get("top", []):
-            keys = [c["strategie_id"] for c in e["composants"]]
-            weights = {c["strategie_id"]: c["risk_pct"] for c in e["composants"]}
-            parts, crow = [], []
-            for c in e["composants"]:
-                k = c["strategie_id"]
-                c.pop("candidate", None)
-                c["trades_bt"], c["r_total_bt"] = c.pop("trades_direct", 0), c.pop("r_total_direct", 0.0)
-                c["en_pause"] = bool(strategies[k].get("en_pause"))
-                lv = live_summary(live, [k], {k: c["risk_pct"]}, rules, risk_pct)
-                c["direct_trades"], c["direct_r"] = lv.get("trades", 0), lv.get("r_total")
-                parts.append(trades[k].assign(w=c["risk_pct"], comp=len(crow)))
-                crow.append({"symbole": c["symbole"], "timeframe": c["timeframe"], "strategie": c["strategie"],
-                             "risk_pct": c["risk_pct"], "trades": 0, "r_total": 0.0, "erreur": None,
-                             "debut": f"{window[k][0]:%Y-%m-%d}", "fin": f"{window[k][1]:%Y-%m-%d}"})
-            lo = max(window[k][0] for k in keys)
-            hi = min(window[k][1] for k in keys)
-            e["backtest"] = account_report(parts, crow, lo, hi, rules, e["regles"], risk_pct, n_sim)
-            e["comptes"] = projections([(trades[k], weights[k]) for k in keys], lo, hi, risk_pct)
-            e["direct"] = live_summary(live, keys, weights, rules, risk_pct)
-            e.pop("resultat", None)
-            out_c.append(e)
+            out_c.append(finish(e))
         say("Chef des combinaisons", 1, 1)
     say("classement croisé backtest × paper trading", 0, 1)
     cross = cross_ranking(trades, window, live, strategies, risk_pct, rules, label, rconf, n=n_top,
                           min_bt=min_trades, n_sim=min(n_sim, 1500))
-    for e in out_c:   # combinaisons : le paper confirme-t-il le backtest ? (gain par jour)
-        e["ratio"] = _ratio(e["direct"].get("rendement_pct"), e["direct"].get("jours"),
-                            (e["backtest"].get("tout") or {}).get("rendement_pct"), 252 * years)
+    # ---- TOP 10 des COMBINÉES « backtest × paper » : faites avec les stratégies bonnes PARTOUT (24 h/24 ou dans
+    # leurs meilleures heures), puis classées sur les DEUX : rang du backtest et rang du paper trading
+    say("combinées backtest × paper trading", 0, 1)
+    out_x = []
+    ids = [k for k in cross.get("partout_ids", []) if k in trades and len(trades[k])]
+    if len(ids) >= 2:
+        rows_x = [pd.DataFrame({"strategie_id": k, "symbole": strategies[k]["symbole"],
+                                "timeframe": strategies[k]["timeframe"], "strategie": label(k), "risque": rconf(k),
+                                "ouverture": trades[k]["entry_time"].to_numpy(), "fermeture": trades[k]["exit_time"].to_numpy(),
+                                "r": trades[k]["r"].to_numpy(float)}) for k in ids]
+        fx = pd.concat(rows_x, ignore_index=True)
+        fx = fx[(to_dt(fx["ouverture"]) >= lo_all) & (to_dt(fx["fermeture"]) <= hi_all)]
+        rx = top_combinations(fx, strategies, rules, risk_pct, DAY_BUDGET, min_trades=min_trades, n_top=3 * n_top,
+                              n_seeds=8, n_cand=min(25, len(ids)), n_sim=1500, n_quick=150,
+                              label="backtest × paper", live=False,
+                              progress=lambda d, n: say("combinées backtest × paper trading", d, n))
+        cands = [e for e in rx.get("top", []) if not e.get("hors_top")]
+        for e in cands:
+            keys = [c["strategie_id"] for c in e["composants"]]
+            w = {c["strategie_id"]: c["risk_pct"] for c in e["composants"]}
+            e["_paper"] = live_summary(live, keys, w, rules, risk_pct)
+        ok = [e for e in cands if e["_paper"].get("trades")]
+        if ok:
+            pb = pd.Series([-e["rang"] for e in ok]).rank(pct=True).to_numpy()          # rang du backtest
+            pp = pd.Series([e["_paper"].get("rendement_pct") or 0.0 for e in ok]).rank(pct=True).to_numpy()
+            for e, a, b in zip(ok, pb, pp):
+                e["rang_bt"], e["rang_paper"] = round(float(a) * 100), round(float(b) * 100)
+            ok.sort(key=lambda e: (-min(e["rang_bt"], e["rang_paper"]), -(e["rang_bt"] + e["rang_paper"])))
+            for i, e in enumerate(ok[:n_top], 1):
+                e.pop("_paper", None)
+                e["rang_chef"], e["rang"] = e["rang"], i
+                e["nom"] = f"N°{i} des combinées backtest × paper"
+                out_x.append(finish(e))
+    say("combinées backtest × paper trading", 1, 1)
     for e in out_s:
         k = e["composants"][0]["strategie_id"]
         e["ratio"] = next((x["ratio"] for lst in cross["listes"].values() for x in lst
@@ -327,7 +364,7 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
                              for e in out_c if str(e.get("origine", "")).startswith("Planning de la journée")]
     # ---- le meilleur pour le COMPTE PERSO 5 000 $ (et le compte financé) : gain sur 1 an avec peu de risque
     say("projections sur 1 an (compte perso 5 000 $, compte financé)", 0, 1)
-    pool_p = [("c", e) for e in out_c]
+    pool_p = [("c", e) for e in out_c] + [("x", e) for e in out_x]
     for k, rep in singles:
         e = next((x for x in out_s if x["composants"][0]["strategie_id"] == k), None)
         if e is None:
@@ -343,10 +380,41 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
         pr = (e.get("comptes") or {}).get("perso")
         if not pr:
             continue
-        perso.append({"type": "combinée" if kind == "c" else "seule", "k": kind, "rang_source": e.get("rang"),
+        perso.append({"type": {"c": "combinée", "x": "combinée backtest × paper"}.get(kind, "seule"), "k": kind, "rang_source": e.get("rang"),
                       "nom": e.get("nom"), "origine": e.get("origine", ""), "composants": e["composants"],
                       "comptes": e["comptes"], "direct": e.get("direct"), "backtest": e.get("backtest"),
                       "sur": pr["p_probleme"] <= 5.0})
+    # ---- CLASSEMENT GÉNÉRAL : seules ET combinées (24 h/24 ou dans leurs heures), classées sur le backtest ET le
+    # paper trading : rang du backtest (challenge : échecs, jours pour réussir, réussite) et rang du paper (gain par
+    # jour en direct) ; le meilleur des deux = le plus petit des deux rangs le plus haut
+    general, seen = [], set()
+    for kind, e in pool_p:
+        sig = frozenset(c["strategie_id"] for c in e["composants"])
+        bt = (e.get("backtest") or {}).get("tout")
+        d = e.get("direct") or {}
+        if sig in seen or not bt or not d.get("trades"):
+            continue
+        seen.add(sig)
+        general.append({"type": {"c": "combinée", "x": "combinée backtest × paper"}.get(kind, "seule"), "k": kind,
+                        "rang_source": e.get("rang"), "nom": e.get("nom"), "origine": e.get("origine", ""),
+                        "composants": e["composants"], "backtest": e["backtest"], "direct": d,
+                        "comptes": e.get("comptes"), "ratio": e.get("ratio"),
+                        "conforme": not rank_key(bt, DAY_BUDGET)[0],
+                        "_bt": rank_key(bt, DAY_BUDGET), "_pp": (d.get("rendement_pct") or 0.0) / max(1, d.get("jours") or 1)})
+    if general:
+        order = sorted(range(len(general)), key=lambda i: general[i]["_bt"])
+        n = len(general)
+        for pos, i in enumerate(order):
+            general[i]["rang_bt"] = round(100 * (n - pos) / n)
+        pp = pd.Series([g["_pp"] for g in general]).rank(pct=True).to_numpy()
+        for g, v in zip(general, pp):
+            g["rang_paper"] = round(float(v) * 100)
+            g["paper_par_jour"] = round(g.pop("_pp"), 3)
+            g.pop("_bt")
+        general.sort(key=lambda g: (-min(g["rang_bt"], g["rang_paper"]), -(g["rang_bt"] + g["rang_paper"])))
+        for i, g in enumerate(general, 1):
+            g["rang"] = i
+        general = general[:20]
     perso.sort(key=lambda x: (not x["sur"], -x["comptes"]["perso"]["rendement_an_median"]))
     for i, x in enumerate(perso[:n_top], 1):
         x["rang"] = i
@@ -362,7 +430,7 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
     if errors:
         msg += f" Marchés sans données : {'; '.join(errors[:5])}."
     return {"ok": True, "seules": out_s, "combinees": out_c, "strategies_testees": n_base, "variantes_horaires": n_var,
-            "gagnantes": len(quick), "plafond": capped, "croise": cross, "planning": plan, "heures": hours[:300], "perso": perso, "annees": years, "erreurs": errors,
+            "gagnantes": len(quick), "plafond": capped, "croise": cross, "planning": plan, "combinees_croisees": out_x, "general": general, "heures": hours[:300], "perso": perso, "annees": years, "erreurs": errors,
             "periode": f"{lo_all:%Y-%m-%d} → {hi_all:%Y-%m-%d}", "regles": rules.label(), "message": msg}
 
 
@@ -449,6 +517,7 @@ def cross_ranking(trades: dict, window: dict, live: pd.DataFrame | None, strateg
                                            {"day_budget": DAY_BUDGET}, risk_pct, n_sim)
             x["direct"] = live_summary(live, [k], {k: risk_pct}, rules, risk_pct)
             out["listes"][name].append(x)
+    out["partout_ids"] = [x["strategie_id"] for x in lists["partout"]][:40]
     out["message"] = (f"{len(rows)} stratégies comparées (au moins {min_live} trades en paper et {min_bt} dans le "
                       f"backtest) : {len(lists['partout'])} gagnantes partout, {len(lists['paper'])} bien meilleures "
                       f"en paper qu'en backtest, {len(lists['backtest'])} bien meilleures en backtest qu'en paper.")

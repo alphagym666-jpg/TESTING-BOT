@@ -343,8 +343,8 @@ def _live_trades(engine, ids=None):
 
 def _top_comb(engine, rank, source: str = "direct") -> dict | None:
     """Une combinaison d'un TOP 10 (« direct » : TOP 10 du direct ; « bt2 » : TOP 10 backtest 2 ans)."""
-    if source == "bt2":
-        top = (top2ans_live(engine).get("resultat") or {}).get("combinees") or []
+    if source in ("bt2", "bt2x"):
+        top = (top2ans_live(engine).get("resultat") or {}).get("combinees" if source == "bt2" else "combinees_croisees") or []
     else:
         top = (top10_live(engine).get("resultat") or {}).get("top") or []
     found = [e for e in top if str(e.get("rang")) == str(rank)]
@@ -518,8 +518,9 @@ def make_bot(engine, url: str) -> dict:
     from .pont import single_strategy
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
-    if q.get("top") or q.get("bt2"):  # une combinaison d'un TOP 10 (règles du challenge, même sur un compte perso)
-        comb = _top_comb(engine, q.get("top") or q["bt2"], "direct" if q.get("top") else "bt2")
+    if q.get("top") or q.get("bt2") or q.get("bt2x"):  # une combinaison d'un TOP 10 (règles du challenge)
+        src = "direct" if q.get("top") else "bt2" if q.get("bt2") else "bt2x"
+        comb = _top_comb(engine, q.get("top") or q.get("bt2") or q["bt2x"], src)
         if comb is None:
             return {"ok": False, "message": "Recompilez d'abord le TOP 10 (bouton de l'onglet)."}
         comb.pop("resultat", None)
@@ -912,18 +913,21 @@ function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargemen
   celle qui est bonne sur 2 ans <b>ET</b> en paper trading est la plus solide.</p>`;
  const X=(R.croise&&R.croise.listes)||{};
  const PZ=R.perso||[];
- if(SEL2){const L=SEL2.k==="c"?C:SEL2.k==="s"?S:SEL2.k==="p"?PZ:(X[SEL2.l]||[]),e=L.find(x=>x.rang===SEL2.r);
+ const CX=R.combinees_croisees||[],GN=R.general||[];
+ if(SEL2){const L=SEL2.k==="c"?C:SEL2.k==="s"?S:SEL2.k==="p"?PZ:SEL2.k==="x2"?CX:SEL2.k==="g"?GN:(X[SEL2.l]||[]),e=L.find(x=>x.rang===SEL2.r);
   if(e&&e.backtest){if(SEL2.k==="x")e.composants=[{strategie_id:e.strategie_id,symbole:e.symbole,timeframe:e.timeframe}];
-   const B=e.backtest,title=SEL2.k==="c"?`${esc(e.nom)}${e.origine&&e.origine!=="Chef des combinaisons"?" · "+esc(e.origine):""}`:SEL2.k==="x"?`${esc(XL[SEL2.l])} n°${e.rang} : ${esc(e.symbole)} ${esc(e.timeframe)}`:`${esc(e.nom)} : ${esc(e.composants[0].symbole)} ${esc(e.composants[0].timeframe)}`;
+   const B=e.backtest,title=SEL2.k==="c"||SEL2.k==="x2"?`${esc(e.nom)}${e.origine&&e.origine!=="Chef des combinaisons"?" · "+esc(e.origine):""}`:SEL2.k==="x"?`${esc(XL[SEL2.l])} n°${e.rang} : ${esc(e.symbole)} ${esc(e.timeframe)}`:`${esc(e.nom)} : ${esc(e.composants[0].symbole)} ${esc(e.composants[0].timeframe)}`;
    h+=`<div class="panel"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Backtest 2 ans — ${title}</h3>
-    <span>${botPair(SEL2.k==="p"?e.k:SEL2.k,SEL2.k==="p"?e.rang_source:e.rang,e)}
+    <span>${botPair(SEL2.k==="p"||SEL2.k==="g"?e.k:SEL2.k==="x2"?"x":SEL2.k,SEL2.k==="p"||SEL2.k==="g"?e.rang_source:e.rang,e)}
     <a href="#" onclick="SEL2=null;render();return false" class="mut" style="margin-left:10px">fermer</a></span></div>`+
     (B.ok?btBody(B,{cols:["2 dernières années","Période récente (8 derniers mois)"],extra:compteBox(e.comptes)+liveBox(e.direct,SEL2.k!=="c"),
      honest:"Backtest des 2 dernières années. Une partie de cette période a pu servir à la recherche des stratégies, et le classement choisit les meilleures parmi beaucoup : comparez toujours avec le paper trading ci-dessous."}):`<p class="neg">${esc(B.message||"")}</p>`)+`</div>`}}
  if(!C.length&&!S.length)return h+(run?"":`<div class="empty">Pas encore de TOP 10 backtest.</div>`);
  const comps=e=>e.composants.map(x=>`<div title="${esc(x.strategie)}">${miniBot(x.strategie_id)}${esc(x.symbole)} ${esc(x.timeframe)} ${hTag(x.horaire)} · ${esc(String(x.strategie).split(" | heures")[0].slice(0,50))}
   <span class="mut">(${fmt(x.risk_pct,1)} %/trade · 2 ans : ${fmt(x.trades_bt,0)} trades ${fmt(x.r_total_bt,1,true)}R · paper : ${x.direct_trades?fmt(x.direct_trades,0)+" trades "+fmt(x.direct_r,1,true)+"R":"pas encore"})</span>${x.en_pause?' <span class="tag ko">en pause</span>':""}</div>`).join("");
+ h+=generalView(GN,comps);
  h+=crossView(R.croise);
+ h+=crossCombView(CX,comps);
  h+=`<h3 class="sec">TOP 10 des stratégies COMBINÉES (backtest 2 ans)</h3>`+(C.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Stratégies de la combinaison (bot de chacune)</th><th>Origine</th>${BT2H}${CPTH}${PAPH}</tr></thead><tbody>`+
   C.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}</td><td><button class="v2btn btbtn" data-k="c" data-r="${e.rang}">Voir le backtest</button> <button class="botbtn" data-bt2="${e.rang}">Bot MT5 combinée</button></td>
    <td style="font-size:12px;line-height:1.5">${comps(e)}</td><td>${esc(e.origine||"")}</td>${bt2Cells(e.backtest)}${compteCells(e.comptes)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`).join("")+`</tbody></table></div>`:`<p class="note">Pas de combinaison.</p>`);
@@ -973,6 +977,27 @@ function planView(P){if(!P)return "";const B=P.blocs||[],G=P.global||[];
   <div style="display:flex;gap:2px;font-size:11px;color:var(--muted)">`+Array.from({length:24},(_,i)=>`<div style="flex:1;min-width:30px;text-align:center">${i}h</div>`).join("")+`</div>
   <p class="mut" style="font-size:12px">Vert = à cette heure, les trades de toutes les stratégies gagnent en moyenne ; rouge = ils perdent. Survolez pour le détail.</p>`;
  return h}
+function generalView(L,comps){let h=`<h3 class="sec">CLASSEMENT GÉNÉRAL : le meilleur en backtest ET en paper trading (seules et combinées)</h3>
+  <p class="note">Toutes les stratégies seules et combinées (24 h/24 ou dans leurs meilleures heures 🕘) qui ont déjà tradé en paper, dans UN seul classement.
+  Rang backtest = position pour passer le challenge sur les 2 ans (échecs, jours pour réussir, réussite) ; rang paper = gain par jour en paper trading (mêmes risques).
+  Le n°1 est celle dont le PLUS FAIBLE des deux rangs est le plus haut : bonne dans les deux, pas seulement dans un.</p>`;
+ if(!L.length)return h+`<p class="note">Pas encore : il faut des stratégies avec des trades en paper trading.</p>`;
+ return h+`<div class="scroll"><table><thead><tr><th>#</th><th>Type</th><th>Rang backtest</th><th>Rang paper</th><th>Paper : gain / jour</th><th>Voir / bots</th><th>Stratégies (bot de chacune)</th>${BT2H}${CPTH}${PAPH}</tr></thead><tbody>`+
+  L.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${esc(e.type)}${e.conforme?"":' <span class="tag ko">trop risquée</span>'}</td>
+   <td class="n"><b>${fmt(e.rang_bt,0)} %</b></td><td class="n"><b>${fmt(e.rang_paper,0)} %</b></td>
+   <td class="n"><span class="${cls(e.paper_par_jour)}">${fmt(e.paper_par_jour,2,true)} %</span></td>
+   <td><button class="v2btn btbtn" data-k="g" data-r="${e.rang}">Voir le backtest</button> ${botPair(e.k,e.rang_source,e)}</td>
+   <td style="font-size:12px;line-height:1.5">${comps(e)}</td>
+   ${bt2Cells(e.backtest)}${compteCells(e.comptes)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`).join("")+`</tbody></table></div>`}
+function crossCombView(L,comps){let h=`<h3 class="sec">TOP 10 des stratégies COMBINÉES bonnes en backtest ET en paper trading</h3>
+  <p class="note">Le Chef des combinaisons part seulement des stratégies « bonnes partout » (backtest 2 ans ET paper trading), en 24 h/24 ou dans leurs meilleures heures (🕘),
+  puis chaque combinée est classée sur les DEUX : son rang dans le backtest et son rang en paper trading (gain en paper avec les mêmes risques). Classement : le plus petit des deux rangs
+  (bonne partout), puis la somme. « Paper / backtest » = gain par jour en paper ÷ gain par jour du backtest.</p>`;
+ if(!L.length)return h+`<p class="note">Pas encore : il faut au moins 2 stratégies bonnes partout (au moins 5 trades en paper et 10 dans le backtest) et des trades en paper pour les combinaisons.</p>`;
+ return h+`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Rang backtest</th><th>Rang paper</th><th>Backtest / bots</th><th>Stratégies (bot de chacune)</th>${BT2H}${CPTH}${PAPH}</tr></thead><tbody>`+
+  L.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}</td><td class="n"><b>${fmt(e.rang_bt,0)} %</b></td><td class="n"><b>${fmt(e.rang_paper,0)} %</b></td><td><button class="v2btn btbtn" data-k="x2" data-r="${e.rang}">Voir le backtest</button> ${botPair("x",e.rang,e)}</td>
+   <td style="font-size:12px;line-height:1.5">${comps(e)}</td>
+   ${bt2Cells(e.backtest)}${compteCells(e.comptes)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`).join("")+`</tbody></table></div>`}
 function hTag(hz){return hz&&hz.debut!=null?`<span class="tag" title="Entrées seulement dans cette plage (heure du serveur MT5)">🕘 ${fmt(hz.debut,0)}h-${fmt(hz.fin,0)}h</span>`:""}
 const CPTH=`<th title="Compte financé FTMO 100 000 $, 1 %/trade : gain moyen par jour de bourse sur 1 an (médiane)">Financé 100k $/jour</th><th title="Compte perso 5 000 $, 2 %/trade, intérêts composés : gain moyen par jour sur 1 an (médiane)">Perso 5k $/jour</th>`;
 function compteCells(K){const f=(K||{}).finance,p=(K||{}).perso;const c=x=>x?`<td class="n"><span class="${cls(x.gain_jour_usd)}">${fmt(x.gain_jour_usd,0,true)} $</span> <span class="mut">(${fmt(x.rendement_an_median,0,true)} %/an)</span></td>`:`<td class="n mut">—</td>`;return c(f)+c(p)}
@@ -981,6 +1006,7 @@ function compteBox(K){if(!K||(!K.finance&&!K.perso))return "";const one=(x,t)=>x
   ~${fmt(x.gain_mois_usd,0,true)} $ le 1er mois · mauvaise année (1 sur 10) : ${fmt(x.gain_an_p10_usd,0,true)} $ · baisse typique ${fmt(x.dd_median,0)} % · risque de problème ${fmt(x.p_probleme,1)} %</div></div>`:"";
  return `<div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));margin-top:8px">${one(K.finance,"Compte financé FTMO 100 000 $ (1 %/trade, 2,5 %/jour ; avant le partage des profits)")}${one(K.perso,"Compte perso 5 000 $ (2 %/trade, 5 %/jour, intérêts composés)")}</div>`}
 function botPair(k,r,e){const id=e.composants&&e.composants[0]?e.composants[0].strategie_id:"";
+ if(k==="x")return `<button class="botbtn" data-bt2x="${r}">Bot challenge FTMO</button> <button class="botbtn" data-bt2x="${r}" data-profil="perso">Bot compte perso 5k</button>`;
  return k==="c"?`<button class="botbtn" data-bt2="${r}">Bot challenge FTMO</button> <button class="botbtn" data-bt2="${r}" data-profil="perso">Bot compte perso 5k</button>`:
   `<button class="botbtn" data-id="${esc(id)}">Bot challenge FTMO</button> <button class="botbtn" data-id="${esc(id)}" data-profil="perso">Bot compte perso 5k</button>`}
 function persoView(L){let h=`<h3 class="sec">Le meilleur pour le COMPTE PERSO 5 000 $ (sur 1 an)</h3>
@@ -1092,7 +1118,7 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   const att=c[3]?' class="n"':long?` class="s" title="${esc(r[c[1]])}"`:"";
   return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
- e.stopPropagation();b.disabled=true;const q=b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;const qq=q+(b.dataset.profil?`&profil=${b.dataset.profil}`:"");
+ e.stopPropagation();b.disabled=true;const q=b.dataset.bt2x?`bt2x=${encodeURIComponent(b.dataset.bt2x)}`:b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;const qq=q+(b.dataset.profil?`&profil=${b.dataset.profil}`:"");
  try{const r=await (await fetch("/api/bot?"+qq,{cache:"no-store"})).json();alert(r.message)}catch(err){alert("Erreur : "+err)}b.disabled=false});
 document.getElementById("view").addEventListener("click",e=>{const th=e.target.closest("th");if(!th)return;
  const id=th.closest("table").dataset.id,i=+th.dataset.i;const s=sortState[id];
