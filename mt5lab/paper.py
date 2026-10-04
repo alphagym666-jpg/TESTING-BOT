@@ -129,6 +129,7 @@ class Slot:
     paused: bool = False             # mis en pause par le contrôleur de qualité (sous-performance en direct)
     pause_reason: str = ""
     ghost: Position | None = None    # trade FANTÔME en cours (signal refusé par les règles de la combinée)
+    session: tuple | None = None     # SES heures de trading (début, fin, décalage) : entrées seulement dans la plage
 
     @property
     def cfg(self) -> RiskConfig:
@@ -137,7 +138,7 @@ class Slot:
 
 SAVED = [f.name for f in fields(Slot) if f.name not in ("id", "symbol", "timeframe", "candidate", "verdict",
                                                           "expected_avg_r", "expected_wr", "capital", "position",
-                                                          "group", "risk_pct", "ghost")]
+                                                          "group", "risk_pct", "ghost", "session")]
 
 
 @dataclass
@@ -250,7 +251,7 @@ def load_combined_slots(results_dir: Path, capital=100_000.0, horaire: str | Non
         s = Slot(slot_id(c["symbole"], c["timeframe"], cand) + f"_comb{i}", c["symbole"], c["timeframe"], cand,
                  f"combinée n°{i}", capital=capital, balance=capital, peak=capital, day_start=capital,
                  group=name, risk_pct=float(c["risk_pct"]), expected_avg_r=c.get("r_moyen_attendu"),
-                 expected_wr=c.get("wr_attendu"))
+                 expected_wr=c.get("wr_attendu"), session=_session_of(c))
         slots.append(s)
     groups = {name: {"capital": capital, "day_budget": rules.get("day_budget"), "day_stop": rules.get("day_stop"),
                      "max_open": rules.get("max_open"), "total_budget": rules.get("total_budget", 10.0),
@@ -716,6 +717,8 @@ class PaperEngine:
         if not np.isfinite(dist) or dist <= 0:
             return
         when = _now(tick)
+        if s.session and not in_session(when, s.session):
+            return  # en dehors des heures de CETTE stratégie (ses positions ouvertes continuent)
         if self.news is not None and self._news_blackout(s, when):
             return
         shadow = bool(s.group and s.paused)
@@ -1295,6 +1298,7 @@ class PaperEngine:
                            "horaire": None if not g.session else f"{g.session[0]:g}h-{g.session[1]:g}h"},
                 "composants": [{"symbole": x.symbol, "tf": x.timeframe, "strategie": describe(x.candidate),
                                 "risque": x.cfg.label(), "risque_pct": x.risk_pct, "trades": x.trades,
+                                "horaire": f"{x.session[0]:g}h-{x.session[1]:g}h" if x.session else "24 h/24",
                                 "trades_mois": self._per_month(x.trades),
                                 "gagnants": x.wins, "r_total": round(x.sum_r, 2), "en_position": bool(x.position),
                                 "en_pause": x.paused, "pause_raison": x.pause_reason,
@@ -1447,7 +1451,7 @@ def in_session(when: str, session) -> bool:
     start, end, offset = session
     t = pd.Timestamp(when) - pd.Timedelta(hours=offset)
     h = t.hour + t.minute / 60.0
-    return start <= h < end
+    return start <= h < end if start < end else (h >= start or h < end)   # plage qui passe minuit
 
 
 def _now(tick) -> str:

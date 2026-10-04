@@ -34,6 +34,7 @@ import pandas as pd
 from .backtest import MANAGEMENT, RR_LEVELS, RiskConfig, run_backtest
 from .compare import build_comparison
 from .data import DEFAULT_YEARS
+from .horaires import filter_trades
 from .evaluator import candidate_key, compute_signal, describe
 from .ftmo import (FtmoRules, holding_stats, vol_text, apply_risk_rules, count_challenges, daily_table, lock_text, pilot_text, simulate,
                    to_dt)
@@ -56,6 +57,7 @@ class DirectorConfig:
     catalog: bool = True               # optimisation des stratégies du catalogue dans chaque recherche
     bank_teams: bool = True            # équipes C et D dans chaque recherche
     rr_variants: bool = True           # essayer aussi chaque stratégie validée avec tous les R:R
+    horaires: bool = True              # chercher les MEILLEURES HEURES de chaque stratégie (variantes horaires)
     lab_risk_pct: float = 0.5          # risque utilisé pendant la recherche des chefs (pour noter les stratégies)
     ftmo: FtmoRules = field(default_factory=FtmoRules)
     rounds: int = 3
@@ -449,7 +451,47 @@ class Director:
                     f"{MGMT_FR.get(m, m)} ({n} stratégies)" for m, n in wins.most_common()))
                 (self.cfg.out / "gestion_trades.json").write_text(
                     json.dumps(self.mgmt_rows, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+        if self.cfg.horaires:
+            self._hour_variants(trades, windows, info)
         return trades, windows, info
+
+    def _hour_variants(self, trades, windows, info):
+        """MEILLEURES HEURES : pour chaque stratégie, la plage horaire où elle trade le mieux (choisie sur 60 % de
+        ses trades, contrôlée sur les 40 % suivants). Chaque plage confirmée devient une variante « horaire » que
+        le Chef des combinaisons peut mélanger avec des stratégies qui tradent à d'autres heures."""
+        from .horaires import best_window, horaire, hours_of, in_window
+        self.hour_rows, n = [], 0
+        for key in [k for k in list(info) if not info[k].get("horaire")]:
+            tr = trades.get(key)
+            if tr is None or not len(tr):
+                continue
+            try:
+                bw = best_window(tr["entry_time"], tr["r"])
+            except Exception:
+                continue
+            if not bw:
+                continue
+            base = info[key]
+            self.hour_rows.append({"symbole": base["symbole"], "timeframe": base["timeframe"],
+                                   "strategie": base["strategie"], "risque": base["risque"], **bw})
+            if not bw["ok"]:
+                continue
+            a, b = bw["debut"], bw["fin"]
+            k2 = f"{key}|h{a:g}-{b:g}"
+            sub = tr[in_window(hours_of(tr["entry_time"]), a, b)].reset_index(drop=True)
+            lo, hi = windows[key]
+            trades[k2], windows[k2] = sub, (lo, hi)
+            solo = simulate(daily_table(sub, self.cfg.lab_risk_pct, lo, hi), self.cfg.ftmo, 1500, seed=0)
+            info[k2] = {**base, "horaire": horaire(a, b), "seule_ftmo": solo["ftmo_pass"],
+                        "strategie": f"{base['strategie']} | heures {bw['nom']}",
+                        "attendu_r": bw["r_moyen_plage"], "variante": True}
+            n += 1
+        self.hour_rows.sort(key=lambda r: -(r["r_moyen_plage"] - r["r_moyen_24h"]))
+        (self.cfg.out / "heures_strategies.json").write_text(
+            json.dumps(self.hour_rows, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+        self.say(f"Meilleures heures : {len(self.hour_rows)} stratégies ont une plage horaire nettement meilleure, "
+                 f"{n} confirmées sur une période que le choix n'a pas vue -> variantes « horaires » ajoutées au choix "
+                 "(chacune ne trade que dans SES heures)")
 
     def levels(self) -> list[float]:
         """Niveaux de risque autorisés : <= risque max, et un seul stop (+10 % de frais) doit tenir dans le budget du jour."""
@@ -508,6 +550,7 @@ class Director:
             sig = apply_filter(df, compute_signal(df, cand["signal"]), cand["filter"])
             _, tr = run_backtest(df, sig, RiskConfig(**cand["risk"]), cost=cost, risk_pct=c["risk_pct"],
                                  return_trades=True)
+            tr = filter_trades(tr, c.get("horaire"))   # composant « horaire » : seulement dans SES heures
             lo = df.index[0] if lo is None else max(lo, df.index[0])
             hi = df.index[-1] if hi is None else min(hi, df.index[-1])
             if len(tr):
@@ -625,7 +668,11 @@ class Director:
         def solo(k):
             v = info[k]["seule_ftmo"]
             return -1.0 if v is None or v != v else float(v)
-        cand = sorted(info, key=solo, reverse=True)[:40]
+        ranked = sorted(info, key=solo, reverse=True)
+        cand = ranked[:40]
+        # + les 20 meilleures variantes « horaires » : seules elles tradent moins (donc moins bien classées), mais
+        # chacune dans SES heures, elles se complètent dans une combinée
+        cand += [k for k in ranked if info[k].get("horaire") and k not in cand][:20]
         R = self.cfg.risk_pct
         say(f"Je construis la stratégie combinée à partir de {len(cand)} stratégies validées "
                  f"(tous marchés et timeframes).")
@@ -715,6 +762,7 @@ class Director:
                            max_corr=rules.get("max_correles"), pilot=rules.get("pilote"), day_lock=rules.get("frein"), vol=rules.get("volatilite"))
         comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": weights[k],
+                  "horaire": info[k].get("horaire"),
                   "reussite_seule": info[k]["seule_ftmo"], "variante_rr": info[k].get("variante", False),
                   "r_moyen_attendu": info[k].get("attendu_r"), "wr_attendu": info[k].get("attendu_wr"),
                   "trades_mois": _comp_tpm(trades, windows, k)}
@@ -853,6 +901,7 @@ class Director:
                     "composants": [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"],
                                     "candidate": info[k]["candidate"], "strategie": info[k]["strategie"],
                                     "risque_config": info[k]["risque"], "risk_pct": w[k],
+                                    "horaire": info[k].get("horaire"),
                                     "reussite_seule": info[k]["seule_ftmo"],
                                     "variante_rr": info[k].get("variante", False),
                                     "r_moyen_attendu": info[k].get("attendu_r"),
@@ -884,6 +933,9 @@ class Director:
         for c in (comb or {}).get("composants", []):
             cand = c["candidate"] if isinstance(c["candidate"], dict) else json.loads(c["candidate"])
             k = f"{c['symbole']}_{c['timeframe']}|{candidate_key(cand)}"
+            h = c.get("horaire") or {}
+            if h.get("debut") is not None and h.get("decalage_serveur", 0) == 0:
+                k += f"|h{float(h['debut']):g}-{float(h['fin']):g}"
             if k in info:
                 out[k] = float(c.get("risk_pct") or min(0.5, self.cfg.risk_pct))
         return out
@@ -910,6 +962,7 @@ class Director:
             _, tr = run_backtest(df[mask], sig[mask], RiskConfig(**c["risk"]), cost=cost,
                                  risk_pct=self.cfg.lab_risk_pct, return_trades=True, weekend_exit=True)
             tr = tr[["entry_time", "exit_time", "r", "side"]].reset_index(drop=True) if len(tr) else tr
+            tr = filter_trades(tr, x.get("horaire")).reset_index(drop=True) if len(tr) else tr
             if horaire and horaire.get("debut") is not None and len(tr):
                 tr = tr[self.in_session(tr["entry_time"], horaire["debut"], horaire["fin"])].reset_index(drop=True)
             out[k] = tr
@@ -1085,7 +1138,7 @@ class Director:
             return None
         comps = [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"], "candidate": info[k]["candidate"],
                   "strategie": info[k]["strategie"], "risque_config": info[k]["risque"], "risk_pct": w[k],
-                  "trades_mois": _comp_tpm(trades, windows, k)} for k in w]
+                  "horaire": info[k].get("horaire"), "trades_mois": _comp_tpm(trades, windows, k)} for k in w]
         return {"resultat": res, "composants": comps,
                 "regles": {"day_budget": self.cfg.day_budget, "total_budget": self.cfg.total_budget},
                 "horaire": {"nom": "24h/24", "debut": None, "fin": None}}
@@ -1620,6 +1673,29 @@ def _pair(r, suffix: str) -> str | None:
     return f"{int(a)} réussis / {int(b)} ratés"
 
 
+def _hours_html(rows) -> str:
+    """Section du rapport : la meilleure plage horaire de chaque stratégie (choisie puis contrôlée)."""
+    if not rows:
+        return ("<p class='mut'>Pas encore de plage horaire nettement meilleure (il faut au moins 40 trades par "
+                "stratégie) ou recherche lancée sans les variantes horaires.</p>")
+    esc = html.escape
+    ok = [r for r in rows if r.get("ok")]
+    lines = "".join(
+        f"<tr><td>{esc(str(r['symbole']))} {esc(str(r['timeframe']))}</td><td>{esc(str(r['strategie'])[:90])}</td>"
+        f"<td><b>{esc(r['nom'])}</b></td><td>{'confirmée' if r['ok'] else 'pas confirmée'}</td>"
+        f"<td>{r['r_moyen_plage']:+.2f}R</td><td>{r['r_moyen_24h']:+.2f}R</td>"
+        f"<td>{'' if r.get('r_moyen_controle_plage') is None else format(r['r_moyen_controle_plage'], '+.2f') + 'R'}"
+        f" / {'' if r.get('r_moyen_controle_24h') is None else format(r['r_moyen_controle_24h'], '+.2f') + 'R'}</td>"
+        f"<td>{r['trades_plage']} / {r['trades_total']}</td></tr>" for r in rows[:60])
+    return (f"<p class='mut'>Pour chaque stratégie, toutes les plages (début 0 h à 23 h, durée 2 à 12 h, heure du serveur "
+            f"MT5) sont essayées : la meilleure est CHOISIE sur 60 % de ses trades puis CONTRÔLÉE sur les 40 % suivants. "
+            f"{len(ok)} plages confirmées sont devenues des stratégies « horaires » que le Chef des combinaisons peut "
+            f"mélanger (chacune n'entre que dans SES heures ; le bot reçoit les heures de chaque composant).</p>"
+            f"<table><tr><th>Marché</th><th>Stratégie</th><th>Meilleures heures</th><th>Contrôle</th>"
+            f"<th>R moyen plage</th><th>R moyen 24 h</th><th>Contrôle plage / 24 h</th><th>Trades plage / total</th>"
+            f"</tr>{lines}</table>")
+
+
 def write_report(d: Director):
     from .boutons import button, script, single, slim
     esc = html.escape
@@ -1802,6 +1878,8 @@ n'est gardé que s'il fait réussir le challenge plus vite, sans plus d'échecs.
 {_combos_html(getattr(d, 'combo_rows', []), (c or {}).get('melanges_note'), 'melanges' in (c or {}))}
 <h2 id="compte">Quel compte FTMO choisir ? 1 étape ou 2 étapes, Standard ou Swing</h2>
 {_advice_html(getattr(d, 'advice', None) or (c or {}).get('conseil_compte'))}
+<h2 id="heures">Meilleures heures de chaque stratégie</h2>
+{_hours_html(getattr(d, 'hour_rows', None) or _load_json(d.cfg.out / 'heures_strategies.json'))}
 <h2>Horaires : 24h/24 ou seulement le jour ?</h2>
 <p class="mut">Même travail refait avec des entrées permises seulement dans l'horaire (heure locale, serveur MT5 moins
 {d.cfg.server_offset:g} h). Les positions ouvertes gardent leur SL et TP chez le courtier après la fin de l'horaire.

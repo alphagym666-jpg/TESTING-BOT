@@ -723,6 +723,46 @@ chaque ligne ; colonne « Paper / backtest » aussi dans les TOP 10 seules et co
 Enregistré dans `top_backtest_2ans.json`. Le n°1 parmi des milliers de backtests est en partie chanceux : la
 stratégie bonne sur 2 ans ET en paper trading est la plus solide.
 
+## Meilleures heures de chaque stratégie (et combinées « chacune dans ses heures »)
+
+Pour CHAQUE stratégie, le labo cherche quand elle trade le mieux :
+
+- **heure par heure** (0 h à 23 h, heure du serveur MT5) : trades, gagnants et R moyen à chaque heure d'ouverture
+  (bande de 24 cases vertes / rouges dans la plateforme) ;
+- **sa meilleure plage** : toutes les plages sont essayées (début 0 h à 23 h, durée 2 h à 12 h : 8h-11h, 9h-14h,
+  22h-2h...). La plage est CHOISIE sur les 60 % premiers trades puis CONTRÔLÉE sur les 40 % suivants (au moins 10
+  trades, gagnante, au moins +0,1R par trade de mieux que 24 h/24, t >= 1,5). Sur des données au hasard, environ
+  3 % des stratégies passent ce contrôle par chance ; une vraie plage gagnante est retrouvée environ une fois sur
+  deux avec 400 trades ;
+- chaque plage confirmée devient une stratégie **« horaire »** (🕘) qui n'entre QUE dans ses heures (ses positions
+  ouvertes continuent après) ; le **Chef des combinaisons** mélange alors des stratégies qui tradent chacune à
+  leur meilleur moment de la journée.
+
+Partout :
+
+- **agents / Directeur** (et donc le compte perso 5 000 $ et le compte financé) : variantes horaires dans le choix
+  des stratégies combinées, section « Meilleures heures de chaque stratégie » dans `directeur.html`,
+  `heures_strategies.json` ;
+- **plateforme, onglet « TOP 10 backtest 2 ans »** : variantes horaires de chaque stratégie du direct, tableau
+  « Meilleures heures » (heure par heure, plage, contrôle, paper dans / hors de la plage), TOP 10 seules et
+  combinées avec les heures de chaque composant ;
+- **plateforme, onglet « TOP 10 combinées du direct »** : une stratégie avec au moins 40 trades en paper et une plage
+  confirmée est aussi essayée dans ses heures ;
+- **paper trading et bots** : chaque composant a ses heures (`horaire` dans le fichier de la stratégie). Le paper
+  trading n'ouvre jamais un trade d'un composant en dehors de ses heures ; le bot MT5 exécute les signaux du paper
+  (LANCER_BOT.bat) et respecte donc exactement les heures de chaque stratégie. Les heures sont écrites dans
+  LaboBot.mq5 et LISEZMOI_BOT.txt. Boutons « Bot » d'une stratégie dans ses heures (`id@8-11`).
+
+## Combien ça ferait sur 1 an : compte financé et compte perso 5 000 $
+
+Pour chaque stratégie (seule ou combinée) du TOP 10 backtest 2 ans : 1 000 années possibles tirées des journées du
+backtest, pour le **compte financé FTMO** (100 000 $, 1 %/trade, 2,5 %/jour, avant le partage des profits) et le
+**compte perso** (5 000 $, 2 %/trade, 5 %/jour, intérêts composés) : gain médian sur 1 an, **$ par jour** (gain de
+l'année ÷ 252 jours de bourse), $ du 1er mois, mauvaise année (1 sur 10), baisse typique, risque de problème.
+Section **« Le meilleur pour le COMPTE PERSO 5 000 $ »** avec, pour chacune, un bot challenge FTMO et un bot compte
+perso (risques mis à l'échelle : 2 % au lieu de 1 %, limites du compte perso). Ce sont des projections du passé :
+à confirmer en paper trading.
+
 ## Analyse des trades (onglet de la plateforme)
 
 Chaque trade du paper trading enregistre maintenant beaucoup plus que son résultat (colonnes ajoutées à

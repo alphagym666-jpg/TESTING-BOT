@@ -21,6 +21,8 @@ from .backtest_combinee import account_report, component_trades
 from .direct import _evaluator, expected_days, rank_key, strategy_table, top_combinations
 from .evaluator import compute_signal, describe, signal_key
 from .ftmo import FtmoRules, count_challenges, daily_table, simulate, to_dt
+from .horaires import MIN_TRADES as MIN_HOUR_TRADES
+from .horaires import best_window, horaire, hour_profile, hours_of, in_window
 from .strategies import apply_filter
 
 DAY_BUDGET = 2.5
@@ -34,6 +36,41 @@ def _quick(tr: pd.DataFrame, w: float, lo, hi, rules: FtmoRules, n: int = 200) -
                par_jour=float(d["pnl"].sum()) / max(1, len(d)), reussis=c["reussis"], rates=c["rates"])
     res["jours_attendus"] = expected_days(res)
     return res
+
+
+def projections(parts: list, lo, hi, risk_pct: float = 1.0, n: int = 1000) -> dict:
+    """COMBIEN ÇA FERAIT sur 1 an : compte financé FTMO (100 000 $, 1 %/trade, 2,5 %/jour, jamais -3 %/jour ni -10 %)
+    et compte perso (5 000 $, 2 %/trade, 5 %/jour, intérêts composés). 1 000 années possibles tirées des journées du
+    backtest (blocs de 5 jours) : gain médian, mauvais cas (1 année sur 10), risque de problème, gain moyen par jour.
+    parts : [(trades, risque de ce composant pour un risque de base de risk_pct)]."""
+    from .comptes import DAYS_YEAR, profile, simulate_long
+    from .ftmo import apply_risk_rules
+    out = {}
+    for name in ("finance", "perso"):
+        p = profile(name)
+        k = float(p["risk_pct"]) / max(risk_pct, 1e-9)
+        t = pd.concat([tr.assign(w=min(float(w) * k, float(p["risk_pct"]))) for tr, w in parts if len(tr)],
+                      ignore_index=True) if parts else pd.DataFrame()
+        if not len(t):
+            continue
+        t = t[(to_dt(t["entry_time"]) >= lo) & (to_dt(t["exit_time"]) <= hi)]
+        t = apply_risk_rules(t, None, None, float(p["risk_pct"]), day_budget=float(p["day_budget"]))
+        t = t[t["r"].notna()]
+        d = daily_table(t, float(p["risk_pct"]), lo, hi)
+        sl = simulate_long(d, p, n=n)
+        cap = float(p["capital"])
+        med = sl.get("rendement_an_median")
+        if med is None or med != med:
+            continue
+        out[name] = {"capital": cap, "risque_trade": p["risk_pct"], "perte_jour_max": p["day_budget"],
+                     "rendement_an_median": round(med, 1), "rendement_an_p10": round(sl["rendement_an_p10"], 1),
+                     "rendement_mois_median": round(sl["rendement_mois_median"], 1),
+                     "p_probleme": round(sl["p_probleme"], 1), "p_perte_an": round(sl["p_perte_an"], 1),
+                     "dd_median": round(sl["dd_median"], 1),
+                     "gain_an_usd": round(cap * med / 100), "gain_an_p10_usd": round(cap * sl["rendement_an_p10"] / 100),
+                     "gain_mois_usd": round(cap * sl["rendement_mois_median"] / 100),
+                     "gain_jour_usd": round(cap * med / 100 / DAYS_YEAR, 2)}
+    return out
 
 
 def live_summary(live: pd.DataFrame | None, keys: list, weights: dict, rules: FtmoRules, risk_pct: float) -> dict:
@@ -64,6 +101,7 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
     get_data(symbole, timeframe, candidates) -> (df, coût), avec au moins `years` ans d'historique (un peu plus
     pour que les indicateurs soient prêts au début)."""
     extras = extras or []
+    strategies = dict(strategies)   # on y ajoute les variantes horaires sans toucher au dictionnaire reçu
     must = {k for x in extras for k in x.get("keys", [])}
     ids = sorted(strategies, key=lambda k: (k not in must, -(strategies[k].get("trades_direct") or 0)))
     capped = len(ids) > max_strategies
@@ -121,6 +159,50 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
     def rconf(k):
         return strategies[k].get("risque") or RiskConfig(**strategies[k]["candidate"]["risk"]).label()
 
+    # ---- MEILLEURES HEURES : chaque stratégie dans sa meilleure plage horaire devient une variante « horaire »
+    say("meilleures heures de chaque stratégie", 0, 1)
+    hours, live_extra = [], []
+    for k in list(trades):
+        tr = trades[k]
+        if len(tr) < MIN_HOUR_TRADES:
+            continue
+        try:
+            bw = best_window(tr["entry_time"], tr["r"])
+        except Exception:
+            continue
+        if not bw:   # pas de plage nettement meilleure : on montre quand même son profil heure par heure
+            hours.append({"strategie_id": k, "symbole": strategies[k]["symbole"],
+                          "timeframe": strategies[k]["timeframe"], "strategie": label(k), "risque": rconf(k),
+                          "ok": None, "nom": "24 h/24", "debut": None, "fin": None,
+                          "trades_total": int(len(tr)), "r_moyen_24h": round(float(tr["r"].mean()), 3),
+                          "r_total_24h": round(float(tr["r"].sum()), 1),
+                          "profil": hour_profile(tr["entry_time"], tr["r"])})
+            continue
+        a, b = bw["debut"], bw["fin"]
+        row = {"strategie_id": k, "symbole": strategies[k]["symbole"], "timeframe": strategies[k]["timeframe"],
+               "strategie": label(k), "risque": rconf(k), **bw}
+        lt = live[live["strategie_id"] == k] if live is not None and len(live) else None
+        if lt is not None and len(lt):
+            m = in_window(hours_of(lt["ouverture"]), a, b)
+            rr_ = pd.to_numeric(lt["r"], errors="coerce").to_numpy(float)
+            row["paper_plage"] = {"trades": int(m.sum()), "r_moyen": round(float(rr_[m].mean()), 3) if m.any() else None}
+            row["paper_hors"] = {"trades": int((~m).sum()),
+                                 "r_moyen": round(float(rr_[~m].mean()), 3) if (~m).any() else None}
+            if bw["ok"] and m.any():
+                live_extra.append(lt[m].assign(strategie_id=f"{k}@{a:g}-{b:g}"))
+        hours.append(row)
+        if not bw["ok"]:
+            continue
+        v = f"{k}@{a:g}-{b:g}"
+        trades[v] = tr[in_window(hours_of(tr["entry_time"]), a, b)].reset_index(drop=True)
+        window[v] = window[k]
+        strategies[v] = {**strategies[k], "horaire": horaire(a, b), "base_id": k,
+                         "strategie": f"{label(k)} | heures {bw['nom']}"}
+    if live_extra:
+        live = pd.concat([live, *live_extra], ignore_index=True)
+    hours.sort(key=lambda x: (x["ok"] is not True, x["ok"] is None,
+                              -((x.get("r_moyen_plage") or 0) - (x.get("r_moyen_24h") or 0)), -x.get("r_total_24h", 0)))
+
     # ---- stratégies seules : tri rapide, puis rapport complet des meilleures
     say("classement des stratégies seules", 0, 1)
     quick = []
@@ -145,11 +227,18 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
                       "composants": [{"strategie_id": k, "symbole": strategies[k]["symbole"],
                                       "timeframe": strategies[k]["timeframe"], "strategie": label(k),
                                       "risque_config": rconf(k), "risk_pct": risk_pct,
-                                      "en_pause": bool(strategies[k].get("en_pause"))}],
-                      "backtest": rep, "direct": live_summary(live, [k], {k: risk_pct}, rules, risk_pct)})
+                                      "en_pause": bool(strategies[k].get("en_pause")),
+                                      "horaire": strategies[k].get("horaire"),
+                                      "base_id": strategies[k].get("base_id", k)}],
+                      "backtest": rep, "direct": live_summary(live, [k], {k: risk_pct}, rules, risk_pct),
+                      "comptes": projections([(trades[k], risk_pct)], *window[k], risk_pct)})
 
     # ---- stratégies combinées : le Chef des combinaisons sur les trades du backtest
-    pool = [k for k, _ in quick[:40]] + [k for k in must if k in trades]
+    # le Chef des combinaisons part des meilleures de TOUTES les stratégies testées : les 40 meilleures toutes
+    # catégories + les 25 meilleures variantes « horaires » (chacune dans ses heures), pour qu'elles soient toujours
+    # en lice, + les combinaisons déjà en place
+    pool = ([k for k, _ in quick[:40]] + [k for k, _ in quick if "@" in k][:25]
+            + [k for k in must if k in trades])
     rows = []
     for k in dict.fromkeys(pool):
         tr = trades[k]
@@ -165,7 +254,7 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
         frame = frame[(to_dt(frame["ouverture"]) >= lo_all) & (to_dt(frame["fermeture"]) <= hi_all)]
         ex = [x for x in extras if all(k in trades for k in x["keys"])]
         res = top_combinations(frame, strategies, rules, risk_pct, DAY_BUDGET, min_trades=min_trades, n_top=n_top,
-                               n_seeds=8, n_cand=15, n_sim=1500, n_quick=150, extras=ex,
+                               n_seeds=8, n_cand=25, n_sim=1500, n_quick=150, extras=ex,
                                label=f"backtest {years:g} ans", live=False,
                                progress=lambda d, n: say("Chef des combinaisons", d, n))
         msg_c = res.get("message", "")
@@ -187,6 +276,7 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
             lo = max(window[k][0] for k in keys)
             hi = min(window[k][1] for k in keys)
             e["backtest"] = account_report(parts, crow, lo, hi, rules, e["regles"], risk_pct, n_sim)
+            e["comptes"] = projections([(trades[k], weights[k]) for k in keys], lo, hi, risk_pct)
             e["direct"] = live_summary(live, keys, weights, rules, risk_pct)
             e.pop("resultat", None)
             out_c.append(e)
@@ -201,15 +291,44 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
         k = e["composants"][0]["strategie_id"]
         e["ratio"] = next((x["ratio"] for lst in cross["listes"].values() for x in lst
                            if x["strategie_id"] == k), cross["ratios"].get(k))
+    # ---- le meilleur pour le COMPTE PERSO 5 000 $ (et le compte financé) : gain sur 1 an avec peu de risque
+    say("projections sur 1 an (compte perso 5 000 $, compte financé)", 0, 1)
+    pool_p = [("c", e) for e in out_c]
+    for k, rep in singles:
+        e = next((x for x in out_s if x["composants"][0]["strategie_id"] == k), None)
+        if e is None:
+            e = {"rang": None, "nom": label(k), "composants": [{"strategie_id": k, "symbole": strategies[k]["symbole"],
+                 "timeframe": strategies[k]["timeframe"], "strategie": label(k), "risque_config": rconf(k),
+                 "risk_pct": risk_pct, "horaire": strategies[k].get("horaire"),
+                 "base_id": strategies[k].get("base_id", k)}],
+                 "backtest": rep, "direct": live_summary(live, [k], {k: risk_pct}, rules, risk_pct),
+                 "comptes": projections([(trades[k], risk_pct)], *window[k], risk_pct)}
+        pool_p.append(("s", e))
+    perso = []
+    for kind, e in pool_p:
+        pr = (e.get("comptes") or {}).get("perso")
+        if not pr:
+            continue
+        perso.append({"type": "combinée" if kind == "c" else "seule", "k": kind, "rang_source": e.get("rang"),
+                      "nom": e.get("nom"), "origine": e.get("origine", ""), "composants": e["composants"],
+                      "comptes": e["comptes"], "direct": e.get("direct"), "backtest": e.get("backtest"),
+                      "sur": pr["p_probleme"] <= 5.0})
+    perso.sort(key=lambda x: (not x["sur"], -x["comptes"]["perso"]["rendement_an_median"]))
+    for i, x in enumerate(perso[:n_top], 1):
+        x["rang"] = i
+    perso = perso[:n_top]
     n_ok = sum(1 for x in out_s if x["conforme"])
-    msg = (f"{len(trades)} stratégies du direct rejouées sur les {years:g} dernières années"
+    n_base = sum(1 for k in trades if "@" not in k)
+    n_var = len(trades) - n_base
+    msg = (f"{n_base} stratégies du direct rejouées sur les {years:g} dernières années"
+           + (f" + {n_var} variantes « meilleures heures » confirmées" if n_var else "")
            + (f" (les {max_strategies} plus actives)" if capped else "")
            + f" : {len(quick)} gagnantes avec au moins {min_trades} trades, {n_ok} des 10 meilleures seules "
              f"respectent la limite d'échecs. {msg_c}")
     if errors:
         msg += f" Marchés sans données : {'; '.join(errors[:5])}."
-    return {"ok": True, "seules": out_s, "combinees": out_c, "strategies_testees": len(trades),
-            "gagnantes": len(quick), "plafond": capped, "croise": cross, "annees": years, "erreurs": errors,
+    return {"ok": True, "seules": out_s, "combinees": out_c, "strategies_testees": n_base, "variantes_horaires": n_var,
+            "gagnantes": len(quick), "plafond": capped, "croise": cross, "heures": hours[:300], "perso": perso, "annees": years, "erreurs": errors,
             "periode": f"{lo_all:%Y-%m-%d} → {hi_all:%Y-%m-%d}", "regles": rules.label(), "message": msg}
 
 

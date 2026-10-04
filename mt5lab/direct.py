@@ -232,6 +232,9 @@ def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules
     extras = [x for x in extras if x.get("keys") and set(x["keys"]) <= present]
     good = tab[tab["fiable"] & (tab["r_total"] > 0) & (tab["r_moyen"] > 0)]
     cand = good.head(n_cand)["strategie_id"].tolist()
+    # places réservées aux variantes « horaires » (chacune dans ses meilleures heures) : souvent moins de trades,
+    # donc moins bien classées par la solidité t, mais faites pour être combinées entre elles
+    cand += [k for k in good["strategie_id"] if "@" in str(k) and k not in cand][:max(1, n_cand // 2)]
     out["candidates"] = len(cand)
     if not cand and not extras:
         out["message"] = (f"Aucune stratégie gagnante avec au moins {min_trades} trades en direct pour l'instant : "
@@ -302,7 +305,8 @@ def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules
                           "timeframe": s.get("timeframe", r["timeframe"]), "candidate": s.get("candidate"),
                           "strategie": r["strategie"], "risque_config": r["risque"], "risk_pct": weights[k],
                           "trades_direct": int(r["trades"]), "r_total_direct": float(r["r_total"]),
-                          "trades_mois": float(r["trades_mois"])})
+                          "trades_mois": float(r["trades_mois"]), "horaire": s.get("horaire"),
+                          "base_id": s.get("base_id", k)})
         ok = not rank_key(res, day_budget, max_fail)[0]
         out["top"].append({
             "rang": i, "nom": f"N°{i} du TOP 10 {label}" if i <= n_top else f"{origin} : n°{i} du classement {label}", "source": "direct" if live else "backtest",

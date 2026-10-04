@@ -132,8 +132,9 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
              f"//| Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure locale)",
              "//| Composants :"]
     for i, c in enumerate(comb.get("composants", []), 1):
+        h = (c.get("horaire") or {}).get("nom") or "24h/24"
         lines.append(f"//|  {i}. {c['symbole']} {c['timeframe']} | {c['strategie'][:90]} | {c['risque_config']} | "
-                     f"{c['risk_pct']:g} %/trade")
+                     f"{c['risk_pct']:g} %/trade | entrées : {h}")
     lines.append("//+------------------------------------------------------------------+")
     src = "\n".join(lines) + "\n" + src
     out.mkdir(parents=True, exist_ok=True)
@@ -151,6 +152,8 @@ Le bot LaboBot, posé sur un graphique, lit ces décisions chaque seconde et pas
 
 Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure locale ; c'est la plateforme Python
 qui applique l'horaire, le bot garde ses SL/TP en dehors).
+Heures de CHAQUE stratégie (entrées seulement dans sa plage, heure du serveur MT5 ; ses positions continuent après) :
+{chr(10).join(f"  - {c['symbole']} {c['timeframe']} : {(c.get('horaire') or {}).get('nom') or '24h/24'}" for c in comb.get('composants', []))}
 Stratégie combinée : {len(comb.get('composants', []))} composants, réussite estimée {res.get('ftmo_pass')} %,
 ~{res.get('ftmo_jours_p1')} jours de bourse pour l'objectif (estimation sur le passé, rien n'est garanti).
 

@@ -22,6 +22,7 @@ import pandas as pd
 from .backtest import RiskConfig, run_backtest
 from .direct import expected_days
 from .evaluator import compute_signal
+from .horaires import filter_trades
 from .ftmo import FtmoRules, apply_risk_rules, count_challenges, daily_table, holding_stats, simulate, to_dt
 from .strategies import apply_filter
 
@@ -143,6 +144,7 @@ def backtest_combination(comb: dict, get_data, rules: FtmoRules = FtmoRules(), r
         try:
             df, cost = get_data(c["symbole"], c["timeframe"])
             tr = component_trades(df, cost, c["candidate"], w, start)
+            tr = filter_trades(tr, c.get("horaire"))   # composant « horaire » : entrées seulement dans SES heures
         except Exception as exc:
             row["erreur"] = str(exc)[:200]
             rows.append(row)
