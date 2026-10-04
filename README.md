@@ -753,6 +753,26 @@ Partout :
   (LANCER_BOT.bat) et respecte donc exactement les heures de chaque stratégie. Les heures sont écrites dans
   LaboBot.mq5 et LISEZMOI_BOT.txt. Boutons « Bot » d'une stratégie dans ses heures (`id@8-11`).
 
+## Planning de la journée : la meilleure stratégie à chaque heure
+
+En plus de la meilleure plage de CHAQUE stratégie, le labo regarde TOUTES les stratégies ensemble :
+
+- **à chaque heure** (0 h à 23 h, heure du serveur MT5), la plus forte de toutes les stratégies parmi celles dont la
+  plage horaire confirmée couvre cette heure (plus solide qu'un choix heure par heure : une heure seule n'a que
+  quelques trades) ; les heures de suite d'une même stratégie forment une plage (ex. US30 1h-4h, GER40 8h-11h,
+  NASDAQ 14h-18h) ;
+- choisi sur les 60 % premiers trades, **contrôlé** sur les 40 % suivants : seules les plages confirmées entrent dans
+  la combinée **« Planning de la journée »** (chaque stratégie ne trade que dans ses heures, un seul compte) ;
+- **les meilleures heures en général** : toutes les stratégies réunies, heure par heure.
+
+Partout : dans la recherche des **agents** (Directeur : `planning_journee.json`, section du rapport, et la combinée
+« Planning de la journée » classée dans le TOP 10 des stratégies combinées) et dans la plateforme (onglet « TOP 10
+backtest 2 ans » : frise des 24 heures, plages, bots de chaque plage, bot de la combinée pour le challenge FTMO ou le
+compte perso 5k).
+
+**Période du backtest** : par défaut les 2 dernières années jusqu'à aujourd'hui (la dernière bougie MT5 : environ
+octobre 2024 → octobre 2026), ou à partir de la date choisie dans le champ « Début du backtest » (ex. 2024-01-01).
+
 ## Combien ça ferait sur 1 an : compte financé et compte perso 5 000 $
 
 Pour chaque stratégie (seule ou combinée) du TOP 10 backtest 2 ans : 1 000 années possibles tirées des journées du

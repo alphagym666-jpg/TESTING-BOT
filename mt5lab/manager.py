@@ -472,7 +472,7 @@ class Director:
             if not bw:
                 continue
             base = info[key]
-            self.hour_rows.append({"symbole": base["symbole"], "timeframe": base["timeframe"],
+            self.hour_rows.append({"cle": key, "symbole": base["symbole"], "timeframe": base["timeframe"],
                                    "strategie": base["strategie"], "risque": base["risque"], **bw})
             if not bw["ok"]:
                 continue
@@ -492,6 +492,60 @@ class Director:
         self.say(f"Meilleures heures : {len(self.hour_rows)} stratégies ont une plage horaire nettement meilleure, "
                  f"{n} confirmées sur une période que le choix n'a pas vue -> variantes « horaires » ajoutées au choix "
                  "(chacune ne trade que dans SES heures)")
+
+    def _plan_combo(self, trades, windows, info) -> dict | None:
+        """PLANNING DE LA JOURNÉE : à chaque heure, la plus forte de TOUTES les stratégies validées (parmi celles dont
+        la plage horaire confirmée couvre l'heure), puis une combinée où chacune ne trade que dans SES heures."""
+        from .horaires import day_plan, horaire, hours_of, in_window
+        rows = getattr(self, "hour_rows", None) or []
+        wins = {r["cle"]: (r["debut"], r["fin"], r["t_choix"]) for r in rows if r.get("ok") and r.get("cle") in trades}
+        items = {k: (trades[k]["entry_time"], trades[k]["r"]) for k in list(info)
+                 if not info[k].get("horaire") and k in trades and len(trades[k]) >= 20}
+        if not items:
+            return None
+        plan = day_plan(items, wins or None)
+        keys = []
+        for b in plan["blocs"]:
+            k = b["cle"]
+            base = info[k]
+            b.update(symbole=base["symbole"], timeframe=base["timeframe"], strategie=base["strategie"])
+            k2 = f"{k}|h{b['debut']:g}-{b['fin']:g}"
+            if k2 not in info:
+                tr = trades[k]
+                trades[k2] = tr[in_window(hours_of(tr["entry_time"]), b["debut"], b["fin"])].reset_index(drop=True)
+                windows[k2] = windows[k]
+                info[k2] = {**base, "horaire": horaire(b["debut"], b["fin"]), "variante": True,
+                            "strategie": f"{base['strategie']} | heures {b['nom']}"}
+            if b["ok"] and len(trades[k2]):
+                keys.append(k2)
+        for x in plan["heures"]:
+            if x.get("cle"):
+                x["etiquette"] = f"{info[x['cle']]['symbole']} {info[x['cle']]['timeframe']}"
+        self.day_plan = plan
+        (self.cfg.out / "planning_journee.json").write_text(json.dumps(plan, indent=1, ensure_ascii=False, default=str),
+                                                           encoding="utf-8")
+        if not keys:
+            self.say("Planning de la journée : aucune plage confirmée pour l'instant.")
+            return None
+        best = None
+        for w in sorted({l for l in self.levels() if l in (0.5, 0.75, 1.0)} or {self.cfg.risk_pct}):
+            res = self._eval(keys, {k: w for k in keys}, None, None, trades, windows, n=3000)
+            if res is not None and self._better(res, best[0] if best else None):
+                best = (res, w)
+        if best is None:
+            self.say("Planning de la journée : pas assez de jours en commun entre ses stratégies pour le simuler.")
+            return None
+        res, w = best
+        self.say(f"Planning de la journée : {len(keys)} stratégies, chacune dans ses heures "
+                 f"({', '.join(info[k]['horaire']['nom'].split(' ')[0] for k in keys)}) -> {self._summary(res)}")
+        return {"nom": "Planning de la journée", "resultat": res,
+                "regles": {"day_budget": self.cfg.day_budget, "total_budget": self.cfg.total_budget,
+                           "day_stop": None, "max_open": None},
+                "horaire": {"nom": "planning de la journée (chaque stratégie dans ses heures)", "debut": None},
+                "composants": [{"symbole": info[k]["symbole"], "timeframe": info[k]["timeframe"],
+                                "candidate": info[k]["candidate"], "strategie": info[k]["strategie"],
+                                "risque_config": info[k]["risque"], "risk_pct": w, "horaire": info[k]["horaire"],
+                                "trades_mois": _comp_tpm(trades, windows, k)} for k in keys]}
 
     def levels(self) -> list[float]:
         """Niveaux de risque autorisés : <= risque max, et un seul stop (+10 % de frais) doit tenir dans le budget du jour."""
@@ -1157,6 +1211,9 @@ class Director:
                                            for r in p.itertuples() if isinstance(getattr(r, "candidate", None), str)]}
                     self._register("Portefeuille du Chef FTMO", "passer le challenge FTMO",
                                    self._eval_external(comb, info, trades, windows, min(0.5, self.cfg.risk_pct)))
+                if self.cfg.horaires:   # la meilleure stratégie à chaque heure, toutes dans leurs heures
+                    self._register("Planning de la journée : la meilleure stratégie à chaque heure",
+                                   "passer le challenge FTMO", self._plan_combo(trades, windows, info))
                 d = _load_json(self.cfg.out / "strategie_combinee_direct.json")
                 if d:
                     self._register("Combinaison du direct (paper trading)", "passer le challenge FTMO",
@@ -1673,6 +1730,33 @@ def _pair(r, suffix: str) -> str | None:
     return f"{int(a)} réussis / {int(b)} ratés"
 
 
+def _plan_html(plan) -> str:
+    if not plan or not plan.get("blocs"):
+        return "<p class='mut'>Pas encore de planning (il faut des stratégies avec une plage horaire confirmée).</p>"
+    esc = html.escape
+    by_h = {}
+    for i, b in enumerate(plan["blocs"], 1):
+        for h in b["heures"]:
+            by_h[h] = i
+    cells = "".join(f"<td style='text-align:center;padding:4px 6px;{'background:#e8f0fb;font-weight:600' if h in by_h else 'color:#999'}'>"
+                    f"{by_h.get(h, '·')}</td>" for h in range(24))
+    hdr = "".join(f"<th style='padding:2px 6px;font-size:11px'>{h}h</th>" for h in range(24))
+    rows = "".join(f"<tr><td><b>{i}</b></td><td><b>{esc(b['nom'])}</b></td><td>{esc(str(b.get('symbole', '')))} "
+                   f"{esc(str(b.get('timeframe', '')))}</td><td>{esc(str(b.get('strategie', ''))[:90])}</td>"
+                   f"<td>{b['trades_choix']} / {'' if b['r_moyen_choix'] is None else format(b['r_moyen_choix'], '+.2f')}R</td>"
+                   f"<td>{b['trades_controle']} / {'' if b['r_moyen_controle'] is None else format(b['r_moyen_controle'], '+.2f')}R</td>"
+                   f"<td>{'oui' if b['ok'] else 'non'}</td></tr>" for i, b in enumerate(plan["blocs"], 1))
+    c = plan.get("controle") or {}
+    return (f"<p class='mut'>À chaque heure (heure du serveur MT5), la plus forte de toutes les stratégies validées "
+            f"({esc(plan.get('mode', ''))}), choisie sur 60 % de leurs trades puis contrôlée sur les 40 % suivants. "
+            f"La combinée « Planning de la journée » (chaque stratégie dans ses heures) est classée avec les autres dans le "
+            f"TOP 10. Contrôle : {c.get('trades', 0)} trades jamais vus, "
+            f"{'' if c.get('r_moyen') is None else format(c['r_moyen'], '+.2f') + 'R en moyenne'}.</p>"
+            f"<table><tr>{hdr}</tr><tr>{cells}</tr></table>"
+            f"<table><tr><th>N°</th><th>Heures</th><th>Marché</th><th>Stratégie</th><th>Choix : trades / R moyen</th>"
+            f"<th>Contrôle : trades / R moyen</th><th>Confirmée</th></tr>{rows}</table>")
+
+
 def _hours_html(rows) -> str:
     """Section du rapport : la meilleure plage horaire de chaque stratégie (choisie puis contrôlée)."""
     if not rows:
@@ -1880,6 +1964,8 @@ n'est gardé que s'il fait réussir le challenge plus vite, sans plus d'échecs.
 {_advice_html(getattr(d, 'advice', None) or (c or {}).get('conseil_compte'))}
 <h2 id="heures">Meilleures heures de chaque stratégie</h2>
 {_hours_html(getattr(d, 'hour_rows', None) or _load_json(d.cfg.out / 'heures_strategies.json'))}
+<h2 id="planning">Planning de la journée : la meilleure stratégie à chaque heure</h2>
+{_plan_html(getattr(d, 'day_plan', None) or _load_json(d.cfg.out / 'planning_journee.json'))}
 <h2>Horaires : 24h/24 ou seulement le jour ?</h2>
 <p class="mut">Même travail refait avec des entrées permises seulement dans l'horaire (heure locale, serveur MT5 moins
 {d.cfg.server_offset:g} h). Les positions ouvertes gardent leur SL et TP chez le courtier après la fin de l'horaire.

@@ -287,11 +287,16 @@ def top_combinations(trades: pd.DataFrame, strategies: dict | None = None, rules
     # revérification complète des meilleures, puis classement final
     short = sorted(found.values(), key=lambda x: rank_key(x[2], day_budget, max_fail))[:max(3 * n_top, 20)]
     final = [(keys, weights, evaluate(keys, weights), "Chef des combinaisons") for keys, weights, _ in short]
+    done_x: dict = {}
     for x in extras:   # combinaisons déjà faites : classées avec les autres, sous leur nom
         k = frozenset(x["keys"])
-        final = [f for f in final if frozenset(f[0]) != k]
         w = {key: float(x["weights"].get(key) or risk_pct) for key in x["keys"]}
-        final.append((list(x["keys"]), w, evaluate(list(x["keys"]), w), x.get("nom", "")))
+        res_x = evaluate(list(x["keys"]), w)
+        if k in done_x and rank_key(done_x[k][2], day_budget, max_fail) <= rank_key(res_x, day_budget, max_fail):
+            continue   # mêmes stratégies avec un autre dosage : on garde le meilleur des deux
+        final = [f for f in final if frozenset(f[0]) != k]
+        done_x[k] = (list(x["keys"]), w, res_x, x.get("nom", ""))
+        final.append(done_x[k])
     final.sort(key=lambda x: rank_key(x[2], day_budget, max_fail))
     extra_names = {x.get("nom", "") for x in extras}
     shown = [(i, f) for i, f in enumerate(final, 1) if i <= n_top or f[3] in extra_names]  # déjà en place : toujours

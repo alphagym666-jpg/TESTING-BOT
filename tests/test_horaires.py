@@ -137,6 +137,7 @@ def test_top_backtest_hours_and_one_year_projections():
         assert f["capital"] == 100_000 and p["capital"] == 5000
         assert p["gain_jour_usd"] == pytest.approx(p["gain_an_usd"] / 252, abs=1)
     assert res["perso"] and res["perso"][0]["rang"] == 1
+    assert res["planning"] and len(res["planning"]["global"]) == 24 and len(res["planning"]["heures"]) == 24
     for e in res["seules"]:
         c = e["composants"][0]
         if "@" in c["strategie_id"]:
@@ -169,3 +170,63 @@ def test_backtest_button_respects_component_hours():
                                                  "horaire": horaire(8, 12)}], "regles": {"day_budget": 2.5}},
                                 data, n_sim=100, log=lambda m: None)
     assert 0 < part["tout"]["trades"] < full["tout"]["trades"] * 0.4
+
+
+def _three_strategies(seed=3):
+    rng = np.random.default_rng(seed)
+    items = {}
+    for k, (a, b) in {"matin": (8, 11), "aprem": (13, 17), "nuit": (1, 4), "bruit": (0, 0)}.items():
+        n = 700
+        t = pd.Timestamp("2024-01-01") + pd.to_timedelta(np.sort(rng.integers(0, 700 * 24, n)), unit="h")
+        h = t.hour
+        p = np.where((h >= a) & (h < b), 0.6, 0.3) if a != b else np.full(n, 0.33)
+        items[k] = pd.DataFrame({"entry_time": t, "exit_time": t + pd.Timedelta(hours=1),
+                                 "r": np.where(rng.random(n) < p, 2.0, -1.0)})
+    return items
+
+
+def test_day_plan_gives_each_hour_to_the_best_strategy():
+    from mt5lab.horaires import day_plan
+    items = _three_strategies()
+    wins = {}
+    for k, t in items.items():
+        b = best_window(t["entry_time"], t["r"])
+        if b and b["ok"]:
+            wins[k] = (b["debut"], b["fin"], b["t_choix"])
+    assert "bruit" not in wins and {"matin", "aprem", "nuit"} <= set(wins)
+    plan = day_plan({k: (t["entry_time"], t["r"]) for k, t in items.items()}, wins)
+    owner = {x["h"]: x["cle"] for x in plan["heures"]}
+    assert owner[2] == "nuit" and owner[9] == "matin" and owner[15] == "aprem" and owner[20] is None
+    assert all(b["cle"] != "bruit" for b in plan["blocs"]) and plan["controle"]["r_moyen"] > 0
+    assert len(plan["global"]) == 24 and sum(g["trades"] for g in plan["global"]) == sum(len(t) for t in items.values())
+
+
+def test_director_builds_and_ranks_the_day_plan(tmp_path):
+    from mt5lab.manager import Director, DirectorConfig
+    d = Director(DirectorConfig(symbols=["EURUSD"], timeframes=["H1"], out=tmp_path), lambda s, t: None,
+                 log=lambda m: None)
+    items = _three_strategies()
+    trades = {f"EURUSD_H1|{k}": t for k, t in items.items()}
+    windows = {k: (t["entry_time"].min(), t["exit_time"].max()) for k, t in trades.items()}
+    info = {k: {"symbole": "EURUSD", "timeframe": "H1", "candidate": {"n": k}, "strategie": k, "risque": "r",
+                "seule_ftmo": 10.0} for k in trades}
+    d._hour_variants(trades, windows, info)
+    plan = d._plan_combo(trades, windows, info)
+    assert plan and plan["resultat"]["trades"] > 0 and len(plan["composants"]) >= 3
+    assert all(c["horaire"]["debut"] is not None for c in plan["composants"])
+    assert (tmp_path / "planning_journee.json").exists()
+    from mt5lab.manager import _plan_html
+    assert "Planning" in _plan_html(d.day_plan) or "plus forte" in _plan_html(d.day_plan)
+
+
+def test_backtest_start_date():
+    import zlib
+
+    from mt5lab.data import synthetic
+    from mt5lab.top_backtest import top_backtest
+    cand = {"signal": {"type": "single", "name": "ema_cross", "params": {"fast": 9, "slow": 21}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.5, "rr": 2.0, "management": "none", "max_hold": 200, "direction": "both"}}
+    st = {"a": {"symbole": "EURUSD", "timeframe": "H1", "candidate": cand}}
+    data = lambda s, tf, c: (synthetic(20000, seed=zlib.crc32(s.encode()) % 1000), 0.00012)   # 2020 -> 2022
+    res = top_backtest(st, data, n_sim=100, n_top=3, log=lambda m: None, start="2021-06-01")
+    assert res["periode"].startswith("2021-06-01")

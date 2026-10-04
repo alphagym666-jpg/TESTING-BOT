@@ -262,7 +262,9 @@ def test_platform_top2ans_and_bots(tmp_path, monkeypatch):
     monkeypatch.setattr(pf, "_build_bot", lambda e, comb, root, cap, ftmo, risk: got.append(comb) or {"ok": True, "message": "ok"})
     rang = res["combinees"][0]["rang"]
     assert pf.make_bot(eng, f"/api/bot?bt2={rang}")["ok"]
-    assert all(c["candidate"] == slots[c["strategie_id"]].candidate for c in got[0]["composants"])
+    for c in got[0]["composants"]:   # composant « horaire » (s0@3-4) : la stratégie s0 avec ses heures
+        assert c["candidate"] == slots[c.get("base_id") or c["strategie_id"]].candidate
+        assert ("@" in c["strategie_id"]) == bool(c.get("horaire"))
     assert not pf.make_bot(eng, "/api/bot?bt2=99")["ok"]
     assert pf.make_bot(eng, "/api/bot?id=s13")["ok"]                    # une stratégie seule de la combinaison
     del eng._top2_job

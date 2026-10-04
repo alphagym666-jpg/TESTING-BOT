@@ -80,7 +80,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path == "/api/top2ans":  # TOP 10 backtest 2 ans des stratégies qui tradent en direct
             try:
-                body = json.dumps(top2ans_live(self.server.engine, start="lancer=1" in self.path),
+                from urllib.parse import parse_qs, urlparse
+                deb = (parse_qs(urlparse(self.path).query).get("debut") or [""])[0]
+                body = json.dumps(top2ans_live(self.server.engine, start="lancer=1" in self.path, debut=deb or None),
                                   ensure_ascii=False, default=str)
             except Exception as exc:
                 body = json.dumps({"etat": "erreur", "message": f"Calcul impossible : {exc}"}, ensure_ascii=False)
@@ -218,7 +220,7 @@ def analyse_trades_live(engine, url: str) -> dict:
 YEARS_BT = 2.0   # backtest des 2 dernières années
 
 
-def top2ans_live(engine, start: bool = False) -> dict:
+def top2ans_live(engine, start: bool = False, debut: str | None = None) -> dict:
     """Onglet « TOP 10 backtest 2 ans » : chaque stratégie qui a tradé en direct (et chaque stratégie combinée
     qui tourne) rejouée sur les 2 dernières années de MT5, TOP 10 seules et combinées, avec le paper trading."""
     import time as _time
@@ -227,7 +229,7 @@ def top2ans_live(engine, start: bool = False) -> dict:
         job = {"etat": "en cours", "fait": 0, "total": 0, "debut": _time.strftime("%H:%M:%S"), "resultat": None,
                "message": "Préparation…", "etape": "préparation"}
         engine._top2_job = job
-        threading.Thread(target=_run_top2ans, args=(engine, job), daemon=True).start()
+        threading.Thread(target=_run_top2ans, args=(engine, job, debut), daemon=True).start()
     if job is None:
         try:
             res = json.loads((engine.out / "top_backtest_2ans.json").read_text(encoding="utf-8"))
@@ -238,7 +240,7 @@ def top2ans_live(engine, start: bool = False) -> dict:
     return job
 
 
-def _run_top2ans(engine, job):
+def _run_top2ans(engine, job, debut: str | None = None):
     import time as _time
 
     from .ftmo import FtmoRules
@@ -278,9 +280,18 @@ def _run_top2ans(engine, job):
 
         def progress(phase, done, total):
             job.update(etape=phase, fait=done, total=total, message=phase)
-        get = _platform_data(engine, YEARS_BT + 0.25)   # 3 mois de plus : indicateurs prêts au début
-        res = top_backtest(strategies, get, rules, risk, YEARS_BT, live=t, extras=extras, progress=progress,
-                           log=print)
+        import pandas as pd
+        start = None
+        if debut:   # début choisi (ex. 2024-01-01) au lieu des 2 dernières années
+            try:
+                start = pd.Timestamp(debut)
+            except (ValueError, TypeError):
+                start = None
+        years = YEARS_BT if start is None else max(0.5, (pd.Timestamp.now() - start).days / 365.25)
+        get = _platform_data(engine, years + 0.25)   # 3 mois de plus : indicateurs prêts au début
+        res = top_backtest(strategies, get, rules, risk, years, live=t, extras=extras, progress=progress,
+                           log=print, start=start)
+        res["debut_choisi"] = debut or "" 
         res["calcule_le"] = _time.strftime("%Y-%m-%d %H:%M")
         try:
             (engine.out / "top_backtest_2ans.json").write_text(json.dumps(res, ensure_ascii=False, default=str),
@@ -846,9 +857,9 @@ function btBody(R,o){
 function compTable(R){return `<h4 style="margin:14px 0 6px">Chaque stratégie de la combinaison sur l'historique</h4>`+table("btc",[["Marché","symbole"],["TF","timeframe"],["Stratégie","strategie"],["Risque/trade","risk_pct",v=>fmt(v,1)+" %",1],
  ["Trades","trades",null,1],["R total","r_total",rr,1],["Trades gagnants","reussite",v=>v==null?"—":fmt(v,0)+" %",1],["Historique","debut",(v,r)=>v?esc(v)+" → "+esc(r.fin):"—"],["Problème","erreur",v=>v?`<span class="neg">${esc(v)}</span>`:""]],R.composants||[])}
 function miniBot(id){return id?`<button class="botbtn mini" data-id="${esc(id)}" title="Créer le bot MT5 de CETTE stratégie seule">Bot</button>`:""}
-let T2=null,t2Busy=false,t2Timer=null,SEL2=null;
+let T2=null,t2Busy=false,t2Timer=null,SEL2=null,bt2Deb="";
 async function loadTop2(start){if(t2Busy)return;t2Busy=true;
- try{T2=await (await fetch("/api/top2ans"+(start?"?lancer=1":""),{cache:"no-store"})).json()}catch(e){T2={etat:"erreur",message:"Calcul impossible : "+e}}
+ try{T2=await (await fetch("/api/top2ans"+(start?"?lancer=1&debut="+encodeURIComponent(bt2Deb):""),{cache:"no-store"})).json()}catch(e){T2={etat:"erreur",message:"Calcul impossible : "+e}}
  t2Busy=false;clearTimeout(t2Timer);if(T2.etat==="en cours")t2Timer=setTimeout(()=>loadTop2(false),2000);render()}
 document.getElementById("view").addEventListener("click",e=>{const b=e.target.closest(".v2btn");if(!b)return;e.stopPropagation();
  SEL2={k:b.dataset.k,r:+b.dataset.r,l:b.dataset.l};render();setTimeout(()=>{const p=document.querySelector(".panel");if(p)p.scrollIntoView({behavior:"smooth",block:"start"})},100)});
@@ -890,7 +901,9 @@ function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargemen
  const run=T2.etat==="en cours",R=T2.resultat||{},C=R.combinees||[],S=R.seules||[];
  const pct=T2.total?Math.round(T2.fait/T2.total*100):0;
  let h=`<p style="margin:4px 0 10px"><button class="cmpbtn" ${run?"disabled":""} onclick="loadTop2(true)">
-  ${run?"Backtest en cours…":"Backtester toutes les stratégies du direct sur les 2 dernières années → TOP 10"}</button>
+  ${run?"Backtest en cours…":"Backtester toutes les stratégies du direct → TOP 10"}</button>
+  <label class="mut" style="margin-left:10px">Début du backtest : <input id="bt2deb" type="date" style="min-width:0" value="${esc(bt2Deb)}" onchange="bt2Deb=this.value" title="Vide = les 2 dernières années (jusqu'à aujourd'hui)"></label>
+  <span class="mut">(vide = les 2 dernières années jusqu'à aujourd'hui)</span>
   ${run?` <span class="meter" style="width:220px"><i style="width:${pct}%"></i></span> ${pct} % · ${esc(T2.etape||"")} <span class="mut">(démarré à ${esc(T2.debut||"")} ; de quelques minutes à une heure selon le nombre de stratégies)</span>`:""}</p>
   <p class="note">${esc(T2.message||"")}${R.periode?` · période ${esc(R.periode)} · ${esc(R.regles||"")}`:""}${R.calcule_le?" · calculé le "+esc(R.calcule_le):""}</p>
   <p class="note">Chaque stratégie qui a pris au moins un trade sur cette plateforme (et chaque stratégie combinée qui tourne) est rejouée sur les
@@ -914,6 +927,7 @@ function viewTop2(){if(!T2){loadTop2(false);return `<div class="empty">Chargemen
  h+=`<h3 class="sec">TOP 10 des stratégies COMBINÉES (backtest 2 ans)</h3>`+(C.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Stratégies de la combinaison (bot de chacune)</th><th>Origine</th>${BT2H}${CPTH}${PAPH}</tr></thead><tbody>`+
   C.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}</td><td><button class="v2btn btbtn" data-k="c" data-r="${e.rang}">Voir le backtest</button> <button class="botbtn" data-bt2="${e.rang}">Bot MT5 combinée</button></td>
    <td style="font-size:12px;line-height:1.5">${comps(e)}</td><td>${esc(e.origine||"")}</td>${bt2Cells(e.backtest)}${compteCells(e.comptes)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`).join("")+`</tbody></table></div>`:`<p class="note">Pas de combinaison.</p>`);
+ h+=planView(R.planning);
  h+=persoView(PZ);
  h+=`<h3 class="sec">TOP 10 des stratégies SEULES (backtest 2 ans)</h3>`+(S.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Marché</th><th>TF</th><th>Heures</th><th>Stratégie</th><th>Réglage</th>${BT2H}${CPTH}${PAPH}</tr></thead><tbody>`+
   S.map(e=>{const x=e.composants[0];return `<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}${x.en_pause?' <span class="tag ko">en pause</span>':""}</td>
@@ -926,6 +940,39 @@ function strip(x){const P=x.profil||[];if(!P.length)return "";const m=Math.max(.
  return `<span style="display:inline-flex;gap:1px">`+P.map(c=>{const v=c.r_moyen,a=v==null||!c.trades?0:Math.min(1,Math.abs(v)/m)*0.85+0.15;
   const bg=v==null||!c.trades?"var(--grid)":`color-mix(in srgb,${v>0?"var(--pos)":"var(--neg)"} ${Math.round(a*100)}%,transparent)`;
   return `<i title="${c.h} h : ${c.trades} trades, ${c.gagnants} gagnants${v==null?"":", "+fmt(v,2,true)+"R en moyenne, "+fmt(c.r_total,1,true)+"R au total"}" style="display:inline-block;width:11px;height:18px;border-radius:2px;background:${bg};${inW(c.h)?"outline:2px solid var(--accent);outline-offset:-1px":""}"></i>`}).join("")+`</span>`}
+const PLANC=["#2a78d6","#eb6834","#1baf7a","#eda100","#e87ba4","#008300","#4a3aa7","#e34948"];
+function planView(P){if(!P)return "";const B=P.blocs||[],G=P.global||[];
+ const idx={};B.forEach((b,i)=>{b.heures.forEach(hh=>{idx[hh]=i})});
+ const gm=Math.max(...G.map(c=>Math.abs(c.r_moyen||0)),0.2);
+ const cell=(i,inner,bg,tip,dim)=>`<div title="${esc(tip)}" style="flex:1;min-width:30px;text-align:center;padding:6px 0;border-radius:4px;background:${bg};color:${dim?"var(--muted)":"#fff"};font-weight:600;font-size:12px">${inner}</div>`;
+ const line=`<div style="display:flex;gap:2px;margin:6px 0 2px">`+Array.from({length:24},(_,i)=>{const k=idx[i];const b=k==null?null:B[k];
+   const hx=(P.heures||[])[i]||{};
+   return k==null?cell(i,"·","var(--grid)",`${i} h : aucune stratégie nettement gagnante (pas de trade)`,true):
+    cell(i,k+1,PLANC[k%8],`${i} h : n°${k+1} ${b.symbole} ${b.timeframe} (${b.nom})${b.ok?"":" — non confirmée"}${hx.trades_choix?` · à cette heure : ${hx.trades_choix} trades, ${fmt(hx.r_moyen_choix,2,true)}R`:""}`,false)}).join("")+`</div>
+  <div style="display:flex;gap:2px;font-size:11px;color:var(--muted)">`+Array.from({length:24},(_,i)=>`<div style="flex:1;min-width:30px;text-align:center">${i}h</div>`).join("")+`</div>`;
+ const gl=`<div style="display:flex;gap:2px;margin:6px 0 2px">`+G.map(c=>{const v=c.r_moyen,a=v==null?0:Math.min(1,Math.abs(v)/gm)*0.85+0.15;
+   const bg=v==null||!c.trades?"var(--grid)":`color-mix(in srgb,${v>0?"var(--pos)":"var(--neg)"} ${Math.round(a*100)}%,transparent)`;
+   return `<div title="${c.h} h : ${c.trades} trades de toutes les stratégies, ${c.gagnants} gagnants${v==null?"":", "+fmt(v,2,true)+"R en moyenne"}" style="flex:1;min-width:30px;height:22px;border-radius:4px;background:${bg}"></div>`}).join("")+`</div>`;
+ const C=P.combinees||[];
+ let h=`<h3 class="sec">Planning de la journée : la meilleure stratégie à chaque heure</h3>
+  <p class="note">Pour chaque heure (heure du serveur MT5), la plus forte de TOUTES les stratégies ${P.mode==="plages confirmées"?"parmi celles dont la plage horaire confirmée couvre cette heure":"(choix heure par heure, seulement si elle y est nettement gagnante)"} ;
+  les heures de suite d'une même stratégie forment une plage. Choisi sur les 60 % premiers trades, contrôlé sur les 40 % suivants : seules les plages confirmées (✔) entrent dans la combinée « planning ».
+  ${P.controle&&P.controle.trades?`Contrôle du planning : ${P.controle.trades} trades jamais vus pendant le choix, ${rr(P.controle.r_moyen)} en moyenne (${P.controle.plages_confirmees} plages confirmées sur ${P.controle.plages}).`:""}</p>
+  ${line}
+  <p class="mut" style="font-size:12px;margin:4px 0 12px">Chaque case = une heure ; le numéro = la stratégie qui trade à cette heure (tableau ci-dessous) ; « · » = personne ne trade.</p>`;
+ if(B.length)h+=`<div class="scroll" style="max-height:none"><table><thead><tr><th>N°</th><th>Bot</th><th>Heures</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Choix : trades</th><th>Choix : R moyen</th><th>Contrôle : trades</th><th>Contrôle : R moyen</th><th>Confirmée</th></tr></thead><tbody>`+
+  B.map((b,i)=>`<tr><td><span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${PLANC[i%8]};vertical-align:middle"></span> <b>${i+1}</b></td>
+   <td><button class="botbtn mini" data-id="${esc(b.strategie_id)}" title="Bot de cette stratégie dans ces heures">Bot FTMO</button><button class="botbtn mini" data-id="${esc(b.strategie_id)}" data-profil="perso">Bot 5k</button></td>
+   <td><b>${esc(b.nom)}</b></td><td>${esc(b.symbole)}</td><td>${esc(b.timeframe)}</td><td class="s" title="${esc(b.strategie)}">${esc(b.strategie)}</td>
+   <td class="n">${b.trades_choix}</td><td class="n">${b.r_moyen_choix==null?"—":rr(b.r_moyen_choix)}</td><td class="n">${b.trades_controle}</td><td class="n">${b.r_moyen_controle==null?"—":rr(b.r_moyen_controle)}</td>
+   <td>${b.ok?'<span class="tag ok">oui</span>':'<span class="tag ko">non</span>'}</td></tr>`).join("")+`</tbody></table></div>`;
+ else h+=`<p class="note">Pas encore de planning : il faut des stratégies avec une plage horaire nettement meilleure (au moins 40 trades).</p>`;
+ if(C.length)h+=`<p style="margin:10px 0">`+C.map(c=>`<b>${esc(c.nom)}</b> : n°${c.rang} des combinées${c.hors_top?" (hors TOP 10)":""}
+   <button class="v2btn btbtn" data-k="c" data-r="${c.rang}">Voir le backtest</button> <button class="botbtn" data-bt2="${c.rang}">Bot challenge FTMO</button> <button class="botbtn" data-bt2="${c.rang}" data-profil="perso">Bot compte perso 5k</button>`).join("<br>")+`</p>`;
+ h+=`<h4 style="margin:16px 0 4px">Les meilleures heures en général (toutes les stratégies réunies)</h4>${gl}
+  <div style="display:flex;gap:2px;font-size:11px;color:var(--muted)">`+Array.from({length:24},(_,i)=>`<div style="flex:1;min-width:30px;text-align:center">${i}h</div>`).join("")+`</div>
+  <p class="mut" style="font-size:12px">Vert = à cette heure, les trades de toutes les stratégies gagnent en moyenne ; rouge = ils perdent. Survolez pour le détail.</p>`;
+ return h}
 function hTag(hz){return hz&&hz.debut!=null?`<span class="tag" title="Entrées seulement dans cette plage (heure du serveur MT5)">🕘 ${fmt(hz.debut,0)}h-${fmt(hz.fin,0)}h</span>`:""}
 const CPTH=`<th title="Compte financé FTMO 100 000 $, 1 %/trade : gain moyen par jour de bourse sur 1 an (médiane)">Financé 100k $/jour</th><th title="Compte perso 5 000 $, 2 %/trade, intérêts composés : gain moyen par jour sur 1 an (médiane)">Perso 5k $/jour</th>`;
 function compteCells(K){const f=(K||{}).finance,p=(K||{}).perso;const c=x=>x?`<td class="n"><span class="${cls(x.gain_jour_usd)}">${fmt(x.gain_jour_usd,0,true)} $</span> <span class="mut">(${fmt(x.rendement_an_median,0,true)} %/an)</span></td>`:`<td class="n mut">—</td>`;return c(f)+c(p)}

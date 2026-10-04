@@ -22,7 +22,7 @@ from .direct import _evaluator, expected_days, rank_key, strategy_table, top_com
 from .evaluator import compute_signal, describe, signal_key
 from .ftmo import FtmoRules, count_challenges, daily_table, simulate, to_dt
 from .horaires import MIN_TRADES as MIN_HOUR_TRADES
-from .horaires import best_window, horaire, hour_profile, hours_of, in_window
+from .horaires import best_window, day_plan, horaire, hour_profile, hours_of, in_window
 from .strategies import apply_filter
 
 DAY_BUDGET = 2.5
@@ -96,11 +96,11 @@ def live_summary(live: pd.DataFrame | None, keys: list, weights: dict, rules: Ft
 def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), risk_pct: float = 1.0,
                  years: float = 2.0, live: pd.DataFrame | None = None, extras: list | None = None,
                  max_strategies: int = 6000, n_top: int = 10, n_sim: int = 3000, min_trades: int = 10,
-                 progress=None, log=print) -> dict:
+                 progress=None, log=print, start=None) -> dict:
     """strategies : {id: {symbole, timeframe, candidate, strategie?, en_pause?, trades_direct?}}
     get_data(symbole, timeframe, candidates) -> (df, coût), avec au moins `years` ans d'historique (un peu plus
     pour que les indicateurs soient prêts au début)."""
-    extras = extras or []
+    extras = list(extras or [])
     strategies = dict(strategies)   # on y ajoute les variantes horaires sans toucher au dictionnaire reçu
     must = {k for x in extras for k in x.get("keys", [])}
     ids = sorted(strategies, key=lambda k: (k not in must, -(strategies[k].get("trades_direct") or 0)))
@@ -128,8 +128,8 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
             log(f"[backtest 2 ans] {sym} {tf} : pas de données ({exc})")
             done += len(keys)
             continue
-        start = df.index[-1] - pd.DateOffset(years=years)
-        mask = df.index >= start
+        first = df.index[-1] - pd.DateOffset(years=years) if start is None else pd.Timestamp(start)
+        mask = df.index >= first
         dfs = df[mask]
         sigs: dict = {}
         for k in keys:
@@ -200,6 +200,37 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
                          "strategie": f"{label(k)} | heures {bw['nom']}"}
     if live_extra:
         live = pd.concat([live, *live_extra], ignore_index=True)
+    # ---- PLANNING DE LA JOURNÉE : la meilleure de toutes les stratégies à chaque heure -> une combinée « planning »
+    say("planning de la journée (la meilleure stratégie à chaque heure)", 0, 1)
+    wins_ok = {h["strategie_id"]: (h["debut"], h["fin"], h["t_choix"]) for h in hours if h.get("ok") is True}
+    items = {k: (tr["entry_time"], tr["r"]) for k, tr in trades.items() if "@" not in k and len(tr) >= 20}
+    plan = day_plan(items, wins_ok or None) if items else None
+    plan_keys = []
+    if plan:
+        for b in plan["blocs"]:
+            k = b["cle"]
+            b.update(symbole=strategies[k]["symbole"], timeframe=strategies[k]["timeframe"], strategie=label(k))
+            v = f"{k}@{b['debut']:g}-{b['fin']:g}"
+            b["strategie_id"] = v
+            if v not in trades:
+                trades[v] = trades[k][in_window(hours_of(trades[k]["entry_time"]), b["debut"], b["fin"])].reset_index(drop=True)
+                window[v] = window[k]
+                strategies[v] = {**strategies[k], "horaire": horaire(b["debut"], b["fin"]), "base_id": k,
+                                 "strategie": f"{label(k)} | heures {b['nom']}"}
+                lt = live[live["strategie_id"] == k] if live is not None and len(live) else None
+                if lt is not None and len(lt):
+                    m = in_window(hours_of(lt["ouverture"]), b["debut"], b["fin"])
+                    if m.any():
+                        live = pd.concat([live, lt[m].assign(strategie_id=v)], ignore_index=True)
+            if b["ok"] and len(trades[v]):
+                plan_keys.append(v)
+        for x in plan["heures"]:
+            if x.get("cle"):
+                x["etiquette"] = f"{strategies[x['cle']]['symbole']} {strategies[x['cle']]['timeframe']}"
+        if plan_keys:
+            for w in sorted({risk_pct, min(0.5, risk_pct)}, reverse=True):
+                extras.append({"nom": f"Planning de la journée ({w:g} %/trade)".replace(".", ","), "keys": plan_keys,
+                               "weights": {k: w for k in plan_keys}})
     hours.sort(key=lambda x: (x["ok"] is not True, x["ok"] is None,
                               -((x.get("r_moyen_plage") or 0) - (x.get("r_moyen_24h") or 0)), -x.get("r_total_24h", 0)))
 
@@ -238,7 +269,7 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
     # catégories + les 25 meilleures variantes « horaires » (chacune dans ses heures), pour qu'elles soient toujours
     # en lice, + les combinaisons déjà en place
     pool = ([k for k, _ in quick[:40]] + [k for k, _ in quick if "@" in k][:25]
-            + [k for k in must if k in trades])
+            + [k for k in must if k in trades] + plan_keys)
     rows = []
     for k in dict.fromkeys(pool):
         tr = trades[k]
@@ -291,6 +322,9 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
         k = e["composants"][0]["strategie_id"]
         e["ratio"] = next((x["ratio"] for lst in cross["listes"].values() for x in lst
                            if x["strategie_id"] == k), cross["ratios"].get(k))
+    if plan:
+        plan["combinees"] = [{"nom": e["origine"], "rang": e["rang"], "hors_top": e.get("hors_top", False)}
+                             for e in out_c if str(e.get("origine", "")).startswith("Planning de la journée")]
     # ---- le meilleur pour le COMPTE PERSO 5 000 $ (et le compte financé) : gain sur 1 an avec peu de risque
     say("projections sur 1 an (compte perso 5 000 $, compte financé)", 0, 1)
     pool_p = [("c", e) for e in out_c]
@@ -328,7 +362,7 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
     if errors:
         msg += f" Marchés sans données : {'; '.join(errors[:5])}."
     return {"ok": True, "seules": out_s, "combinees": out_c, "strategies_testees": n_base, "variantes_horaires": n_var,
-            "gagnantes": len(quick), "plafond": capped, "croise": cross, "heures": hours[:300], "perso": perso, "annees": years, "erreurs": errors,
+            "gagnantes": len(quick), "plafond": capped, "croise": cross, "planning": plan, "heures": hours[:300], "perso": perso, "annees": years, "erreurs": errors,
             "periode": f"{lo_all:%Y-%m-%d} → {hi_all:%Y-%m-%d}", "regles": rules.label(), "message": msg}
 
 

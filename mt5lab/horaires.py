@@ -109,3 +109,94 @@ def filter_trades(trades: pd.DataFrame, hor: dict | None, col: str = "entry_time
         return trades
     h = hours_of(trades[col]) - float(hor.get("decalage_serveur", 0.0))
     return trades[in_window(np.mod(h, 24), float(hor["debut"]), float(hor["fin"]))]
+
+
+# ------------------------------------------------------------------------------------- planning de la journée
+PLAN_MIN_TRADES = 8      # trades d'une stratégie à une heure (période de choix) pour qu'elle puisse « prendre » l'heure
+PLAN_MAX_BLOCKS = 8
+
+
+def day_plan(items: dict, windows: dict | None = None, min_trades: int = PLAN_MIN_TRADES,
+             max_blocks: int = PLAN_MAX_BLOCKS) -> dict:
+    """PLANNING DE LA JOURNÉE : pour CHAQUE heure (0 h à 23 h, heure du serveur MT5), la meilleure de TOUTES les
+    stratégies à cette heure-là, puis les heures consécutives d'une même stratégie regroupées en plages.
+
+    items : {clé: (heures d'ouverture des trades, R de chaque trade)}.
+    windows : {clé: (début, fin, force)} = les plages CONFIRMÉES de chaque stratégie (best_window). Avec elles (mode
+    conseillé), chaque heure va à la stratégie la plus forte parmi celles dont la plage confirmée couvre cette
+    heure : plus solide qu'un choix heure par heure (une heure seule n'a que quelques trades). Sans elles : choix
+    heure par heure, seulement si la stratégie y est nettement gagnante (t >= 2).
+    Comme pour une plage seule : le meilleur de chaque heure est CHOISI sur les 60 % premiers trades de chaque
+    stratégie, puis CONTRÔLÉ sur les 40 % suivants. Une plage n'entre dans la combinée « planning » que si elle
+    reste gagnante au contrôle (« confirmée »).
+    Renvoie aussi le profil heure par heure de TOUTES les stratégies réunies (les meilleures heures en général)."""
+    choice, control, every = {}, {}, [[] for _ in range(24)]
+    for k, (times, r) in items.items():
+        r = np.asarray(r, dtype=float)
+        if len(r) < 2:
+            continue
+        h = np.floor(hours_of(times)).astype(int) % 24
+        order = np.argsort(pd.to_datetime(pd.Series(times).astype(str), format="mixed").to_numpy(), kind="stable")
+        h, r = h[order], r[order]
+        cut = int(len(r) * SPLIT)
+        choice[k] = [r[:cut][h[:cut] == i] for i in range(24)]
+        control[k] = [r[cut:][h[cut:] == i] for i in range(24)]
+        for i in range(24):
+            every[i].extend(r[h == i].tolist())
+    hours = []
+    for i in range(24):
+        best = None
+        if windows:
+            for k, (a, b, force) in windows.items():
+                if k in choice and bool(in_window(np.array([i + 0.5]), a, b)[0]) and (best is None or force > best[0]):
+                    best = (float(force), k)
+        else:
+            for k in choice:
+                x = choice[k][i]
+                if len(x) >= min_trades and x.mean() > 0:
+                    t = _t(x)
+                    if t >= 2.0 and (best is None or t > best[0]):
+                        best = (t, k)
+        if best is None:
+            hours.append({"h": i, "cle": None})
+            continue
+        t, k = best
+        x, y = choice[k][i], control[k][i]
+        hours.append({"h": i, "cle": k, "t": round(t, 2), "trades_choix": int(len(x)),
+                      "r_moyen_choix": round(float(x.mean()), 3) if len(x) else None,
+                      "trades_controle": int(len(y)), "r_moyen_controle": round(float(y.mean()), 3) if len(y) else None})
+    # heures consécutives de la même stratégie -> une plage (y compris par-dessus minuit)
+    runs, cur = [], None
+    for x in hours:
+        if cur and x["cle"] == cur["cle"] and x["cle"] is not None:
+            cur["heures"].append(x["h"])
+        else:
+            cur = {"cle": x["cle"], "heures": [x["h"]]}
+            runs.append(cur)
+    if len(runs) > 1 and runs[0]["cle"] is not None and runs[0]["cle"] == runs[-1]["cle"]:
+        runs[0]["heures"] = runs[-1]["heures"] + runs[0]["heures"]
+        runs.pop()
+    blocks = []
+    for run in runs:
+        k = run["cle"]
+        if k is None:
+            continue
+        xs = np.concatenate([choice[k][i] for i in run["heures"]])
+        ys = np.concatenate([control[k][i] for i in run["heures"]])
+        a, b = run["heures"][0], (run["heures"][-1] + 1) % 24
+        blocks.append({"cle": k, "debut": float(a), "fin": float(b), "nom": label(a, b), "heures": run["heures"],
+                       "trades_choix": int(len(xs)), "r_total_choix": round(float(xs.sum()), 1),
+                       "r_moyen_choix": round(float(xs.mean()), 3) if len(xs) else None,
+                       "trades_controle": int(len(ys)), "r_moyen_controle": round(float(ys.mean()), 3) if len(ys) else None,
+                       "ok": bool(ys.mean() > 0) if len(ys) >= 3 else bool(windows)})
+    blocks.sort(key=lambda x: -x["r_total_choix"])
+    blocks = blocks[:max_blocks]
+    blocks.sort(key=lambda x: x["debut"])
+    ok = [b for b in blocks if b["ok"]]
+    ctrl = np.concatenate([np.concatenate([control[b["cle"]][i] for i in b["heures"]]) for b in ok]) if ok else np.zeros(0)
+    glob = [{"h": i, "trades": len(every[i]), "r_moyen": round(float(np.mean(every[i])), 3) if every[i] else None,
+             "gagnants": int(sum(1 for v in every[i] if v > 0))} for i in range(24)]
+    return {"heures": hours, "blocs": blocks, "global": glob, "strategies": len(choice),
+            "mode": "plages confirmées" if windows else "heure par heure",
+            "controle": {"trades": int(len(ctrl)), "r_moyen": round(float(ctrl.mean()), 3) if len(ctrl) else None,
+                         "plages_confirmees": len(ok), "plages": len(blocks)}}
