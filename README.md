@@ -753,6 +753,30 @@ Partout :
   (LANCER_BOT.bat) et respecte donc exactement les heures de chaque stratégie. Les heures sont écrites dans
   LaboBot.mq5 et LISEZMOI_BOT.txt. Boutons « Bot » d'une stratégie dans ses heures (`id@8-11`).
 
+## Utiliser la plateforme (ergonomie)
+
+- **🏠 Accueil « Aujourd'hui »** (page de départ) : *Quel bot faire tourner ?* (le n°1 du classement général, ses
+  stratégies et leurs heures, $ par jour, boutons bot FTMO / perso 5k), *Mon challenge* (objectif, aujourd'hui, baisse
+  max, jours tradés, vrai compte MT5), *Alertes* (stratégie en pause, bot silencieux, événements), *Calculs* (dates
+  des derniers calculs, bouton « Tout recalculer maintenant »).
+- **5 sections** au lieu de 12 onglets : Accueil · En direct (combinée, positions, historique, challenges, journal)
+  · Classements (général, backtest 2 ans, TOP 10 du direct, toutes les stratégies, meilleur par marché, setups)
+  · Analyse (heures & planning, analyse des trades, R:R) · Mes bots.
+- **Fiche complète** : un clic sur « Fiche complète » montre tout d'une stratégie ou d'une combinée : chaque
+  stratégie heure par heure, courbe du backtest, $ par jour sur 1 an, paper trading, bots, et un lien vers
+  l'analyse de ses trades.
+- **Mode simple / mode expert** (bouton en haut à droite) : en mode simple, des pastilles 🟢 solide (bonne en backtest
+  ET en paper) / 🟡 à surveiller / 🔴 prudence, et les colonnes techniques cachées ; en mode expert, tout. Bulles
+  d'aide sur les en-têtes (soulignés en pointillé).
+- **🤖 Mes bots** : chaque bot créé, ses stratégies et leurs heures, actif ou arrêté (son LANCER_BOT.bat), son résultat
+  en paper, bouton « Ouvrir le dossier ». Créer un bot ouvre une fenêtre avec les étapes (au lieu d'une alerte).
+- **Calcul automatique chaque nuit à 2 h** (heure du PC) : TOP 10 du direct puis backtest 2 ans (heures, planning,
+  classement général), résumé sur Telegram si configuré. Autre heure : variable d'environnement `LABO_AUTO_HEURE`
+  (ex. 3) ; `-1` pour désactiver.
+- **Petit écran / téléphone** : sous 760 px de large, les tableaux deviennent des cartes. Par sécurité, la plateforme
+  n'écoute que sur le PC lui-même (personne d'autre ne peut créer un bot) : pour la voir sur le téléphone, utilisez un
+  bureau à distance (ex. Chrome Remote Desktop, ou le VPS) ; les alertes Telegram arrivent directement sur le téléphone.
+
 ## Classement général backtest × paper (seules ET combinées)
 
 En haut de l'onglet « TOP 10 backtest 2 ans » :
