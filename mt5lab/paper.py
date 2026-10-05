@@ -1340,9 +1340,17 @@ class PaperEngine:
                 info = self.c.symbol_info(sym)
                 prices[sym] = {"bid": t.bid, "ask": t.ask, "spread": round((t.ask - t.bid) / info.point, 1),
                                "digits": info.digits}
+        srv = max([(getattr(t, "time_msc", 0) or 0) / 1000 or float(getattr(t, "time", 0) or 0)
+                   for t in ticks.values() if t is not None] or [0.0])
+        if srv > getattr(self, "_srv_seen", float("inf")):   # un prix VIENT d'arriver : son heure est « maintenant »
+            off = server_offset(srv)
+            if off is not None:
+                self.real_acc["decalage_pc"] = off   # gardé : le week-end, les prix ne bougent plus
+        self._srv_seen = srv
         return {
             "maj": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "demarre": self.started,
             "serveur": getattr(acc, "server", ""), "prix": prices,
+            "decalage_serveur_pc": self.real_acc.get("decalage_pc"),
             "capital": next(iter(self.slots.values())).capital if self.slots else 0,
             "risque_pct": self.risk_pct, "ftmo": asdict(self.ftmo), "ftmo_label": self.ftmo.label(),
             "profil": getattr(self, "profile", None),
@@ -1472,6 +1480,19 @@ def near_weekend(when: str, close: bool = False) -> bool:
     if t.weekday() >= 5:
         return True
     return t.weekday() == 4 and t.hour >= (22 if close else 21)
+
+
+def server_offset(server_time: float, now: float | None = None, local_gmtoff: float | None = None) -> int | None:
+    """Combien d'heures le serveur MT5 a D'AVANCE sur l'horloge du PC (FTMO / Québec : 7 h, ou 6 h quelques
+    semaines par an quand les changements d'heure ne tombent pas le même jour). server_time = heure d'un prix QUI
+    VIENT D'ARRIVER (MT5 la donne en heure du serveur, lue comme de l'UTC). Les bougies et les ticks de MT5 sont en
+    heure du serveur : c'est elle que les stratégies utilisent (rien à convertir pour trader) ; ce décalage sert
+    seulement à afficher l'heure équivalente chez vous."""
+    now = time.time() if now is None else now
+    if local_gmtoff is None:
+        local_gmtoff = time.localtime(now).tm_gmtoff
+    h = (server_time - now - local_gmtoff) / 3600
+    return int(round(h)) if abs(h - round(h)) <= 0.1 and abs(h) <= 26 else None
 
 
 def in_session(when: str, session) -> bool:

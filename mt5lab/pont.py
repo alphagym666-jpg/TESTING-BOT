@@ -102,6 +102,14 @@ def generate_bot(results_dir: str | Path, capital: float = 100_000.0, ftmo=None,
     return write_bot(comb, Path(out_dir or results_dir / "bot"), capital, ftmo, template=template)
 
 
+def _local(hor: dict | None, off) -> str:
+    """« (= 1h-4h chez vous) » : l'heure équivalente sur le PC, si le décalage serveur / PC est connu."""
+    if not hor or hor.get("debut") is None or off is None:
+        return ""
+    a, b = ((float(hor[k]) - float(off)) % 24 for k in ("debut", "fin"))
+    return f"  (= {a:g}h-{b:g}h à l'heure de votre PC)"
+
+
 def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, signal_file: str = SIGNAL_FILE,
               magic: int = 260926, launcher: str | None = None, template: str | Path | None = None) -> Path:
     """Écrit LaboBot.mq5 réglé + LISEZMOI_BOT.txt pour une stratégie (combinée ou seule) au format du Directeur."""
@@ -154,7 +162,8 @@ Le bot LaboBot, posé sur un graphique, lit ces décisions chaque seconde et pas
 Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure du serveur MT5 ; c'est la plateforme Python
 qui applique l'horaire, le bot garde ses SL/TP en dehors).
 Heures de CHAQUE stratégie (entrées seulement dans sa plage, heure du serveur MT5 ; ses positions continuent après) :
-{chr(10).join(f"  - {c['symbole']} {c['timeframe']} : {(c.get('horaire') or {}).get('nom') or '24h/24'}" for c in comb.get('composants', []))}
+{chr(10).join(f"  - {c['symbole']} {c['timeframe']} : {(c.get('horaire') or {}).get('nom') or '24h/24'}{_local(c.get('horaire'), comb.get('decalage_pc'))}" for c in comb.get('composants', []))}
+(Rien à convertir : le paper trading lit l'heure directement sur les prix de MT5, donc en heure du serveur.)
 Stratégie combinée : {len(comb.get('composants', []))} composants, réussite estimée {res.get('ftmo_pass')} %,
 ~{res.get('ftmo_jours_p1')} jours de bourse pour l'objectif (estimation sur le passé, rien n'est garanti).
 

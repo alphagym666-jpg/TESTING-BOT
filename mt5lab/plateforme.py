@@ -129,10 +129,29 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 body = json.dumps({"ok": False, "message": f"Impossible de créer le bot : {exc}"}, ensure_ascii=False)
             self._send(body.encode("utf-8"), "application/json; charset=utf-8")
+        elif path == "/api/combinaisons":  # onglet « Combinaisons » : TOUTES les combinaisons, avec leurs bots
+            try:
+                body = json.dumps(combos_live(self.server.engine), ensure_ascii=False, default=str)
+            except Exception as exc:
+                body = json.dumps({"lignes": [], "message": f"Liste impossible : {exc}"}, ensure_ascii=False)
+            self._send(body.encode("utf-8"), "application/json; charset=utf-8")
         elif path in ("/", "/index.html"):
             self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        # « Démarrer » un bot = il va passer de VRAIS ordres : seulement depuis la page de la plateforme (en-tête
+        # spécial : un autre site ouvert dans le navigateur ne peut pas l'envoyer sans autorisation)
+        path = self.path.split("?")[0]
+        if path != "/api/demarrer" or self.headers.get("X-Labo") != "1":
+            self.send_error(403)
+            return
+        try:
+            body = json.dumps(start_bot(self.server.engine, self.path), ensure_ascii=False)
+        except Exception as exc:
+            body = json.dumps({"ok": False, "message": f"Impossible de démarrer : {exc}"}, ensure_ascii=False)
+        self._send(body.encode("utf-8"), "application/json; charset=utf-8")
 
 
 def analyse_live(engine) -> dict:
@@ -296,6 +315,116 @@ def bots_live(engine) -> dict:
     bots.sort(key=lambda b: (b["etat"] != "actif", b.get("cree_le", "")), reverse=False)
     return {"bots": bots, "dossiers": [str(d) for d in _bot_dirs(engine)],
             "message": f"{len(bots)} bot(s) créés, {sum(b['etat'] == 'actif' for b in bots)} actif(s) en ce moment."}
+
+
+def start_bot(engine, url: str) -> dict:
+    """Bouton « ▶ Démarrer » de « Mes bots » : lance le LANCER_BOT.bat du bot (son paper trading qui envoie les
+    signaux au bot MT5), dans sa propre fenêtre. Seulement un dossier de bot."""
+    from urllib.parse import parse_qs, urlparse
+    q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+    target = Path(q.get("dossier", "")).resolve()
+    if not any(r in target.parents for r in _bot_dirs(engine)) or not (target / "LANCER_BOT.bat").is_file():
+        return {"ok": False, "message": "Dossier refusé (seulement les dossiers de bots)."}
+    try:
+        import os
+        os.startfile(str(target / "LANCER_BOT.bat"))  # Windows
+    except Exception:
+        return {"ok": False, "message": f"Double-cliquez à la main : {target / 'LANCER_BOT.bat'}"}
+    return {"ok": True, "message": "Bot démarré : une fenêtre s'ouvre (laissez-la ouverte ; la fermer = arrêter le bot). "
+                                   "Dans MT5, le bot doit être posé sur UN graphique avec « Algo Trading » activé."}
+
+
+def _directeur_files(engine) -> list:
+    from .boutons import REPO
+    out, seen = [], set()
+    for d in (engine.out.parent, REPO / "results"):
+        try:
+            for f in sorted(Path(d).glob("strategie_combinee*.json")):
+                if f.resolve() not in seen:
+                    seen.add(f.resolve())
+                    out.append(f.resolve())
+        except OSError:
+            pass
+    return out
+
+
+def combos_live(engine) -> dict:
+    """ONGLET « COMBINAISONS » : TOUTES les combinaisons connues, chacune avec ses deux bots (challenge FTMO et compte
+    perso 5k) : Chef des combinaisons (TOP 10 du direct), backtest 2 ans, bonnes partout (backtest ET paper), le
+    meilleur pour le compte perso, celles du Directeur et la combinée qui tourne en direct. Les catégories
+    « challenge FTMO » et « FTMO déjà réussi » sont des tris de toutes ces combinaisons."""
+    from .evaluator import describe
+    rows = []
+
+    def comps_of(e):
+        return [{"symbole": c.get("symbole"), "timeframe": c.get("timeframe"), "strategie": c.get("strategie", ""),
+                 "risk_pct": c.get("risk_pct"), "horaire": c.get("horaire"), "strategie_id": c.get("strategie_id")}
+                for c in e.get("composants") or []]
+
+    def add(source, label, e, ref, res=None):
+        res = res or {}
+        bt = ((e.get("backtest") or {}).get("tout")) or {}
+        d = e.get("direct") or {}
+        k = e.get("comptes") or {}
+        reussis = max(int(res.get("reussis") or 0), int(bt.get("reussis") or 0), int(d.get("reussis") or 0))
+        rows.append({"source": source, "source_nom": label, "rang": e.get("rang"), "nom": e.get("nom") or label,
+                     "origine": e.get("origine", ""), "composants": comps_of(e), "ref": ref,
+                     "conforme": e.get("conforme", True),
+                     "reussite": res.get("ftmo_pass", bt.get("ftmo_pass")),
+                     "echecs": res.get("ftmo_echec_p1", bt.get("ftmo_echec_p1")),
+                     "jours": res.get("jours_attendus", res.get("ftmo_jours_p1", bt.get("jours_attendus"))),
+                     "reussis": reussis, "rates": max(int(res.get("rates") or 0), int(bt.get("rates") or 0),
+                                                      int(d.get("rates") or 0)),
+                     "gain_pct": res.get("rendement_pct", bt.get("rendement_pct")),
+                     "pire_jour": res.get("pire_jour", bt.get("pire_jour")),
+                     "perso_jour": (k.get("perso") or {}).get("gain_jour_usd"),
+                     "finance_jour": (k.get("finance") or {}).get("gain_jour_usd"),
+                     "paper_trades": d.get("trades"), "paper_gain": d.get("rendement_pct"),
+                     "ftmo_reussi_direct": bool(e.get("ftmo_reussi_direct"))})
+
+    for e in (top10_live(engine).get("resultat") or {}).get("top") or []:
+        add("chef", "Chef des combinaisons (direct)", e, {"top": e["rang"]}, e.get("resultat"))
+    r2 = top2ans_live(engine).get("resultat") or {}
+    for e in r2.get("combinees") or []:
+        add("bt2", "Chef des combinaisons (backtest 2 ans)", e, {"bt2": e["rang"]})
+    for e in r2.get("combinees_croisees") or []:
+        add("partout", "Bonnes partout (backtest × paper)", e, {"bt2x": e["rang"]})
+    for e in r2.get("perso") or []:
+        if e.get("k") in ("c", "x"):
+            add("perso", "Meilleures pour le compte perso 5k", e,
+                {"bt2" if e["k"] == "c" else "bt2x": e["rang_source"]})
+    for f in _directeur_files(engine):
+        try:
+            e = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not e.get("composants"):
+            continue
+        name = f.stem.replace("strategie_combinee", "").strip("_") or "principale"
+        add("directeur", "Directeur", {**e, "nom": e.get("nom") or f"Combinée du Directeur ({name})"},
+            {"fichier": f.name}, {**(e.get("resultat") or {}), "jours_attendus": (e.get("resultat") or {}).get("ftmo_jours_p1")})
+        rows[-1]["profil"] = e.get("profil") or (name if name in ("perso", "finance") else None)
+    for g in getattr(engine, "groups", {}).values():  # la combinée qui tourne en paper (son challenge en direct)
+        members = [x for x in engine.slots.values() if x.group == g.name]
+        if not members:
+            continue
+        e = {"nom": f"En direct : {g.name}", "composants": [
+            {"symbole": x.symbol, "timeframe": x.timeframe, "strategie": describe(x.candidate),
+             "risk_pct": x.risk_pct, "strategie_id": x.id,
+             "horaire": {"debut": x.session[0], "fin": x.session[1]} if x.session else None} for x in members],
+             "direct": {"trades": g.trades, "rendement_pct": round((g.balance - g.capital) / g.capital * 100, 2),
+                        "reussis": int(g.ftmo_status == "réussi")}, "ftmo_reussi_direct": g.ftmo_status == "réussi"}
+        add("direct", "En direct (paper)", e, {"groupe": g.name})
+    n = {k: sum(r["source"] == k for r in rows) for k in ("chef", "bt2", "partout", "perso", "directeur", "direct")}
+    n["reussi"] = sum(r["reussis"] > 0 or r["ftmo_reussi_direct"] for r in rows)
+    n["challenge"] = sum(bool(r["conforme"]) and r["reussite"] is not None for r in rows)
+    msg = (f"{len(rows)} combinaisons au total. Chacune a ses deux bots : challenge FTMO (1 %/trade) et compte perso "
+           f"5k (2 %/trade, 5 %/jour).")
+    if not n["chef"]:
+        msg += " Pas encore de TOP 10 du Chef : Classements > TOP 10 du direct > « Compiler »."
+    if not (n["bt2"] or n["partout"]):
+        msg += " Pas encore de backtest 2 ans : Classements > Backtest 2 ans."
+    return {"lignes": rows, "nombre": n, "message": msg}
 
 
 def open_bot_folder(engine, url: str) -> dict:
@@ -684,6 +813,24 @@ def make_bot(engine, url: str) -> dict:
         if q.get("profil") in ("perso", "finance"):
             return _profile_bot(engine, comb, root, q["profil"])
         return _build_bot(engine, comb, root, capital, ftmo, max(c["risk_pct"] for c in comb["composants"]))
+    if q.get("fichier"):  # une combinée du Directeur (strategie_combinee*.json)
+        f = next((x for x in _directeur_files(engine) if x.name == q["fichier"]), None)
+        if f is None:
+            return {"ok": False, "message": "Fichier de combinée introuvable."}
+        comb = json.loads(f.read_text(encoding="utf-8"))
+        if not all(c.get("candidate") for c in comb.get("composants") or [None]):
+            return {"ok": False, "message": "Combinée incomplète : relancez le Directeur."}
+        from .ftmo import FtmoRules
+        if q.get("profil") in ("perso", "finance"):
+            return _profile_bot(engine, comb, root, q["profil"])
+        if comb.get("profil") in ("perso", "finance"):  # déjà une combinée de compte perso / financé (ses risques)
+            from .comptes import ftmo_like, profile
+            pr = profile(comb["profil"])
+            comb.update(composer=bool(pr["compound"]), capital=float(pr["capital"]))
+            return _build_bot(engine, comb, root, float(pr["capital"]), ftmo_like(pr),
+                              max(float(c["risk_pct"]) for c in comb["composants"]))
+        return _build_bot(engine, comb, root, 100_000.0, FtmoRules() if getattr(engine, "profile", None) else engine.ftmo,
+                          max(float(c["risk_pct"]) for c in comb["composants"]))
     if q.get("analyse"):  # la meilleure combinaison trouvée par l'analyse du direct
         comb = dict(getattr(engine, "last_analysis", {}).get("combinaison") or {})
         if not comb:
@@ -720,6 +867,8 @@ def make_bot(engine, url: str) -> dict:
             comb["nom"] += f" | heures {a:g}h-{b:g}h"
         if q.get("profil") in ("perso", "finance"):
             return _profile_bot(engine, comb, root, q["profil"])
+    if q.get("profil") in ("perso", "finance"):  # bouton « Bot compte perso 5k »
+        return _profile_bot(engine, comb, root, q["profil"])
     prof = getattr(engine, "profile", None)
     if prof:  # compte perso / financé : le bot garde le même profil (pas d'objectif, intérêts composés...)
         comb.update(profil=prof["cle"], composer=bool(prof.get("compound")))
@@ -779,6 +928,9 @@ def _profile_bot(engine, comb, root, name: str) -> dict:
 
 def _build_bot(engine, comb, root, capital, ftmo, risk) -> dict:
     from .pont import generate_strategy_bot, install_in_mt5
+    off = (getattr(engine, "real_acc", None) or {}).get("decalage_pc")
+    if off is not None:
+        comb = {**comb, "decalage_pc": off}
     out = generate_strategy_bot(comb, root, capital, ftmo, risk)
     ok, inst = install_in_mt5(out / "LaboBot.mq5", engine.mt5, f"LaboBot_{out.name}.mq5")
     try:
@@ -921,6 +1073,7 @@ const SECTIONS=[["home","🏠 Accueil",[["home","Aujourd'hui"]]],
  ["live","📡 En direct",[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["ftmo","Challenges FTMO"],["log","Journal"]]],
  ["rank","🏆 Classements",[["gen","Général (backtest × paper)"],["bt2","Backtest 2 ans"],["top","TOP 10 du direct"],["strat","Toutes les stratégies"],["mk","Meilleur par marché"],["an","Meilleurs setups"]]],
  ["ana","🔬 Analyse",[["hours","Heures & planning"],["at","Analyse des trades"],["rr","Meilleur R:R"]]],
+ ["combos","🧩 Combinaisons",[["combos","Toutes les combinaisons"]]],
  ["bots","🤖 Mes bots",[["bots","Mes bots"]]]];
 const TABS=SECTIONS.flatMap(x=>x[2]);
 const secOf=k=>(SECTIONS.find(x=>x[2].some(t=>t[0]===k))||SECTIONS[0])[0];
@@ -963,7 +1116,7 @@ function viewTop(){if(!T10){loadTop(false);return `<div class="empty">Chargement
  const rows=top.map(c=>{const r=c.resultat||{};
   const comps=c.composants.map(x=>`<div title="${esc(x.strategie)}">${miniBot(x.strategie_id)}${hTag(x.horaire)} ${esc(x.symbole)} ${esc(x.timeframe)} · ${esc(String(x.strategie).slice(0,55))} <span class="mut">(${fmt(x.risk_pct,1)} %/trade, ${x.trades_direct} trades, ${fmt(x.r_total_direct,1,true)}R)</span></div>`).join("");
   return `<tr><td class="n"><b>${c.rang}</b></td><td>${c.conforme?'<span class="tag ok">conforme</span>':'<span class="tag ko">trop risquée</span>'}</td>
-   <td><button class="btbtn" data-bt="${c.rang}" title="Rejouer cette combinaison sur tout l'historique MT5">Backtest</button> <button class="botbtn" data-top="${c.rang}">Créer le bot MT5</button></td>
+   <td><button class="btbtn" data-bt="${c.rang}" title="Rejouer cette combinaison sur tout l'historique MT5">Backtest</button> <button class="botbtn" data-top="${c.rang}">Bot challenge FTMO</button> <button class="botbtn" data-top="${c.rang}" data-profil="perso">Bot compte perso 5k</button></td>
    <td style="font-size:12px;line-height:1.5">${comps}</td>
    <td class="n">${r.ftmo_pass==null?"—":fmt(r.ftmo_pass,0)+" %"}</td><td class="n">${r.ftmo_echec_p1==null?"—":fmt(r.ftmo_echec_p1,1)+" %"}</td>
    <td class="n">${r.jours_attendus==null?"—":"~"+fmt(r.jours_attendus,0)+" j"}</td>
@@ -1109,7 +1262,7 @@ function viewTop2(mode){mode=mode||"bt2";if(!T2){loadTop2(false);return `<div cl
  const comps=e=>e.composants.map(x=>`<div title="${esc(x.strategie)}">${miniBot(x.strategie_id)}${esc(x.symbole)} ${esc(x.timeframe)} ${hTag(x.horaire)} · ${esc(String(x.strategie).split(" | heures")[0].slice(0,50))}
   <span class="mut">(${fmt(x.risk_pct,1)} %/trade · 2 ans : ${fmt(x.trades_bt,0)} trades ${fmt(x.r_total_bt,1,true)}R · paper : ${x.direct_trades?fmt(x.direct_trades,0)+" trades "+fmt(x.direct_r,1,true)+"R":"pas encore"})</span>${x.en_pause?' <span class="tag ko">en pause</span>':""}</div>`).join("");
  if(mode==="gen"){h+=generalView(GN,comps)+crossCombView(CX,comps)+crossView(R.croise);return h}
- if(mode==="hours"){h+=planView(R.planning)+heuresView(R.heures||[]);return h}
+ if(mode==="hours"){h+=offNote()+planView(R.planning)+heuresView(R.heures||[]);return h}
  h+=`<h3 class="sec">TOP 10 des stratégies COMBINÉES (backtest 2 ans)</h3>`+(C.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Stratégies de la combinaison (bot de chacune)</th><th>Origine</th>${BT2H}${CPTH}${PAPH}</tr></thead><tbody>`+
   C.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}</td><td><button class="v2btn btbtn" data-k="c" data-r="${e.rang}">Fiche complète</button> <button class="botbtn" data-bt2="${e.rang}">Bot MT5 combinée</button></td>
    <td style="font-size:12px;line-height:1.5">${comps(e)}</td><td>${esc(e.origine||"")}</td>${bt2Cells(e.backtest)}${compteCells(e.comptes)}${paperCells(e.direct)}${ratioCell(e.ratio)}</tr>`).join("")+`</tbody></table></div>`:`<p class="note">Pas de combinaison.</p>`);
@@ -1147,7 +1300,7 @@ function planView(P){if(!P)return "";const B=P.blocs||[],G=P.global||[];
  if(B.length)h+=`<div class="scroll" style="max-height:none"><table><thead><tr><th>N°</th><th>Bot</th><th>Heures</th><th>Marché</th><th>TF</th><th>Stratégie</th><th>Choix : trades</th><th>Choix : R moyen</th><th>Contrôle : trades</th><th>Contrôle : R moyen</th><th>Confirmée</th></tr></thead><tbody>`+
   B.map((b,i)=>`<tr><td><span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${PLANC[i%8]};vertical-align:middle"></span> <b>${i+1}</b></td>
    <td><button class="botbtn mini" data-id="${esc(b.strategie_id)}" title="Bot de cette stratégie dans ces heures">Bot FTMO</button><button class="botbtn mini" data-id="${esc(b.strategie_id)}" data-profil="perso">Bot 5k</button></td>
-   <td><b>${esc(b.nom)}</b></td><td>${esc(b.symbole)}</td><td>${esc(b.timeframe)}</td><td class="s" title="${esc(b.strategie)}">${esc(b.strategie)}</td>
+   <td><b>${hLocal(b.nom)}</b></td><td>${esc(b.symbole)}</td><td>${esc(b.timeframe)}</td><td class="s" title="${esc(b.strategie)}">${esc(b.strategie)}</td>
    <td class="n">${b.trades_choix}</td><td class="n">${b.r_moyen_choix==null?"—":rr(b.r_moyen_choix)}</td><td class="n">${b.trades_controle}</td><td class="n">${b.r_moyen_controle==null?"—":rr(b.r_moyen_controle)}</td>
    <td>${b.ok?'<span class="tag ok">oui</span>':'<span class="tag ko">non</span>'}</td></tr>`).join("")+`</tbody></table></div>`;
  else h+=`<p class="note">Pas encore de planning : il faut des stratégies avec une plage horaire nettement meilleure (au moins 40 trades).</p>`;
@@ -1184,7 +1337,12 @@ function ficheExtra(e,R){const H=R.heures||[],comps=e.composants||[];
    ${x?strip({...x,debut:c.horaire?c.horaire.debut:null,fin:c.horaire?c.horaire.fin:null}):'<span class="mut" style="font-size:12px">profil heure par heure : moins de 40 trades</span>'}
    <button class="botbtn mini" onclick="atId='${esc(base)}';AT=null;go('at')">Analyse de ses trades</button>${miniBot(c.strategie_id)}</div>`}).join("");
  return `<div class="livebox"><b>Chaque stratégie, heure par heure</b> <span class="mut" style="font-size:12px">(vert = bonnes heures, rouge = mauvaises, encadré = ses heures)</span>${rows}</div>`}
-function hTag(hz){return hz&&hz.debut!=null?`<span class="tag" title="Entrées seulement dans cette plage (heure du serveur MT5)">🕘 ${fmt(hz.debut,0)}h-${fmt(hz.fin,0)}h</span>`:""}
+function srvOff(){return D&&D.decalage_serveur_pc!=null?D.decalage_serveur_pc:null}
+function locH(a,b){const o=srvOff();if(o==null||a==null)return "";const m=x=>((+x-o)%24+24)%24;return `${fmt(m(a),0)}h-${fmt(m(b),0)}h`}
+function hLocal(t){const o=srvOff();if(o==null||!t)return esc(t||"");return esc(t).replace(/(\d+(?:\.\d+)?)h-(\d+(?:\.\d+)?)h/,(x,a,b)=>`${x} <span class="mut">(${locH(a,b)} chez vous)</span>`)}
+function offNote(){const o=srvOff();return o==null?`<p class="note">🕘 Toutes les heures sont en <b>heure du serveur MT5</b> (celle des bougies, celle que le bot et le paper utilisent : rien à convertir). Le décalage avec votre PC s'affichera dès qu'un prix arrive (marché ouvert).</p>`:
+ `<p class="note">🕘 Toutes les heures sont en <b>heure du serveur MT5</b> (celle des bougies, celle que le bot et le paper utilisent : rien à convertir). Le serveur a <b>${o} h ${o>=0?"d'avance":"de retard"}</b> sur votre PC : 8h serveur = ${fmt(((8-o)%24+24)%24,0)}h chez vous. L'équivalent chez vous est affiché entre parenthèses.</p>`}
+function hTag(hz){return hz&&hz.debut!=null?`<span class="tag" title="Entrées seulement dans cette plage (heure du serveur MT5${srvOff()!=null?" = "+locH(hz.debut,hz.fin)+" à l'heure de votre PC":""})">🕘 ${fmt(hz.debut,0)}h-${fmt(hz.fin,0)}h${srvOff()!=null?` <span class="mut">(${locH(hz.debut,hz.fin)} chez vous)</span>`:""}</span>`:""}
 const CPTH=`<th title="Compte financé FTMO 100 000 $, 1 %/trade : gain moyen par jour de bourse sur 1 an (médiane)">Financé 100k $/jour</th><th title="Compte perso 5 000 $, 2 %/trade, intérêts composés : gain moyen par jour sur 1 an (médiane)">Perso 5k $/jour</th>`;
 function compteCells(K){const f=(K||{}).finance,p=(K||{}).perso;const c=x=>x?`<td class="n"><span class="${cls(x.gain_jour_usd)}">${fmt(x.gain_jour_usd,0,true)} $</span> <span class="mut">(${fmt(x.rendement_an_median,0,true)} %/an)</span></td>`:`<td class="n mut">—</td>`;return c(f)+c(p)}
 function compteBox(K){if(!K||(!K.finance&&!K.perso))return "";const one=(x,t)=>x?`<div class="tile"><div class="mut">${t}</div>
@@ -1218,7 +1376,7 @@ function heuresView(L){let h=`<h3 class="sec">Meilleures heures de chaque strat�
   <th>Trades dans la plage</th><th>R total plage / 24 h</th><th>Contrôle : plage / 24 h</th><th>Paper : dans la plage</th><th>Paper : hors plage</th></tr></thead><tbody>`+
   L.map(x=>{const pp=x.paper_plage,ph=x.paper_hors,pc=v=>v&&v.trades?`${rr(v.r_moyen)} <span class="mut">(${v.trades})</span>`:'<span class="mut">—</span>';
    return `<tr><td>${x.ok?`<button class="botbtn mini" data-id="${esc(x.strategie_id)}@${x.debut}-${x.fin}" title="Bot de cette stratégie dans SES heures">Bot ${esc(x.nom)}</button>`:miniBot(x.strategie_id)}</td>
-   <td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)}">${esc(x.strategie)}</td><td>${strip(x)}</td><td><b>${esc(x.nom)}</b></td>
+   <td>${esc(x.symbole)}</td><td>${esc(x.timeframe)}</td><td class="s" title="${esc(x.strategie)}">${esc(x.strategie)}</td><td>${strip(x)}</td><td><b>${hLocal(x.nom)}</b></td>
    <td>${x.ok===true?'<span class="tag ok">confirmée</span>':x.ok===false?'<span class="tag ko">pas confirmée</span>':'<span class="mut">aucune plage nettement meilleure</span>'}</td><td class="n">${x.r_moyen_plage==null?"—":rr(x.r_moyen_plage)}</td><td class="n">${rr(x.r_moyen_24h)}</td><td class="n">${x.r_moyen_hors==null?"—":rr(x.r_moyen_hors)}</td>
    <td class="n">${x.trades_plage??"—"} / ${x.trades_total}</td><td class="n">${rTxt(x.r_total_plage)} / ${rTxt(x.r_total_24h)}</td>
    <td class="n">${x.r_moyen_controle_plage==null?"—":rr(x.r_moyen_controle_plage)} / ${x.r_moyen_controle_24h==null?"—":rr(x.r_moyen_controle_24h)}</td><td class="n">${pc(pp)}</td><td class="n">${pc(ph)}</td></tr>`}).join("")+`</tbody></table></div>`}
@@ -1313,7 +1471,7 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   const att=c[3]?' class="n"':long?` class="s" title="${esc(r[c[1]])}"`:"";
   return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
- e.stopPropagation();b.disabled=true;const q=b.dataset.bt2x?`bt2x=${encodeURIComponent(b.dataset.bt2x)}`:b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;const qq=q+(b.dataset.profil?`&profil=${b.dataset.profil}`:"");
+ e.stopPropagation();b.disabled=true;const q=b.dataset.bt2x?`bt2x=${encodeURIComponent(b.dataset.bt2x)}`:b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.fichier?`fichier=${encodeURIComponent(b.dataset.fichier)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;const qq=q+(b.dataset.profil?`&profil=${b.dataset.profil}`:"");
  try{const r=await (await fetch("/api/bot?"+qq,{cache:"no-store"})).json();showModal(r.ok===false?"Bot non créé":"✅ Bot créé et installé dans MT5",r.message,r.dossier)}catch(err){showModal("Erreur",String(err))}b.disabled=false});
 function showModal(title,text,dossier){const bg=document.createElement("div");bg.className="modal-bg";
  bg.innerHTML=`<div class="modal" role="dialog" aria-modal="true"><h3 style="margin:0">${esc(title)}</h3><pre>${esc(text||"")}</pre>
@@ -1410,8 +1568,8 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();if(D.profil){const t="Plateforme — "+D.profil.nom+" ("+fmt(D.profil.capital,0)+" $)";const h=document.querySelector("h1");if(h.textContent!==t){h.textContent=t;document.title=t}}document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- drawTabs();document.querySelector(".filters").style.display=["home","bots","gen","bt2","hours"].includes(tab)?"none":"";
- const v={home:viewHome,bots:viewBots,gen:()=>viewTop2("gen"),hours:()=>viewTop2("hours"),comb:viewComb,top:viewTop,bt2:()=>viewTop2("bt2"),at:viewAT,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ drawTabs();document.querySelector(".filters").style.display=["home","bots","combos","gen","bt2","hours"].includes(tab)?"none":"";
+ const v={home:viewHome,bots:viewBots,combos:viewCombos,gen:()=>viewTop2("gen"),hours:()=>viewTop2("hours"),comb:viewComb,top:viewTop,bt2:()=>viewTop2("bt2"),at:viewAT,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;
@@ -1442,6 +1600,8 @@ function verdict(e){const d=e.direct||{},paperOk=(d.rendement_pct||0)>0,bt=(e.ba
  if(d.trades&&!paperOk||(!btOk&&!paperOk))return '<span class="badge" style="color:var(--neg)" title="Perd en paper trading ou trop risquée en backtest">🔴 prudence</span>';
  return `<span class="badge" style="color:var(--warn)" title="${d.trades?"Bonne d'un côté seulement":"Pas encore de trade en paper"}">🟡 à surveiller</span>`}
 // ---------------------------------------------------------------- ACCUEIL « Aujourd'hui »
+document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".startbtn");if(!b)return;e.stopPropagation();b.disabled=true;
+ try{const r=await (await fetch("/api/demarrer?dossier="+encodeURIComponent(b.dataset.start),{method:"POST",headers:{"X-Labo":"1"}})).json();showModal(r.ok?"▶ Bot démarré":"Bot",r.message);setTimeout(()=>loadBots(true),5000)}catch(err){showModal("Erreur",String(err))}b.disabled=false});
 let AUTO=null;async function loadAuto(){try{AUTO=await (await fetch("/api/auto",{cache:"no-store"})).json()}catch(e){AUTO={}}}
 function recalcAll(){loadTop(true);loadTop2(true);setTimeout(render,500)}
 function viewHome(){if(!T2)loadTop2(false);if(!T10)loadTop(false);if(!AUTO)loadAuto();
@@ -1458,7 +1618,7 @@ function viewHome(){if(!T2)loadTop2(false);if(!T10)loadTop(false);if(!AUTO)loadA
    <p style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 0">${botPair(n1.k,n1.rang_source,n1)} <button class="botbtn" onclick="go('gen')">Voir le classement</button></p>`}
  else if(t10.length){const c=t10[0];h+=`<p class="mut" style="margin:0 0 6px">Pas encore de classement général : voici le n°1 du TOP 10 du direct.</p>
    ${c.composants.map(x=>`<div style="font-size:13px">${esc(x.symbole)} ${esc(x.timeframe)} ${hTag(x.horaire)} · <span class="mut">${esc(String(x.strategie).slice(0,60))}</span></div>`).join("")}
-   <p><button class="botbtn" data-top="${c.rang}">Créer le bot MT5</button> <button class="botbtn" onclick="go('top')">Voir le TOP 10</button></p>`}
+   <p><button class="botbtn" data-top="${c.rang}">Bot challenge FTMO</button> <button class="botbtn" data-top="${c.rang}" data-profil="perso">Bot compte perso 5k</button> <button class="botbtn" onclick="go('top')">Voir le TOP 10</button></p>`}
  else h+=`<p class="note">Pas encore de classement. Cliquez sur « Tout recalculer » (ou attendez le calcul automatique de la nuit).</p>`;
  h+=`</div>`;
  // 2. mon challenge
@@ -1495,10 +1655,47 @@ function viewBots(){loadBots(false);if(!BOTS)return `<div class="empty">Chargeme
  return h+`<div class="homegrid">`+L.map(b=>{const p=b.paper;return `<div class="card" style="${b.etat==="actif"?"border-color:var(--good)":""}">
   <h3>${b.etat==="actif"?"🟢":b.etat==="arrêté"?"⚪":"⚫"} ${esc(b.nom)}</h3>
   <p class="mut" style="margin:0 0 6px">${esc(b.profil)} · créé le ${esc(b.cree_le)} · ${esc(b.etat)}${b.maj?" (dernière activité "+esc(b.maj)+")":""}</p>
-  ${b.composants.map(c=>`<div style="font-size:13px">${esc(c.symbole)} ${esc(c.timeframe)} · <span class="tag">🕘 ${esc(c.horaire)}</span> · ${fmt(c.risk_pct,1)} %/trade <span class="mut">${esc(String(c.strategie).split(" | heures")[0].slice(0,50))}</span></div>`).join("")}
+  ${b.composants.map(c=>`<div style="font-size:13px">${esc(c.symbole)} ${esc(c.timeframe)} · <span class="tag">🕘 ${hLocal(c.horaire)}</span> · ${fmt(c.risk_pct,1)} %/trade <span class="mut">${esc(String(c.strategie).split(" | heures")[0].slice(0,50))}</span></div>`).join("")}
   ${p?`<div class="tiles" style="margin-top:8px"><div class="tile"><div class="mut">Paper : résultat</div><div class="v ${cls(p.profit_pct)}">${fmt(p.profit_pct,2,true)} %</div><div class="mut" style="font-size:12px">${fmt(p.trades,0)} trades · ${p.jours} jours · ${esc(p.statut||"")}</div></div></div>`:'<p class="note">Pas encore lancé : double-cliquez LANCER_BOT.bat dans son dossier.</p>'}
   ${b.diag?`<div class="note" style="margin-top:8px"><b>MT5 :</b> ${fmt(b.diag.signaux_24h,0)} signal(s) envoyé(s) en 24 h · ${fmt(b.diag.executes,0)} ordre(s) passé(s) · ${fmt(b.diag.refuses,0)} refusé(s) · bot ${b.diag.bot_vivant?"🟢 branché":"🔴 pas de signe de vie"}<br>${esc(b.diag.conseil)}${(b.diag.derniers_refus||[]).length?"<br><span class=mut>Derniers refus : "+b.diag.derniers_refus.map(r=>esc(r.t+" "+r.symbole+" : "+r.raison)).join(" · ")+"</span>":""}</div>`:""}
-  <p style="margin:6px 0 0"><button class="botbtn" data-open="${esc(b.dossier)}">Ouvrir le dossier</button> <span class="mut" style="font-size:12px">${esc(b.dossier)}</span></p></div>`}).join("")+`</div>`}
+  <p style="margin:6px 0 0">${b.etat==="actif"?'<span class="tag ok">en marche</span>':`<button class="cmpbtn startbtn" data-start="${esc(b.dossier)}" style="font-size:13px;padding:5px 12px">▶ Démarrer</button>`} <button class="botbtn" data-open="${esc(b.dossier)}">Ouvrir le dossier</button> <span class="mut" style="font-size:12px">${esc(b.dossier)}</span></p></div>`}).join("")+`</div>`}
+let CB=null,cbBusy=false,CBCAT=localStorageGet("cbcat")||"tout";
+async function loadCombos(force){if(cbBusy||(CB&&!force))return;cbBusy=true;
+ try{CB=await (await fetch("/api/combinaisons",{cache:"no-store"})).json()}catch(e){CB={lignes:[],message:"Liste impossible : "+e}}cbBusy=false;render()}
+const CBCATS=[["tout","Toutes"],["chef","Chef des combinaisons (direct)"],["bt2","Chef (backtest 2 ans)"],["partout","Bonnes partout"],["perso","Compte perso 5k"],
+ ["reussi","FTMO déjà réussi"],["challenge","Pour le challenge FTMO"],["directeur","Directeur"],["direct","En direct"]];
+function cbPick(L,c){if(c==="tout")return L;
+ if(c==="perso")return L.filter(r=>r.source==="perso"||r.profil==="perso"||r.perso_jour!=null).sort((a,b)=>(b.source==="perso")-(a.source==="perso")||(b.perso_jour??-1e9)-(a.perso_jour??-1e9));
+ if(c==="reussi")return L.filter(r=>r.reussis>0||r.ftmo_reussi_direct).sort((a,b)=>(b.ftmo_reussi_direct-a.ftmo_reussi_direct)||b.reussis-a.reussis||(a.rates-b.rates));
+ if(c==="challenge")return L.filter(r=>r.conforme&&r.reussite!=null&&r.profil!=="perso").sort((a,b)=>(a.echecs??99)-(b.echecs??99)||(a.jours??999)-(b.jours??999)||(b.reussite??0)-(a.reussite??0));
+ return L.filter(r=>r.source===c)}
+function cbRef(r,perso){const k=Object.keys(r.ref)[0];return `data-${k}="${esc(r.ref[k])}"`+(perso?` data-profil="perso"`:"")}
+function viewCombos(){loadCombos(false);if(!CB)return `<div class="empty">Chargement de toutes les combinaisons…</div>`;
+ const L=CB.lignes||[],N=CB.nombre||{};
+ const chips=CBCATS.map(([k,t])=>`<button class="${k===CBCAT?"cmpbtn":"botbtn"}" style="${k===CBCAT?"font-size:13px;padding:5px 12px":""}" onclick="CBCAT='${k}';localStorageSet('cbcat','${k}');render()">${t} (${k==="tout"?L.length:N[k]||0})</button>`).join(" ");
+ const why={tout:"Toutes les combinaisons trouvées par la plateforme, chacune avec ses deux bots.",chef:"Le TOP 10 du Chef des combinaisons, calculé sur les trades EN DIRECT (paper trading).",
+  bt2:"Le TOP 10 du Chef des combinaisons sur le backtest des 2 dernières années.",partout:"Combinées faites seulement de stratégies bonnes en backtest ET en paper : les plus solides.",
+  perso:"Classées pour le compte perso 5 000 $ (2 %/trade, 5 %/jour) : le plus de $ par jour. Prenez le bouton « Bot compte perso 5k ».",
+  reussi:"Celles qui ont DÉJÀ réussi au moins un challenge FTMO (backtest sur les vrais jours, ou en paper trading). Le passé ne garantit rien, mais c'est un bon signe.",
+  challenge:"Celles qui respectent la limite d'échecs du challenge, classées : le moins d'échecs, puis le moins de jours pour réussir.",
+  directeur:"Les combinées du Directeur (option K / calcul de la nuit), dont celles des comptes perso et financé.",direct:"La combinée qui tourne en ce moment dans ce paper trading."}[CBCAT];
+ const R=cbPick(L,CBCAT);
+ let h=`<p class="note">${esc(CB.message||"")} · <a href="#" onclick="loadCombos(true);return false">actualiser</a></p><p>${chips}</p><p class="note"><b>${esc((CBCATS.find(x=>x[0]===CBCAT)||[])[1]||"")} :</b> ${why}</p>`+offNote()+
+  `<p class="note"><b>Mettre un bot sur MT5, en 3 clics :</b> 1) bouton « Bot » ci-dessous (il s'installe et se compile tout seul dans MT5) ; 2) onglet « Mes bots » → « ▶ Démarrer » ;
+  3) dans MT5, glissez-le sur UN graphique (n'importe lequel) et activez « Algo Trading ». Rien à régler : il prend tout seul la taille du compte.
+  <b>Un seul bot (une seule combinaison) par compte</b> : deux bots sur le même compte doubleraient le risque et briseraient la limite de perte du jour.</p>`;
+ if(!R.length)return h+`<div class="empty">Aucune combinaison dans cette catégorie pour l'instant.</div>`;
+ const pc=(v,d)=>v==null?"—":fmt(v,d)+" %";
+ return h+`<div class="scroll"><table><thead><tr><th>#</th><th>Bots</th><th>Combinaison</th><th>Source</th><th>Stratégies (heures)</th><th>Réussite challenge</th><th>Échecs</th><th>Réussi en</th>
+  <th>Challenges réussis / ratés</th><th>Gain</th><th>Pire jour</th><th>Financé 100k $/jour</th><th>Perso 5k $/jour</th><th>Trades paper</th><th>Gain paper</th></tr></thead><tbody>`+
+  R.map((r,i)=>`<tr><td class="n"><b>${i+1}</b></td><td style="white-space:nowrap"><button class="botbtn" ${cbRef(r,false)}>Bot challenge FTMO</button> <button class="botbtn" ${cbRef(r,true)}>Bot compte perso 5k</button></td>
+   <td>${esc(r.nom)} ${r.ftmo_reussi_direct?'<span class="tag ok">challenge réussi en direct</span>':r.reussis>0?'<span class="tag ok">FTMO déjà réussi</span>':""}${r.conforme===false?' <span class="tag ko">trop risquée</span>':""}</td>
+   <td>${esc(r.source_nom)}</td>
+   <td style="font-size:12px;line-height:1.5">${r.composants.map(c=>`<div>${esc(c.symbole)} ${esc(c.timeframe)} ${hTag(c.horaire)||'<span class="mut">24 h/24</span>'} · ${fmt(c.risk_pct,1)} %/trade <span class="mut">${esc(String(c.strategie||"").split(" | heures")[0].slice(0,45))}</span></div>`).join("")}</td>
+   <td class="n">${pc(r.reussite,0)}</td><td class="n">${pc(r.echecs,1)}</td><td class="n">${r.jours==null?"—":"~"+fmt(r.jours,0)+" j"}</td><td class="n">${r.reussis} / ${r.rates}</td>
+   <td class="n"><span class="${cls(r.gain_pct)}">${r.gain_pct==null?"—":fmt(r.gain_pct,1,true)+" %"}</span></td><td class="n">${pc(r.pire_jour,2)}</td>
+   <td class="n">${r.finance_jour==null?"—":fmt(r.finance_jour,0,true)+" $"}</td><td class="n">${r.perso_jour==null?"—":fmt(r.perso_jour,0,true)+" $"}</td>
+   <td class="n">${r.paper_trades==null?"—":fmt(r.paper_trades,0)}</td><td class="n"><span class="${cls(r.paper_gain)}">${r.paper_gain==null?"—":fmt(r.paper_gain,2,true)+" %"}</span></td></tr>`).join("")+`</tbody></table></div>`}
 function fillSelect(id,vals){const el=document.getElementById(id),cur=el.value,first=el.options[0].outerHTML;
  el.innerHTML=first+[...vals].sort().map(v=>`<option${v===cur?" selected":""}>${esc(v)}</option>`).join("")}
 async function poll(){try{const r=await fetch("/api/etat",{cache:"no-store"});D=await r.json();
