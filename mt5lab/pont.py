@@ -114,7 +114,8 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
     risk_max = max([float(c["risk_pct"]) for c in comb.get("composants", [])] or [1.0])
     template = Path(template or Path(__file__).resolve().parent.parent / "mql5" / "LaboBot.mq5")
     src = template.read_text(encoding="utf-8-sig")
-    values = {"InpCapital": f"{capital:g}", "InpRisqueMax": f"{risk_max:g}",
+    values = {"InpCapital": "0",  # 0 = auto : le bot prend le solde du compte au 1er lancement
+               "InpRisqueMax": f"{risk_max:g}",
               "InpPerteJourMax": f"{max(0.5, daily - 0.2):g}", "InpPerteTotaleMax": f"{max(1.0, total - 0.5):g}",
               "InpObjectif": f"{target:g}", "InpMagic": str(int(magic)), "InpFichier": f'"{signal_file}"',
               "InpMeilleurJour": f"{getattr(ftmo, 'best_day_pct', 50.0):g}",
@@ -129,7 +130,7 @@ def write_bot(comb: dict, out: Path, capital: float = 100_000.0, ftmo=None, sign
               else f"//| Bot d'UNE stratégie (créé le {comb.get('cree_le', '')}) : signaux envoyés par LANCER_BOT.bat"),
              f"//| Règles : perte possible max {rules.get('day_budget')} %/jour, perte totale max "
              f"{rules.get('total_budget')} %, positions max {rules.get('max_open') or 'illimité'}",
-             f"//| Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure locale)",
+             f"//| Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure du serveur MT5)",
              "//| Composants :"]
     for i, c in enumerate(comb.get("composants", []), 1):
         h = (c.get("horaire") or {}).get("nom") or "24h/24"
@@ -150,7 +151,7 @@ le code qui a été testé. Elle écrit chaque décision dans le dossier commun 
 Le bot LaboBot, posé sur un graphique, lit ces décisions chaque seconde et passe les VRAIS ordres sur le compte.
 => Le PC (ou un VPS Windows) doit rester allumé avec MT5 ET l'option C du menu en marche.
 
-Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure locale ; c'est la plateforme Python
+Horaire des entrées : {(comb.get('horaire') or {}).get('nom', '24h/24')} (heure du serveur MT5 ; c'est la plateforme Python
 qui applique l'horaire, le bot garde ses SL/TP en dehors).
 Heures de CHAQUE stratégie (entrées seulement dans sa plage, heure du serveur MT5 ; ses positions continuent après) :
 {chr(10).join(f"  - {c['symbole']} {c['timeframe']} : {(c.get('horaire') or {}).get('nom') or '24h/24'}" for c in comb.get('composants', []))}
@@ -170,7 +171,10 @@ Démarrer
 1. {launcher or "Menu lancer.bat : option C (paper trading de la stratégie combinée)"}. Laissez la fenêtre ouverte.
 2. Dans MT5, ouvrez UN graphique (n'importe lequel, par ex. EURUSD M1) et glissez-y LaboBot.
    Onglet « Dépendances » : cochez « Autoriser le trading algorithmique ». Onglet « Paramètres » : vérifiez :
-     InpCapital        = {values['InpCapital']}   (taille du compte / challenge)
+     InpCapital        = 0   (AUTO : le bot prend le solde du compte au 1er lancement ; sinon mettez la VRAIE
+                         taille du compte, ex. 100000 ou 5000. Un capital faux = 0 trade : le bot croit à une
+                         grosse perte ou à l'objectif déjà atteint, il refuse maintenant de démarrer dans ce cas)
+     InpReinitialiser  = false (true une fois = efface un ancien arrêt « perte totale » et reprend le solde actuel)
      InpRisqueMax      = {values['InpRisqueMax']} % par trade maximum
      InpPerteJourMax   = {values['InpPerteJourMax']} % : au-delà, tout est fermé jusqu'au lendemain
      InpPerteTotaleMax = {values['InpPerteTotaleMax']} % : au-delà, tout est fermé et le bot s'arrête
@@ -247,6 +251,73 @@ def generate_strategy_bot(comb: dict, root: str | Path, capital: float = 100_000
     write_bot(comb, out, capital, ftmo, signal_file, 260000 + int(key) % 9999,
               launcher=f"Double-cliquez LANCER_BOT.bat dans ce dossier (paper trading de CETTE stratégie qui envoie "
                         f"ses signaux au bot ; plateforme http://localhost:{port})")
+    return out
+
+
+def bot_diagnostic(bot_dir: str | Path, common: str | Path | None = None, now: float | None = None) -> dict:
+    """POURQUOI MON BOT NE TRADE PAS ? Lit le fichier de signaux (écrit par LANCER_BOT.bat) et le journal d'exécution
+    du bot (exec_..., écrit par LaboBot dans le dossier commun de MT5) : signaux envoyés, ordres passés, refus et
+    leurs raisons, signe de vie du bot, et un conseil en clair."""
+    import re
+    bot_dir = Path(bot_dir)
+    now = time.time() if now is None else now
+    name = SIGNAL_FILE
+    try:
+        m = re.search(r'input\s+string\s+InpFichier\s*=\s*"([^"]+)"', (bot_dir / "LaboBot.mq5").read_text(encoding="utf-8-sig"))
+        name = m.group(1) if m else name
+    except OSError:
+        pass
+    common = Path(common) if common else common_files_dir()
+    out = {"fichier_signaux": name, "signaux": 0, "signaux_24h": 0, "dernier_signal": None, "executes": 0,
+           "refuses": 0, "raisons": {}, "derniers_refus": [], "signe_de_vie": None}
+    try:
+        for x in (common / name).read_text(encoding="ascii", errors="ignore").splitlines():
+            f = x.split(";")
+            if len(f) > 3 and f[0].isdigit() and f[2] == "OPEN":
+                out["signaux"] += 1
+                out["signaux_24h"] += now - int(f[1]) < 86400
+                out["dernier_signal"] = max(out["dernier_signal"] or 0, int(f[1]))
+    except (OSError, ValueError):
+        pass
+    try:
+        for x in (common / ("exec_" + name)).read_text(encoding="cp1252", errors="ignore").splitlines():
+            f = x.split(";")
+            if len(f) < 8 or not f[0].isdigit():
+                continue
+            if f[1] == "PING":
+                out["signe_de_vie"] = int(f[0])
+            elif f[1] == "OPEN":
+                if f[6] == "1":
+                    out["executes"] += 1
+                else:
+                    out["refuses"] += 1
+                    why = f[7].strip() or "?"
+                    out["raisons"][why] = out["raisons"].get(why, 0) + 1
+                    out["derniers_refus"] = (out["derniers_refus"] + [{"t": time.strftime("%Y-%m-%d %H:%M", time.localtime(int(f[0]))),
+                                                                       "symbole": f[3], "raison": why}])[-5:]
+    except (OSError, ValueError):
+        pass
+    for k in ("dernier_signal", "signe_de_vie"):
+        if out[k]:
+            out[k + "_age_min"] = round((now - out[k]) / 60, 1)
+            out[k] = time.strftime("%Y-%m-%d %H:%M", time.localtime(out[k]))
+    alive = out.get("signe_de_vie_age_min") is not None and out["signe_de_vie_age_min"] < 5
+    if not out["signaux"]:
+        tip = ("Aucun signal envoyé pour l'instant : LANCER_BOT.bat doit tourner. S'il tourne, c'est qu'aucune "
+               "stratégie n'a eu de signal DANS SES HEURES (heure du serveur MT5) : des journées sans trade sont "
+               "normales, la moyenne ne dit pas qu'il y en a tous les jours.")
+    elif not alive:
+        tip = ("Des signaux sont envoyés mais le bot ne donne pas signe de vie : posez LaboBot sur UN graphique "
+               "(n'importe lequel) et activez le bouton « Algo Trading » (vert).")
+    elif out["refuses"] and not out["executes"]:
+        top = max(out["raisons"], key=out["raisons"].get)
+        tip = f"Le bot reçoit les signaux mais les refuse : « {top} »."
+        if "garde-fou" in top or "objectif" in top:
+            tip += (" Souvent un capital qui ne correspond pas au compte : recompilez le bot (InpCapital = 0 = "
+                    "auto) et mettez InpReinitialiser = true une fois.")
+    else:
+        tip = "Le bot reçoit les signaux et passe les ordres."
+    out.update(bot_vivant=alive, conseil=tip)
     return out
 
 

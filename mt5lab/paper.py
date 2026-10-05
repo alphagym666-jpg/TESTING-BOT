@@ -418,6 +418,7 @@ class PaperEngine:
         self.events: deque = deque(maxlen=400)
         self.started = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._load_state()
+        self._align_capital()
         _upgrade_csv(self.out / "trades.csv", TRADE_FIELDS)
         self._load_history()  # tous les trades déjà pris restent visibles après un redémarrage
         try:  # définition de chaque stratégie suivie : sert à l'analyse du direct et aux bots
@@ -457,6 +458,33 @@ class PaperEngine:
         self.real_acc.update(st.get("real_acc", {}))
         n_open = sum(s.position is not None for s in self.slots.values())
         print(f"[paper] reprise de l'état sauvegardé ({n_open} positions fictives ouvertes)")
+
+    def _align_capital(self):
+        """Avec le bot : le capital de la stratégie combinée = la VRAIE taille du compte MT5 (solde au 1er lancement).
+        Sinon un compte de 10 000 suivi avec un capital de 100 000 serait vu à -90 % (tous les trades refusés « perte
+        totale »), et un compte plus gros que le capital serait vu « objectif atteint » (plus aucun trade)."""
+        if self.bridge is None or not self.groups:
+            return
+        try:
+            bal = float(self.mt5.account_info().balance)
+        except Exception:
+            return
+        if bal <= 0:
+            return
+        cap = self.real_acc.get("capital")
+        if not cap or not 0.5 <= bal / float(cap) <= 2.0:  # 1er lancement, ou autre compte (taille très différente)
+            cap = self.real_acc["capital"] = bal
+            self.real_acc.update(day="", day_start=None, best_day=0.0, eod_high=0.0)
+            self._dirty = True
+        cap = float(cap)
+        for g in self.groups.values():
+            if g.capital > 0 and abs(g.capital - cap) / cap > 0.005:
+                f = cap / g.capital  # mêmes % qu'avant, exprimés sur la vraie taille du compte
+                for k in ("balance", "peak", "day_start", "eod_high", "best_day", "prev_day_pnl", "pnl", "day_realized"):
+                    setattr(g, k, getattr(g, k) * f)
+                self.alert(f"Capital de « {g.name} » ajusté à la taille du compte MT5 : {g.capital:,.0f} -> {cap:,.0f}")
+                g.capital = cap
+                self._dirty = True
 
     def _load_history(self, keep: int = 5000):
         """Recharge les derniers trades depuis trades.csv (l'historique complet n'est jamais effacé)."""

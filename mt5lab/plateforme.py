@@ -287,6 +287,11 @@ def bots_live(engine) -> dict:
                         row["reel"] = {"debut_jour": ra.get("day_start"), "meilleur_jour": ra.get("best_day")}
                 except (OSError, ValueError):
                     pass
+            try:
+                from .pont import bot_diagnostic, common_files_dir
+                row["diag"] = bot_diagnostic(d, common_files_dir(getattr(engine, "mt5", None)))
+            except Exception:
+                row["diag"] = None
             bots.append(row)
     bots.sort(key=lambda b: (b["etat"] != "actif", b.get("cree_le", "")), reverse=False)
     return {"bots": bots, "dossiers": [str(d) for d in _bot_dirs(engine)],
@@ -1492,6 +1497,7 @@ function viewBots(){loadBots(false);if(!BOTS)return `<div class="empty">Chargeme
   <p class="mut" style="margin:0 0 6px">${esc(b.profil)} · créé le ${esc(b.cree_le)} · ${esc(b.etat)}${b.maj?" (dernière activité "+esc(b.maj)+")":""}</p>
   ${b.composants.map(c=>`<div style="font-size:13px">${esc(c.symbole)} ${esc(c.timeframe)} · <span class="tag">🕘 ${esc(c.horaire)}</span> · ${fmt(c.risk_pct,1)} %/trade <span class="mut">${esc(String(c.strategie).split(" | heures")[0].slice(0,50))}</span></div>`).join("")}
   ${p?`<div class="tiles" style="margin-top:8px"><div class="tile"><div class="mut">Paper : résultat</div><div class="v ${cls(p.profit_pct)}">${fmt(p.profit_pct,2,true)} %</div><div class="mut" style="font-size:12px">${fmt(p.trades,0)} trades · ${p.jours} jours · ${esc(p.statut||"")}</div></div></div>`:'<p class="note">Pas encore lancé : double-cliquez LANCER_BOT.bat dans son dossier.</p>'}
+  ${b.diag?`<div class="note" style="margin-top:8px"><b>MT5 :</b> ${fmt(b.diag.signaux_24h,0)} signal(s) envoyé(s) en 24 h · ${fmt(b.diag.executes,0)} ordre(s) passé(s) · ${fmt(b.diag.refuses,0)} refusé(s) · bot ${b.diag.bot_vivant?"🟢 branché":"🔴 pas de signe de vie"}<br>${esc(b.diag.conseil)}${(b.diag.derniers_refus||[]).length?"<br><span class=mut>Derniers refus : "+b.diag.derniers_refus.map(r=>esc(r.t+" "+r.symbole+" : "+r.raison)).join(" · ")+"</span>":""}</div>`:""}
   <p style="margin:6px 0 0"><button class="botbtn" data-open="${esc(b.dossier)}">Ouvrir le dossier</button> <span class="mut" style="font-size:12px">${esc(b.dossier)}</span></p></div>`}).join("")+`</div>`}
 function fillSelect(id,vals){const el=document.getElementById(id),cur=el.value,first=el.options[0].outerHTML;
  el.innerHTML=first+[...vals].sort().map(v=>`<option${v===cur?" selected":""}>${esc(v)}</option>`).join("")}

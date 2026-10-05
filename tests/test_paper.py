@@ -395,7 +395,7 @@ def test_generate_bot_fills_inputs(tmp_path):
     (tmp_path / "strategie_combinee.json").write_text(_json.dumps(comb), encoding="utf-8")
     out = generate_bot(tmp_path, 200_000, FtmoRules())
     src = (out / "LaboBot.mq5").read_text(encoding="utf-8-sig")
-    assert "InpCapital         = 200000;" in src and "InpRisqueMax       = 0.75;" in src
+    assert "InpCapital         = 0;" in src and "InpRisqueMax       = 0.75;" in src
     assert "InpPerteJourMax    = 2.8;" in src and "XAUUSD H1" in src
     assert "OnTimer" in src and "ACCOUNT_TRADE_MODE_REAL" in src
     # signal opposé (CLOSE puis OPEN du même composant) : l'ancienne position est fermée AVANT d'ouvrir la nouvelle
@@ -535,14 +535,15 @@ def test_real_account_decides_target_and_losses(setup):
             "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
                      "direction": "both"}}
     conn = MT5Connector().connect(verbose=False)
+    real = {"balance": 100_000.0}
+    conn.mt5.account_info = lambda: SimpleNamespace(balance=real["balance"], equity=real["balance"], login=1,
+                                                    server="Fake-Demo", currency="USD", trade_mode=0)
     eng = PaperEngine(conn, [Slot("c", "EURUSD", "H1", cand, group="g", risk_pct=1.0)], tmp / "paper", 1.0,
                       groups={"g": {"capital": 100_000, "day_budget": 2.5, "total_budget": 10.0}},
                       bridge=SignalBridge(tmp / "common" / "labo_signaux.csv"))
     g = eng.groups["g"]
     g.balance = 112_000.0
-    real = {"balance": 109_000.0}
-    eng.mt5.account_info = lambda: SimpleNamespace(balance=real["balance"], equity=real["balance"], login=1,
-                                                   server="Fake-Demo", currency="USD", trade_mode=0)
+    real["balance"] = 109_000.0
     eng.real_account()
     assert not eng._target_reached(g)            # le vrai compte n'est qu'à +9 %
     real["balance"] = 110_500.0
@@ -552,6 +553,58 @@ def test_real_account_decides_target_and_losses(setup):
     mk.new_bar()
     eng.step()
     assert eng.slots["c"].position is None and g.skipped >= 1
+
+
+def test_capital_follows_real_account(setup):
+    """Avec le bot : un compte MT5 de 10 000 suivi avec un capital de 100 000 serait vu à -90 % (0 trade). Le capital
+    de la combinée prend la VRAIE taille du compte au 1er lancement (mêmes %), et il reste fixe ensuite."""
+    from types import SimpleNamespace
+    from mt5lab.data import MT5Connector
+    from mt5lab.paper import PaperEngine, Slot
+    from mt5lab.pont import SignalBridge
+    mk, tmp = setup
+    cand = {"signal": {"type": "single", "name": "_test_long", "params": {}}, "filter": "none",
+            "risk": {"sl_mode": "atr", "sl_value": 1.0, "rr": 2.0, "management": "none", "max_hold": 200,
+                     "direction": "both"}}
+    conn = MT5Connector().connect(verbose=False)
+    real = {"balance": 10_000.0}
+    conn.mt5.account_info = lambda: SimpleNamespace(balance=real["balance"], equity=real["balance"], login=1,
+                                                    server="Fake-Demo", currency="USD", trade_mode=0)
+    mk_eng = lambda: PaperEngine(conn, [Slot("c", "EURUSD", "H1", cand, group="g", risk_pct=1.0)], tmp / "paper",
+                                 1.0, groups={"g": {"capital": 100_000, "day_budget": 2.5, "total_budget": 10.0}},
+                                 bridge=SignalBridge(tmp / "common" / "labo_signaux.csv"))
+    eng = mk_eng()
+    g = eng.groups["g"]
+    assert g.capital == 10_000 and g.balance == 10_000 and eng.real_acc["capital"] == 10_000
+    eng.step()
+    mk.new_bar()
+    eng.step()
+    assert eng.slots["c"].position is not None          # avant : refusé « perte totale » (-90 % vu sur 100 000)
+    eng.save()
+    real["balance"] = 10_400.0                          # le compte a gagné : au redémarrage, le capital ne bouge pas
+    assert mk_eng().groups["g"].capital == 10_000
+    assert mk.sent == []
+
+
+def test_bot_diagnostic(tmp_path):
+    """Page « Mes bots » : signaux envoyés, ordres passés, refus et conseil en clair."""
+    import time as _t
+    from mt5lab.pont import bot_diagnostic
+    d, common = tmp_path / "bot", tmp_path / "common"
+    d.mkdir(); common.mkdir()
+    (d / "LaboBot.mq5").write_text('input string InpFichier         = "labo_signaux_123.csv";', encoding="utf-8")
+    now = int(_t.time())
+    assert "LANCER_BOT.bat" in bot_diagnostic(d, common, now)["conseil"]
+    (common / "labo_signaux_123.csv").write_text(
+        "seq;utc;action\n" + f"1;{now - 60};OPEN;k1;EURUSD;1;0.001;2;1;0;0\n2;{now - 30};CLOSE;k1;EURUSD;0;0;0;0;0;0\n",
+        encoding="ascii")
+    r = bot_diagnostic(d, common, now)
+    assert r["signaux_24h"] == 1 and not r["bot_vivant"] and "graphique" in r["conseil"]
+    (common / "exec_labo_signaux_123.csv").write_text(
+        f"{now - 50};OPEN;k1;EURUSD;0;0;0;garde-fou actif (perte du jour ou totale)\r\n{now - 20};PING;-;;0;0;1;\r\n",
+        encoding="cp1252")
+    r = bot_diagnostic(d, common, now)
+    assert r["bot_vivant"] and r["refuses"] == 1 and r["executes"] == 0 and "InpReinitialiser" in r["conseil"]
 
 
 def test_best_bot_per_market(setup):

@@ -27,7 +27,7 @@
 
 #include <Trade\Trade.mqh>
 
-input double InpCapital         = 100000; // capital de départ du compte (base des % de perte)
+input double InpCapital         = 0;      // capital de départ (base des % de perte). 0 = AUTO : solde du compte au 1er lancement
 input double InpRisqueMax       = 1.0;    // risque max par trade en % (plafond, même si le signal demande plus)
 input double InpPerteJourMax    = 2.8;    // perte du jour qui déclenche la fermeture de tout (%)
 input double InpPerteTotaleMax  = 9.5;    // perte totale qui arrête le bot (%)
@@ -40,6 +40,7 @@ input int    InpDelaiMaxSec     = 90;     // un signal d'ouverture plus vieux qu
 input long   InpMagic           = 260926; // numéro magique des ordres du bot
 input bool   InpAutoriserReel   = false;  // autoriser un compte RÉEL (laisser false pour un challenge / démo)
 input string InpFichier         = "labo_signaux.csv"; // fichier des signaux (dossier commun de MT5)
+input bool   InpReinitialiser   = false;  // true = efface l'arrêt « perte totale » et reprend le solde actuel comme capital (remettre à false après)
 
 CTrade   trade;
 long     g_last_seq = 0;
@@ -48,6 +49,8 @@ datetime g_day = 0;
 double   g_day_start = 0;
 string   g_gv_best;
 string   g_gv_eod;   // plus haut solde de fin de journée (perte max suiveuse), gardé si MT5 redémarre
+string   g_gv_cap;   // capital de départ retenu (mode auto), gardé si MT5 redémarre
+double   g_capital = 0;
 
 double BestDay() { return GlobalVariableCheck(g_gv_best) ? GlobalVariableGet(g_gv_best) : 0.0; }
 bool     g_block_day = false;
@@ -71,6 +74,37 @@ int OnInit()
    g_gv_stop = "LaboBot_arret_" + IntegerToString(InpMagic);
    g_gv_best = "LaboBot_meilleurjour_" + IntegerToString(InpMagic);
    g_gv_eod = "LaboBot_plushautsolde_" + IntegerToString(InpMagic);
+   g_gv_cap = "LaboBot_capital_" + IntegerToString(InpMagic);
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(InpReinitialiser)
+     {
+      GlobalVariableDel(g_gv_stop);
+      GlobalVariableDel(g_gv_cap);
+      GlobalVariableDel(g_gv_eod);
+      GlobalVariableDel(g_gv_best);
+      Print("LaboBot : réinitialisé (arrêt effacé, capital = solde actuel). Remettez InpReinitialiser à false.");
+     }
+   if(InpCapital > 0)
+     {
+      // capital donné à la main : il doit correspondre au compte, sinon le bot croirait à une grosse perte
+      // (compte plus petit -> arrêt « perte totale ») ou à l'objectif atteint (compte plus gros -> aucun trade)
+      if(bal < InpCapital * 0.7 || bal > InpCapital * 1.5)
+        {
+         Alert("LaboBot : InpCapital = ", DoubleToString(InpCapital, 0), " mais le solde du compte est ",
+               DoubleToString(bal, 2), ". Mettez InpCapital = 0 (auto) ou la vraie taille du compte.");
+         return(INIT_FAILED);
+        }
+      g_capital = InpCapital;
+     }
+   else
+     {
+      if(!GlobalVariableCheck(g_gv_cap) || GlobalVariableGet(g_gv_cap) <= 0)
+         GlobalVariableSet(g_gv_cap, bal);
+      g_capital = GlobalVariableGet(g_gv_cap);
+     }
+   if(Stopped())
+      Alert("LaboBot : arrêté plus tôt (perte totale). Aucun trade tant que ce n'est pas réinitialisé : "
+            "mettez InpReinitialiser = true (ou supprimez la variable globale ", g_gv_stop, " avec F3).");
    // au premier lancement, on ne rejoue pas les anciens signaux du fichier
    if(GlobalVariableCheck(g_gv_seq))
       g_last_seq = (long)GlobalVariableGet(g_gv_seq);
@@ -81,7 +115,7 @@ int OnInit()
      }
    NewDay();
    EventSetTimer(1);
-   Print("LaboBot démarré : capital ", InpCapital, ", risque max ", InpRisqueMax, " %/trade, perte max ",
+   Print("LaboBot démarré : capital ", DoubleToString(g_capital, 2), InpCapital > 0 ? "" : " (auto)", ", risque max ", InpRisqueMax, " %/trade, perte max ",
          InpPerteJourMax, " %/jour et ", InpPerteTotaleMax, " % au total.");
    return(INIT_SUCCEEDED);
   }
@@ -143,16 +177,16 @@ void NewDay()
      }
   }
 
-double EodHigh() { return GlobalVariableCheck(g_gv_eod) ? GlobalVariableGet(g_gv_eod) : InpCapital; }
+double EodHigh() { return GlobalVariableCheck(g_gv_eod) ? GlobalVariableGet(g_gv_eod) : g_capital; }
 
 // plancher de la perte max totale : fixe (capital - X %) ou suiveux (plus haut solde de fin de journée - X % du
 // capital, jamais au-dessus du capital de départ), comme FTMO 1 étape
 double Floor()
   {
-   double cut = InpCapital * InpPerteTotaleMax / 100.0;
+   double cut = g_capital * InpPerteTotaleMax / 100.0;
    if(!InpPerteSuiveuse)
-      return InpCapital - cut;
-   return MathMin(MathMax(InpCapital, EodHigh()) - cut, InpCapital);
+      return g_capital - cut;
+   return MathMin(MathMax(g_capital, EodHigh()) - cut, g_capital);
   }
 
 bool Stopped() { return GlobalVariableCheck(g_gv_stop) && GlobalVariableGet(g_gv_stop) > 0; }
@@ -161,14 +195,14 @@ void Guards()
   {
    NewDay();
    double eq = AccountInfoDouble(ACCOUNT_EQUITY);
-   double day_loss = (g_day_start - eq) / InpCapital * 100.0;
-   double total_loss = (InpCapital - eq) / InpCapital * 100.0;
+   double day_loss = (g_day_start - eq) / g_capital * 100.0;
+   double total_loss = (g_capital - eq) / g_capital * 100.0;
    if(!Stopped() && eq <= Floor())
      {
       CloseAll("perte totale " + DoubleToString(total_loss, 2) + " %");
       GlobalVariableSet(g_gv_stop, 1);
-      Alert("LaboBot ARRÊTÉ : perte totale ", DoubleToString(total_loss, 2), " %. Supprimez la variable globale ",
-            g_gv_stop, " (F3) pour le relancer.");
+      Alert("LaboBot ARRÊTÉ : perte totale ", DoubleToString(total_loss, 2), " %. Pour le relancer : InpReinitialiser = true, ou supprimez la variable globale ",
+            g_gv_stop, " (F3).");
      }
    MqlDateTime now;
    TimeToStruct(TimeCurrent(), now);
@@ -188,7 +222,7 @@ void Guards()
 // objectif réel : +InpObjectif %, ou plus si la meilleure journée dépasse InpMeilleurJour % du profit total
 double TargetNeeded()
   {
-   double best = MathMax(BestDay(), AccountInfoDouble(ACCOUNT_BALANCE) - g_day_start) / InpCapital * 100.0;
+   double best = MathMax(BestDay(), AccountInfoDouble(ACCOUNT_BALANCE) - g_day_start) / g_capital * 100.0;
    if(InpMeilleurJour > 0 && best > 0)
       return MathMax(InpObjectif, best / (InpMeilleurJour / 100.0));
    return InpObjectif;
@@ -198,7 +232,7 @@ bool TargetReached()
   {
    if(InpObjectif <= 0)
       return false;
-   return (AccountInfoDouble(ACCOUNT_BALANCE) - InpCapital) / InpCapital * 100.0 >= TargetNeeded();
+   return (AccountInfoDouble(ACCOUNT_BALANCE) - g_capital) / g_capital * 100.0 >= TargetNeeded();
   }
 
 void CloseAll(string why)
@@ -305,6 +339,7 @@ void Execute(string &f[])
    if(!SymbolSelect(symbol, true))
      {
       Print("LaboBot : symbole inconnu ", symbol);
+      LogExec(action, key, symbol, 0, 0, false, "symbole inconnu chez ce courtier");
       return;
      }
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
@@ -330,7 +365,7 @@ void Execute(string &f[])
       if(dist <= stops)                  { Print("LaboBot : stop trop proche pour ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "stop trop proche"); return; }
       // même base que le paper trading : le solde (intérêts composés) ou le plus bas entre solde et capital de départ
       double bal = AccountInfoDouble(ACCOUNT_BALANCE);
-      double risk_money = (InpComposer ? bal : MathMin(bal, InpCapital)) * MathMin(risk, InpRisqueMax) / 100.0;
+      double risk_money = (InpComposer ? bal : MathMin(bal, g_capital)) * MathMin(risk, InpRisqueMax) / 100.0;
       double lots = risk <= 0 ? SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN) : Lots(symbol, risk_money, dist, commission);
       if(lots <= 0)                      { Print("LaboBot : lot trop petit pour le risque demandé ", symbol); LogExec("OPEN", key, symbol, 0, 0, false, "lot trop petit"); return; }
       MqlTick tk;
@@ -380,9 +415,9 @@ void ShowStatus()
    string state = Stopped() ? "ARRÊTÉ (perte totale)" : g_block_day ? "en pause jusqu'à demain (perte du jour)"
                   : TargetReached() ? "objectif atteint" : "actif";
    Comment("LaboBot - ", state,
-           "\nJour : ", DoubleToString((eq - g_day_start) / InpCapital * 100.0, 2), " %   (arrêt à -",
+           "\nJour : ", DoubleToString((eq - g_day_start) / g_capital * 100.0, 2), " %   (arrêt à -",
            DoubleToString(InpPerteJourMax, 1), " %)",
-           "\nTotal : ", DoubleToString((eq - InpCapital) / InpCapital * 100.0, 2), " %   (arrêt à -",
+           "\nTotal : ", DoubleToString((eq - g_capital) / g_capital * 100.0, 2), " %   (arrêt à -",
            DoubleToString(InpPerteTotaleMax, 1), " %)",
            "\nObjectif à atteindre : +", DoubleToString(TargetNeeded(), 2), " % (règle du meilleur jour comprise)",
            "\nPositions du bot : ", n,
