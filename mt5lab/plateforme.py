@@ -619,6 +619,11 @@ def _live_trades(engine, ids=None):
         t = t[t["strategie_id"].isin(ids if ids is not None else engine.slots.keys())].copy()
         t["r"] = pd.to_numeric(t["r"], errors="coerce")
         t = t.dropna(subset=["r"])
+        # trades sans vraie date (1970 = heure 0 d'un tick) : ils fausseraient la période et les jours de bourse
+        for col in ("ouverture", "fermeture"):
+            if col in t.columns:
+                d = pd.to_datetime(t[col].astype(str), errors="coerce", format="mixed")
+                t = t[d.notna() & (d >= pd.Timestamp("2000-01-01"))]
     return t
 
 
@@ -932,13 +937,15 @@ def _build_bot(engine, comb, root, capital, ftmo, risk) -> dict:
     if off is not None:
         comb = {**comb, "decalage_pc": off}
     out = generate_strategy_bot(comb, root, capital, ftmo, risk)
-    ok, inst = install_in_mt5(out / "LaboBot.mq5", engine.mt5, f"LaboBot_{out.name}.mq5")
+    # MT5 : un seul appel à la fois (le paper trading l'utilise en même temps)
+    ok, inst = install_in_mt5(out / "LaboBot.mq5", engine.mt5, f"LaboBot_{out.name}.mq5",
+                              lock=getattr(engine, "mt5_lock", None))
     try:
         import os
         os.startfile(str(out))  # Windows : ouvre le dossier du bot
     except Exception:
         pass
-    return {"ok": True, "dossier": str(out.resolve()),
+    return {"ok": True, "installe": bool(ok), "dossier": str(out.resolve()),
             "message": f"{inst}\n\nDossier du bot : {out.resolve()}\n\n1) Double-cliquez LANCER_BOT.bat dans ce dossier "
                        f"(il suit cette stratégie en paper trading et envoie ses signaux au bot).\n2) Dans MT5, glissez "
                        f"LaboBot_{out.name} sur UN graphique, cochez « Autoriser le trading algorithmique », et activez "
@@ -1477,7 +1484,7 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
  e.stopPropagation();b.disabled=true;const q=b.dataset.bt2x?`bt2x=${encodeURIComponent(b.dataset.bt2x)}`:b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.fichier?`fichier=${encodeURIComponent(b.dataset.fichier)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;const qq=q+(b.dataset.profil?`&profil=${b.dataset.profil}`:"");
- try{const r=await (await fetch("/api/bot?"+qq,{cache:"no-store"})).json();showModal(r.ok===false?"Bot non créé":"✅ Bot créé et installé dans MT5",r.message,r.dossier)}catch(err){showModal("Erreur",String(err))}b.disabled=false});
+ try{const r=await (await fetch("/api/bot?"+qq,{cache:"no-store"})).json();showModal(r.ok===false?"Bot non créé":r.installe===false?"⚠ Bot créé, mais pas installé dans MT5":"✅ Bot créé et installé dans MT5",r.message,r.dossier)}catch(err){showModal("Erreur",String(err))}b.disabled=false});
 function showModal(title,text,dossier){const bg=document.createElement("div");bg.className="modal-bg";
  bg.innerHTML=`<div class="modal" role="dialog" aria-modal="true"><h3 style="margin:0">${esc(title)}</h3><pre>${esc(text||"")}</pre>
   <p style="display:flex;gap:8px;flex-wrap:wrap">${dossier?`<button class="botbtn" data-open="${esc(dossier)}">Ouvrir le dossier du bot</button>`:""}<button class="botbtn" data-k2="bots">Voir mes bots</button><button class="cmpbtn" data-close="1">Fermer</button></p></div>`;

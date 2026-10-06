@@ -330,16 +330,59 @@ def bot_diagnostic(bot_dir: str | Path, common: str | Path | None = None, now: f
     return out
 
 
-def install_in_mt5(mq5: str | Path, mt5, name: str | None = None) -> tuple[bool, str]:
+def mt5_folders(mt5=None, appdata: str | None = None, lock=None) -> tuple[Path, Path] | None:
+    """(dossier des données, dossier du programme) de MT5. D'abord par le module MetaTrader5 (réessayé : il répond
+    parfois None quand le paper trading l'utilise au même moment), sinon en cherchant le terminal dans
+    %APPDATA%\\MetaQuotes\\Terminal (le plus récemment utilisé ; origin.txt donne le dossier du programme)."""
+    for _ in range(3):
+        try:
+            if lock is not None:
+                with lock:
+                    info = mt5.terminal_info() if mt5 is not None else None
+            else:
+                info = mt5.terminal_info() if mt5 is not None else None
+            if info is not None and getattr(info, "data_path", None):
+                return Path(info.data_path), Path(info.path)
+        except Exception:
+            pass
+        if mt5 is None:
+            break
+        time.sleep(0.5)
+    root = Path(appdata or os.environ.get("APPDATA") or "") / "MetaQuotes" / "Terminal"
+    best = None
+    try:
+        for d in root.iterdir():
+            if not (d / "MQL5").is_dir():
+                continue
+            m = (d / "MQL5").stat().st_mtime
+            if best is None or m > best[0]:
+                best = (m, d)
+    except OSError:
+        return None
+    if best is None:
+        return None
+    d, prog = best[1], best[1]
+    for enc in ("utf-16", "utf-8", "cp1252"):
+        try:
+            txt = (d / "origin.txt").read_text(encoding=enc).strip().strip("\ufeff")
+            if txt and Path(txt).is_dir():
+                prog = Path(txt)
+                break
+        except (OSError, UnicodeError):
+            continue
+    return d, prog
+
+
+def install_in_mt5(mq5: str | Path, mt5, name: str | None = None, lock=None) -> tuple[bool, str]:
     """Installe le bot DIRECTEMENT dans MT5 : copie dans <données MT5>\\MQL5\\Experts\\LaboBot\\ puis compile avec
     MetaEditor (livré avec MT5). Le bot apparaît ensuite dans le Navigateur : Expert Advisors > LaboBot."""
     import shutil
     import subprocess
-    try:
-        info = mt5.terminal_info()
-        data, prog = Path(info.data_path), Path(info.path)
-    except Exception as exc:
-        return False, f"MT5 introuvable ({exc}) : copiez LaboBot.mq5 à la main (voir LISEZMOI_BOT.txt)."
+    found = mt5_folders(mt5, lock=lock)
+    if found is None:
+        return False, ("MT5 introuvable : ouvrez MT5 (connecté à votre compte) puis recliquez « Bot ». Sinon, copiez "
+                       "LaboBot.mq5 à la main (voir LISEZMOI_BOT.txt).")
+    data, prog = found
     dest_dir = data / "MQL5" / "Experts" / "LaboBot"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / (name or Path(mq5).name)

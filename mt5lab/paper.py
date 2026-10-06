@@ -1504,7 +1504,8 @@ def in_session(when: str, session) -> bool:
 
 
 def _now(tick) -> str:
-    return _msc(getattr(tick, "time_msc", int(time.time() * 1000)))
+    # un tick sans heure (0) donnerait le 1er janvier 1970 : on prend alors son heure en secondes, sinon maintenant
+    return _msc(getattr(tick, "time_msc", 0) or (getattr(tick, "time", 0) or 0) * 1000 or int(time.time() * 1000))
 
 
 # ================================================== tableau de bord statique (secours, sans serveur)

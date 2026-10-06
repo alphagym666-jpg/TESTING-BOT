@@ -134,3 +134,30 @@ def test_bot_from_directeur_file(tmp_path, monkeypatch):
     assert seen["cap"] == 5000 and seen["risk"] == 2.0 and seen["comb"]["composer"]      # risques du compte perso gardés
     assert pf.make_bot(eng, "/api/bot?fichier=strategie_combinee.json")["ok"] and seen["cap"] == 100_000
     assert not pf.make_bot(eng, "/api/bot?fichier=../secret.json")["ok"]
+
+
+def test_mt5_folder_found_without_terminal_info(tmp_path):
+    """« MT5 introuvable ('NoneType'...) » : si le module MT5 ne répond pas, on trouve le terminal dans APPDATA."""
+    from mt5lab.pont import mt5_folders
+    prog = tmp_path / "Program Files" / "MetaTrader 5"
+    prog.mkdir(parents=True)
+    old, new = tmp_path / "MetaQuotes" / "Terminal" / "AAA", tmp_path / "MetaQuotes" / "Terminal" / "BBB"
+    for d in (old, new):
+        (d / "MQL5").mkdir(parents=True)
+    (new / "origin.txt").write_text(str(prog), encoding="utf-16")
+    os.utime(old / "MQL5", (1, 1))
+    fake = SimpleNamespace(terminal_info=lambda: None)
+    assert mt5_folders(fake, appdata=str(tmp_path)) == (new, prog)
+    good = SimpleNamespace(terminal_info=lambda: SimpleNamespace(data_path=str(old), path=str(prog)))
+    assert mt5_folders(good, appdata=str(tmp_path)) == (old, prog)
+
+
+def test_live_trades_drop_1970(tmp_path):
+    """« période 1970-01-01 → … 14 808 jours de bourse » : un trade sans vraie date ne fausse plus tout."""
+    from mt5lab.paper import _now
+    (tmp_path / "trades.csv").write_text("strategie_id,ouverture,fermeture,r\na,2026-10-01 10:00:00,2026-10-01 11:00:00,1\n"
+                                         "a,1970-01-01 00:00:00,2026-10-02 11:00:00,2\n", encoding="utf-8")
+    eng = SimpleNamespace(out=tmp_path, slots={"a": None}, recent=[])
+    t = pf._live_trades(eng)
+    assert len(t) == 1 and t["r"].iloc[0] == 1
+    assert _now(SimpleNamespace(time_msc=0, time=1_760_000_000)).startswith("2025")
