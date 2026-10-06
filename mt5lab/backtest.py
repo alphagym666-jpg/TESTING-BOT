@@ -21,7 +21,9 @@ from . import indicators as ind
 RR_LEVELS = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, None]
 SL_MODES = {"atr": [1.0, 1.5, 2.0, 3.0], "swing": [5, 10, 20], "pct": [0.25, 0.5, 1.0]}
 MANAGEMENT = ["none", "breakeven", "trailing", "paliers", "intelligente"]
-MGMT_CODE = {"none": 0, "breakeven": 1, "trailing": 2, "paliers": 3, "intelligente": 4}
+# « verrou » (gestion des bots GAP FILL / STOCH de la plateforme Railway) : à +1R (plus haut/bas de la bougie) stop au
+# point d'entrée ; à 0,66 x la cible, stop verrouillé à +0,33 x la cible. Hors de la liste des recherches (MANAGEMENT).
+MGMT_CODE = {"none": 0, "breakeven": 1, "trailing": 2, "paliers": 3, "intelligente": 4, "verrou": 5}
 
 
 @dataclass(frozen=True)
@@ -29,7 +31,7 @@ class RiskConfig:
     sl_mode: str = "atr"          # atr | swing | pct
     sl_value: float = 1.5         # multiple d'ATR, nb de bougies du swing, ou % du prix
     rr: float | None = 2.0        # ratio risque:rendement ; None -> sortie sur signal opposé
-    management: str = "none"      # none | breakeven | trailing | paliers | intelligente
+    management: str = "none"      # none | breakeven | trailing | paliers | intelligente | verrou
     max_hold: int = 200           # nb max de bougies en position
     direction: str = "both"       # both | long | short
 
@@ -165,6 +167,22 @@ def _core(o, h, l, c, sig, atr, sl_mode, sl_value, rr, mgmt, max_hold, cost, cos
                     sl = sl if sl > trail else trail
                 else:
                     sl = sl if sl < trail else trail
+            elif mgmt == 5:
+                ext = h[j] if side > 0 else l[j]
+                if (ext - best) * side > 0:
+                    best = ext
+                fav = (best - entry) * side / risk
+                lock_r = -1.0
+                if has_tp and fav >= 0.66 * rr:
+                    lock_r = 0.33 * rr
+                elif fav >= 1.0:
+                    lock_r = 0.0
+                if lock_r > -1.0:
+                    lock = entry + side * lock_r * risk
+                    if side > 0:
+                        sl = sl if sl > lock else lock
+                    else:
+                        sl = sl if sl < lock else lock
             elif mgmt >= 3:
                 if mgmt == 4:  # sortie intelligente, à la clôture de la bougie
                     if (c[j] - best) * side > 0:

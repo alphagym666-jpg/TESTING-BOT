@@ -1161,6 +1161,8 @@ class PaperEngine:
                     p.sl = new_sl
                 elif cfg.management in ("paliers", "intelligente"):
                     self._manage_steps(s, p, cfg, close, sig, atr_last, exit_px, tick)
+                elif cfg.management == "verrou":
+                    self._manage_lock(s, p, cfg, float(closed["high"].iloc[-1]), float(closed["low"].iloc[-1]), tick)
             if s.position is None and sig != 0 and (s.group or s.ftmo_status == "en cours"):
                 self._open(s, sig, closed, tick, atr_arr)
 
@@ -1196,6 +1198,24 @@ class PaperEngine:
                 self.event(when, "SL DÉPLACÉ", s, "break-even" if lvl == 0 else f"stop à +{lvl}R ({lock:.5g})")
                 if self._bot(s):
                     self.bridge.move_sl(s.id, s.symbol, lock)
+
+    def _manage_lock(self, s, p, cfg, high: float, low: float, tick):
+        """VERROU (bots GAP FILL / STOCH de Railway) : à +1R (plus haut / bas de la bougie) stop au point d'entrée ;
+        à 0,66 x la cible, stop verrouillé à +0,33 x la cible. Même règle que la recherche."""
+        ext = high if p.side > 0 else low
+        if not p.best or (ext - p.best) * p.side > 0:
+            p.best = ext
+        fav = (p.best - p.entry) * p.side / p.risk if p.risk > 0 else 0.0
+        lock_r = 0.33 * cfg.rr if cfg.rr and fav >= 0.66 * cfg.rr else 0.0 if fav >= 1.0 else None
+        if lock_r is None:
+            return
+        lock = p.entry + p.side * lock_r * p.risk
+        if (lock - p.sl) * p.side > 1e-12:
+            p.sl = lock
+            p.be_done = True
+            self.event(_now(tick), "SL DÉPLACÉ", s, "break-even" if lock_r == 0 else f"verrou à +{lock_r:.2f}R ({lock:.5g})")
+            if self._bot(s):
+                self.bridge.move_sl(s.id, s.symbol, lock)
 
     def _weekend_close(self):
         """Compte FTMO Standard financé : toutes les positions des stratégies combinées concernées sont fermées le

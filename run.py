@@ -457,6 +457,30 @@ def cmd_bot(a):
     print(f"Mode d'emploi : {out / 'LISEZMOI_BOT.txt'}")
 
 
+def cmd_railway(a):
+    """Bots GAP FILL et STOCH de la plateforme Railway : backtest sur l'historique MT5 et bots MT5 de chacun."""
+    from mt5lab.data import MT5Connector
+    from mt5lab.railway import NY_OFFSET, run
+    import mt5lab.railway as rw
+    rw.NY_OFFSET = a.ny_offset if a.ny_offset is not None else NY_OFFSET
+    with MT5Connector() as conn:
+        rep = run(conn, Path(a.results), ftmo_rules(a), a.risk, a.annees, make_bots=not a.sans_bots)
+    print("\nRÉSUMÉ (R = multiples du risque ; « comme Railway » compte la bougie d'entrée, « honnête » non)")
+    for r in rep["configs"]:
+        if r.get("erreur"):
+            print(f"  {r['bot']:<8} {r['symbole']} {r['timeframe']} : {r['erreur']}")
+            continue
+        h, o, l = r["comme_railway"], r["honnete"], r["labo"]
+        print(f"  {r['bot']:<8} {r['symbole']} {r['timeframe']} SL x{r['sl_mult']:g} {r['tp_r']:g}R {r['max_bars']} b. | "
+              f"comme Railway {h.get('trades', 0)} tr {h.get('r_total', 0):+}R ({h.get('cibles_0_bougie', 0)} cibles en 0 bougie) | "
+              f"honnête {o.get('trades', 0)} tr {o.get('r_total', 0):+}R {o.get('reussite', 0)} % | labo {l['trades']} tr {l['r_total']:+}R"
+              f" | {h.get('du', '')} → {h.get('au', '')}")
+    if not a.sans_bots:
+        print(f"\nBots créés dans {Path(a.results) / 'bots'} (un FTMO et un compte perso 5k par config). "
+              "Ils apparaissent aussi dans « Mes bots » et « Combinaisons » de la plateforme.")
+    print(f"Détails : {Path(a.results) / 'railway' / 'railway.json'}")
+
+
 def cmd_check(a):
     from mt5lab.data import MT5Connector
     with MT5Connector() as conn:
@@ -626,6 +650,16 @@ def main():
     comp.add_argument("--risk", type=float, default=1.0, help="risque par trade en %% (pour le portefeuille FTMO)")
     add_ftmo_args(comp)
     comp.set_defaults(func=cmd_compare)
+
+    rwy = sub.add_parser("railway", help="bots GAP FILL et STOCH de la plateforme Railway : backtest MT5 + bots")
+    rwy.add_argument("--results", default="results")
+    rwy.add_argument("--risk", type=float, default=1.0, help="risque par trade des bots FTMO (%%)")
+    rwy.add_argument("--annees", type=float, default=2.0, help="années d'historique MT5 pour le backtest")
+    rwy.add_argument("--ny-offset", type=float, default=None,
+                     help="heures d'avance du serveur MT5 sur New York (FTMO : 7)")
+    rwy.add_argument("--sans-bots", action="store_true", help="seulement le backtest, sans créer les bots")
+    add_ftmo_args(rwy)
+    rwy.set_defaults(func=cmd_railway)
 
     check = sub.add_parser("check", help="tester la connexion à MT5")
     check.add_argument("--symbols", nargs="+", default=["EURUSD"])

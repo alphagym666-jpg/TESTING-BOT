@@ -70,6 +70,8 @@ echo   3. LANCER la N.1 du TOP 10 : paper trading + plateforme + signaux pour le
 echo   4. Plateforme du COMPTE PERSO (%CAPITAL_PERSO% $)
 echo   5. Plateforme du COMPTE FINANCE (apres le challenge)
 echo.
+echo   G. Bots GAP FILL et STOCH (plateforme Railway) : backtest sur MT5 + bots FTMO et compte perso
+echo.
 echo   6. Tester la connexion a MT5       7. Changer les marches / timeframes
 echo   8. Alertes sur le telephone        9. Options avancees (toutes les anciennes options)
 echo   0. Quitter (le paper trading continue dans sa fenetre)
@@ -84,6 +86,7 @@ if /i "%CHOIX%"=="R" goto resultats
 if "%CHOIX%"=="3" goto lancern1
 if "%CHOIX%"=="4" goto paperperso
 if "%CHOIX%"=="5" goto paperfinance
+if /i "%CHOIX%"=="G" goto railway
 if "%CHOIX%"=="6" goto check
 if "%CHOIX%"=="7" goto params
 if "%CHOIX%"=="8" goto telegram
@@ -239,6 +242,12 @@ echo  Refaites l'etape 5 une fois par mois pour garder les annonces a venir a jo
 echo.
 pause
 goto menu
+
+:railway
+cls
+echo Backtest des bots GAP FILL et STOCH sur lhistorique MT5, puis creation de leurs bots...
+python run.py railway --results "%RES%"
+pause & goto menu
 
 :check
 python run.py check --symbols %SYMS%

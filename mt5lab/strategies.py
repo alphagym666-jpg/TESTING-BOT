@@ -484,4 +484,4 @@ def families() -> dict[str, list[str]]:
 
 
 # enregistre les stratégies des autres modules dans REGISTRY
-from . import strategies_plus, strategies_smc  # noqa: E402,F401
+from . import railway, strategies_plus, strategies_smc  # noqa: E402,F401

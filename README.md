@@ -594,6 +594,22 @@ La page des résultats montre la meilleure gestion de chaque stratégie (R moyen
 meilleures versions entrent dans les stratégies combinées. Le paper trading et le bot appliquent exactement la
 même gestion : le stop est déplacé chez le courtier, la fermeture passe au marché.
 
+## Les bots GAP FILL et STOCH de la plateforme Railway
+
+Touche **G** du menu (ou `python run.py railway`) : les deux bots de la plateforme Railway (Trading Lab), avec leurs
+règles exactes copiées de `nasdaq_news_bot_PRET.py`, rejoués sur l'historique MT5 (US100.cash) puis transformés en bots
+MT5 (un pour le challenge FTMO, un pour le compte perso 5k) pour les 3 meilleures configurations de chacun.
+
+- **GAP FILL** (`gapfill_ny`) : de 9 h 45 à 13 h à New York, retour vers la clôture de la veille si le gap fait au moins
+  0,5 ATR et que la bougie repart déjà dans ce sens ; une fois par jour.
+- **STOCH** (`stoch_range`) : stochastique 14 qui sort de 20 / 80, avec une bougie dans le même sens, seulement en range.
+- **Gestion « verrou »** : à +1R stop au point d'entrée, à 0,66 x la cible stop à +0,33 x la cible, sortie au bout de
+  N bougies.
+- Heure de New York = heure du serveur MT5 - 7 h (FTMO) : `--ny-offset` si votre courtier est différent.
+- Le rapport compare « comme Railway » (qui compte la bougie d'entrée, avant l'entrée : faux dans les deux sens) et la
+  version **honnête**. Les deux stratégies entrent aussi au catalogue : la recherche, le paper trading et les heures
+  les utilisent comme les autres.
+
 ## Le menu simple (lancer.bat)
 
 | Touche | Ce qu'elle fait |
