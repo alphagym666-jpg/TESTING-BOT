@@ -30,6 +30,7 @@ from .manager import Director, _fmt, _per_month
 PROFILES = {
     "perso": {"nom": "Compte perso", "capital": 5_000.0, "risk_pct": 2.0, "day_budget": 5.0, "total_budget": 30.0,
               "dd_limit": 25.0, "day_limit": None, "max_fail": 5.0, "compound": True,
+              "plafond_x": 10.0,  # intérêts composés jusqu'à 10 x le capital (50 000 $), ensuite le risque ne grossit plus
               "but": "meilleur rendement à long terme (intérêts composés) sans grosse baisse du compte"},
     "finance": {"nom": "Compte financé", "capital": 100_000.0, "risk_pct": 1.0, "day_budget": 2.5,
                 "total_budget": 10.0, "dd_limit": None, "day_limit": 3.0, "max_fail": 5.0, "compound": False,
@@ -56,7 +57,7 @@ def ftmo_like(p: dict) -> FtmoRules:
 
 
 def simulate_long(daily: pd.DataFrame, p: dict, n: int = 2000, days: int = DAYS_YEAR, seed: int = 0,
-                  block: int = 5) -> dict:
+                  block: int = 5, min_days: int = 20) -> dict:
     """Simule n années possibles en tirant au hasard des blocs de 5 journées réelles (hors-échantillon).
 
     Compte perso (composé) : le risque suit le solde ; « problème » = baisse de dd_limit % depuis le plus haut.
@@ -65,7 +66,7 @@ def simulate_long(daily: pd.DataFrame, p: dict, n: int = 2000, days: int = DAYS_
     out = {"p_probleme": float("nan"), "rendement_an_median": float("nan"), "rendement_an_p10": float("nan"),
            "rendement_mois_median": float("nan"), "dd_median": float("nan"), "p_perte_an": float("nan"),
            "jours": int(len(daily))}
-    if daily is None or len(daily) < 20:
+    if daily is None or len(daily) < max(20, min_days):
         return out
     pnl = daily["pnl"].to_numpy(float)
     worst = daily["worst"].to_numpy(float)
@@ -76,9 +77,16 @@ def simulate_long(daily: pd.DataFrame, p: dict, n: int = 2000, days: int = DAYS_
     P, W = pnl[idx] / 100, worst[idx] / 100
     stop_level = 1 - float(p["total_budget"]) / 100
     if p["compound"]:
-        growth = np.cumprod(1 + P, axis=1)
+        # le risque suit le solde... jusqu'à un plafond (taille de position réaliste) : au-delà, gains « simples »
+        capx = float(p.get("plafond_x") or np.inf)
+        growth, low = np.empty_like(P), np.empty_like(P)
+        eq = np.ones(n)
+        for j in range(P.shape[1]):
+            base = np.minimum(eq, capx)
+            low[:, j] = eq + base * W[:, j]
+            eq = eq + base * P[:, j]
+            growth[:, j] = eq
         prev = np.concatenate([np.ones((n, 1)), growth[:, :-1]], axis=1)
-        low = prev * (1 + W)
         peak = np.maximum.accumulate(np.concatenate([np.ones((n, 1)), growth], axis=1), axis=1)[:, :-1]
         dd = np.max(1 - low / peak, axis=1)
         stopped = (low <= stop_level).any(axis=1)

@@ -230,3 +230,23 @@ def test_backtest_start_date():
     data = lambda s, tf, c: (synthetic(20000, seed=zlib.crc32(s.encode()) % 1000), 0.00012)   # 2020 -> 2022
     res = top_backtest(st, data, n_sim=100, n_top=3, log=lambda m: None, start="2021-06-01")
     assert res["periode"].startswith("2021-06-01")
+
+
+def test_projection_needs_6_months_and_compounding_is_capped():
+    """Quelques semaines de backtest ne se projettent pas sur 1 an ; les intérêts composés du compte perso
+    s'arrêtent à 10 x le capital (sinon des milliards de $ sans aucun sens)."""
+    import numpy as np
+    import pandas as pd
+    from mt5lab.comptes import profile, simulate_long
+    from mt5lab.top_backtest import MIN_DAYS_PROJ, projections
+    idx = pd.bdate_range("2026-01-01", periods=300)
+    d = pd.DataFrame({"pnl": np.full(300, 3.0), "worst": np.full(300, -0.5), "traded": True}, index=idx)
+    short = simulate_long(d.iloc[:40], profile("perso"), n=50, min_days=MIN_DAYS_PROJ)
+    assert np.isnan(short["rendement_an_median"])
+    r = simulate_long(d, profile("perso"), n=50, min_days=MIN_DAYS_PROJ)
+    # +3 %/jour composé sans plafond = des milliards de % ; plafonné : 10 x puis +3 % de 10 x par jour
+    assert r["rendement_an_median"] < (10 + 0.03 * 10 * 252) * 100
+    t = pd.DataFrame({"entry_time": idx[:40] + pd.Timedelta(hours=10), "exit_time": idx[:40] + pd.Timedelta(hours=11),
+                      "r": 1.0, "side": 1})
+    out = projections([(t, 1.0)], idx[0], idx[39] + pd.Timedelta(days=1), 1.0, n=50)
+    assert "perso" not in out and out["trop_court"]["minimum"] == MIN_DAYS_PROJ

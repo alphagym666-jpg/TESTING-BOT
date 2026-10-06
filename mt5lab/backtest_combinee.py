@@ -120,7 +120,9 @@ def account_report(parts: list, rows: list, lo, hi, rules: FtmoRules, rules_c: d
     out["annees"] = [{"annee": int(k), "pct": round(float(v.pct), 2), "pire_jour": round(float(v.pire), 2),
                       "trades": int((years == k).sum())} for k, v in y.iterrows()]
     a, r = out["tout"], out["recent"]
-    out["message"] = (f"{a['annees']} ans d'historique commun ({a['periode']}) : {a['trades']} trades, "
+    out["court"] = bool((a.get("annees") or 0) < 0.5)
+    out["message"] = ("⚠ HISTORIQUE TROP COURT : quelques semaines seulement, ces chiffres ne veulent pas dire grand-chose. "
+                      if out["court"] else "") + (f"{a['annees']} ans d'historique commun ({a['periode']}) : {a['trades']} trades, "
                       f"{a['rendement_pct']:+.1f} %, {a['reussis']} challenges réussis / {a['rates']} ratés. "
                       f"Période récente seule ({r['periode']}) : {r['rendement_pct']:+.1f} %, "
                       f"{r['reussis']} réussis / {r['rates']} ratés.")

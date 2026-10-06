@@ -38,6 +38,9 @@ def _quick(tr: pd.DataFrame, w: float, lo, hi, rules: FtmoRules, n: int = 200) -
     return res
 
 
+MIN_DAYS_PROJ = 120   # au moins ~6 mois de bourse dans le backtest pour projeter sur 1 an
+
+
 def projections(parts: list, lo, hi, risk_pct: float = 1.0, n: int = 1000) -> dict:
     """COMBIEN ÇA FERAIT sur 1 an : compte financé FTMO (100 000 $, 1 %/trade, 2,5 %/jour, jamais -3 %/jour ni -10 %)
     et compte perso (5 000 $, 2 %/trade, 5 %/jour, intérêts composés). 1 000 années possibles tirées des journées du
@@ -57,10 +60,12 @@ def projections(parts: list, lo, hi, risk_pct: float = 1.0, n: int = 1000) -> di
         t = apply_risk_rules(t, None, None, float(p["risk_pct"]), day_budget=float(p["day_budget"]))
         t = t[t["r"].notna()]
         d = daily_table(t, float(p["risk_pct"]), lo, hi)
-        sl = simulate_long(d, p, n=n)
+        sl = simulate_long(d, p, n=n, min_days=MIN_DAYS_PROJ)
         cap = float(p["capital"])
         med = sl.get("rendement_an_median")
         if med is None or med != med:
+            if len(d) < MIN_DAYS_PROJ:  # quelques semaines répétées sur 1 an = des chiffres sans aucun sens
+                out["trop_court"] = {"jours": int(len(d)), "minimum": MIN_DAYS_PROJ}
             continue
         out[name] = {"capital": cap, "risque_trade": p["risk_pct"], "perte_jour_max": p["day_budget"],
                      "rendement_an_median": round(med, 1), "rendement_an_p10": round(sl["rendement_an_p10"], 1),
