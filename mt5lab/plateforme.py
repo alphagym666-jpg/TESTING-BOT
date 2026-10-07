@@ -629,7 +629,9 @@ def _live_trades(engine, ids=None):
 
 def _top_comb(engine, rank, source: str = "direct") -> dict | None:
     """Une combinaison d'un TOP 10 (« direct » : TOP 10 du direct ; « bt2 » : TOP 10 backtest 2 ans)."""
-    if source in ("bt2", "bt2x"):
+    if source == "bt2r":   # combinées RÉALISTES (seulement des stratégies fiables)
+        top = ((top2ans_live(engine).get("resultat") or {}).get("realistes") or {}).get("combinees") or []
+    elif source in ("bt2", "bt2x"):
         top = (top2ans_live(engine).get("resultat") or {}).get("combinees" if source == "bt2" else "combinees_croisees") or []
     else:
         top = (top10_live(engine).get("resultat") or {}).get("top") or []
@@ -804,13 +806,13 @@ def make_bot(engine, url: str) -> dict:
     from .pont import single_strategy
     q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     root = engine.out.parent
-    if q.get("top") or q.get("bt2") or q.get("bt2x"):  # une combinaison d'un TOP 10 (règles du challenge)
-        src = "direct" if q.get("top") else "bt2" if q.get("bt2") else "bt2x"
-        comb = _top_comb(engine, q.get("top") or q.get("bt2") or q["bt2x"], src)
+    if q.get("top") or q.get("bt2") or q.get("bt2x") or q.get("bt2r"):  # une combinaison d'un TOP 10 (règles du challenge)
+        src = "direct" if q.get("top") else "bt2" if q.get("bt2") else "bt2x" if q.get("bt2x") else "bt2r"
+        comb = _top_comb(engine, q.get("top") or q.get("bt2") or q.get("bt2x") or q["bt2r"], src)
         if comb is None:
             return {"ok": False, "message": "Recompilez d'abord le TOP 10 (bouton de l'onglet)."}
         comb.pop("resultat", None)
-        for k in ("backtest", "direct", "comptes"):
+        for k in ("backtest", "direct", "comptes", "fiabilite"):
             comb.pop(k, None)
         from .ftmo import FtmoRules
         ftmo = FtmoRules() if getattr(engine, "profile", None) else engine.ftmo
@@ -1078,7 +1080,7 @@ th[title]{text-decoration:underline dotted;text-underline-offset:3px}
 <script>
 const SECTIONS=[["home","🏠 Accueil",[["home","Aujourd'hui"]]],
  ["live","📡 En direct",[["comb","Stratégie combinée"],["pos","Positions ouvertes"],["hist","Historique des trades"],["ftmo","Challenges FTMO"],["log","Journal"]]],
- ["rank","🏆 Classements",[["gen","Général (backtest × paper)"],["bt2","Backtest 2 ans"],["top","TOP 10 du direct"],["strat","Toutes les stratégies"],["mk","Meilleur par marché"],["an","Meilleurs setups"]]],
+ ["rank","🏆 Classements",[["real","✅ Réalistes (pour un bot)"],["gen","Général (backtest × paper)"],["bt2","Backtest 2 ans"],["top","TOP 10 du direct"],["strat","Toutes les stratégies"],["mk","Meilleur par marché"],["an","Meilleurs setups"]]],
  ["ana","🔬 Analyse",[["hours","Heures & planning"],["at","Analyse des trades"],["rr","Meilleur R:R"]]],
  ["combos","🧩 Combinaisons",[["combos","Toutes les combinaisons"]]],
  ["bots","🤖 Mes bots",[["bots","Mes bots"]]]];
@@ -1257,18 +1259,20 @@ function viewTop2(mode){mode=mode||"bt2";if(!T2){loadTop2(false);return `<div cl
  const X=(R.croise&&R.croise.listes)||{};
  const PZ=R.perso||[];
  const CX=R.combinees_croisees||[],GN=R.general||[];
- if(SEL2){const L=SEL2.k==="c"?C:SEL2.k==="s"?S:SEL2.k==="p"?PZ:SEL2.k==="x2"?CX:SEL2.k==="g"?GN:(X[SEL2.l]||[]),e=L.find(x=>x.rang===SEL2.r);
+ const RL=R.realistes||{};
+ if(SEL2){const L=SEL2.k==="rs"?(RL.seules||[]):SEL2.k==="rp"?(RL.presque||[]):SEL2.k==="rc"?(RL.combinees||[]):SEL2.k==="c"?C:SEL2.k==="s"?S:SEL2.k==="p"?PZ:SEL2.k==="x2"?CX:SEL2.k==="g"?GN:(X[SEL2.l]||[]),e=L.find(x=>x.rang===SEL2.r);
   if(e&&e.backtest){if(SEL2.k==="x")e.composants=[{strategie_id:e.strategie_id,symbole:e.symbole,timeframe:e.timeframe}];
    const B=e.backtest,title=SEL2.k==="g"?`Classement général n°${e.rang} — ${esc(e.type)}`:SEL2.k==="c"||SEL2.k==="x2"?`${esc(e.nom)}${e.origine&&e.origine!=="Chef des combinaisons"?" · "+esc(e.origine):""}`:SEL2.k==="x"?`${esc(XL[SEL2.l])} n°${e.rang} : ${esc(e.symbole)} ${esc(e.timeframe)}`:`${esc(e.nom)} : ${esc(e.composants[0].symbole)} ${esc(e.composants[0].timeframe)}`;
    h+=`<div class="panel"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Backtest 2 ans — ${title}</h3>
-    <span>${botPair(SEL2.k==="p"||SEL2.k==="g"?e.k:SEL2.k==="x2"?"x":SEL2.k,SEL2.k==="p"||SEL2.k==="g"?e.rang_source:e.rang,e)}
+    <span>${botPair(SEL2.k==="rc"?"r":SEL2.k==="rs"||SEL2.k==="rp"?"s":SEL2.k==="p"||SEL2.k==="g"?e.k:SEL2.k==="x2"?"x":SEL2.k,SEL2.k==="p"||SEL2.k==="g"?e.rang_source:e.rang,e)}
     <a href="#" onclick="SEL2=null;render();return false" class="mut" style="margin-left:10px">fermer</a></span></div>`+
-    ficheExtra(e,R)+(B.ok?btBody(B,{cols:["2 dernières années","Période récente (8 derniers mois)"],extra:compteBox(e.comptes)+liveBox(e.direct,SEL2.k!=="c"),
+    fiaBox(e.fiabilite)+ficheExtra(e,R)+(B.ok?btBody(B,{cols:["2 dernières années","Période récente (8 derniers mois)"],extra:compteBox(e.comptes)+liveBox(e.direct,SEL2.k!=="c"),
      honest:"Backtest des 2 dernières années. Une partie de cette période a pu servir à la recherche des stratégies, et le classement choisit les meilleures parmi beaucoup : comparez toujours avec le paper trading ci-dessous."}):`<p class="neg">${esc(B.message||"")}</p>`)+`</div>`}}
- if(!C.length&&!S.length)return h+(run?"":`<div class="empty">Pas encore de TOP 10 backtest.</div>`);
  const comps=e=>e.composants.map(x=>`<div title="${esc(x.strategie)}">${miniBot(x.strategie_id)}${esc(x.symbole)} ${esc(x.timeframe)} ${hTag(x.horaire)} · ${esc(String(x.strategie).split(" | heures")[0].slice(0,50))}
   <span class="mut">(${fmt(x.risk_pct,1)} %/trade · 2 ans : ${fmt(x.trades_bt,0)} trades ${fmt(x.r_total_bt,1,true)}R · paper : ${x.direct_trades?fmt(x.direct_trades,0)+" trades "+fmt(x.direct_r,1,true)+"R":"pas encore"})</span>${x.en_pause?' <span class="tag ko">en pause</span>':""}</div>`).join("");
- if(mode==="gen"){h+=generalView(GN,comps)+crossCombView(CX,comps)+crossView(R.croise);return h}
+ if(mode==="real"){h+=realView(RL,comps);return h}
+ if(!C.length&&!S.length)return h+(run?"":`<div class="empty">Pas encore de TOP 10 backtest.</div>`);
+  if(mode==="gen"){h+=generalView(GN,comps)+crossCombView(CX,comps)+crossView(R.croise);return h}
  if(mode==="hours"){h+=offNote()+planView(R.planning)+heuresView(R.heures||[]);return h}
  h+=`<h3 class="sec">TOP 10 des stratégies COMBINÉES (backtest 2 ans)</h3>`+(C.length?`<div class="scroll"><table><thead><tr><th>#</th><th>État</th><th>Backtest / bot</th><th>Stratégies de la combinaison (bot de chacune)</th><th>Origine</th>${BT2H}${CPTH}${PAPH}</tr></thead><tbody>`+
   C.map(e=>`<tr><td class="n"><b>${e.rang}</b></td><td>${stateTag(e)}</td><td><button class="v2btn btbtn" data-k="c" data-r="${e.rang}">Fiche complète</button> <button class="botbtn" data-bt2="${e.rang}">Bot MT5 combinée</button></td>
@@ -1353,15 +1357,37 @@ function hTag(hz){return hz&&hz.debut!=null?`<span class="tag" title="Entrées s
 const CPTH=`<th title="Compte financé FTMO 100 000 $, 1 %/trade : gain moyen par jour de bourse sur 1 an (médiane)">Financé 100k $/jour</th><th title="Compte perso 5 000 $, 2 %/trade, intérêts composés : gain moyen par jour sur 1 an (médiane)">Perso 5k $/jour</th>`;
 const TOOGOOD=x=>x&&x.rendement_an_median>(x.capital<10000?500:150);
 const SHORT=K=>K&&K.trop_court?`historique trop court (${K.trop_court.jours} jours de bourse, il en faut ${K.trop_court.minimum}) : pas de projection sur 1 an`:"";
-function compteCells(K){const f=(K||{}).finance,p=(K||{}).perso;const c=x=>x?`<td class="n"><span class="${cls(x.gain_jour_usd)}">${fmt(x.gain_jour_usd,0,true)} $</span> <span class="mut">(${fmt(x.rendement_an_median,0,true)} %/an)</span>${TOOGOOD(x)?' <span class="tag ko" title="Trop beau pour être vrai : le backtest est sûrement trop optimiste">⚠</span>':""}</td>`:`<td class="n mut" title="${esc(SHORT(K)||"pas de projection")}">${SHORT(K)?"trop court":"—"}</td>`;return c(f)+c(p)}
-function compteBox(K){if(!K)return "";if(!K.finance&&!K.perso)return SHORT(K)?`<p class="note">💵 Gains sur 1 an : ${esc(SHORT(K))}. Quelques semaines répétées sur toute une année donneraient des chiffres sans aucun sens.
-  Pour plus d'historique dans MT5 : Outils › Options › Graphiques › « Barres max. dans l'historique » et « dans le graphique » = Unlimited, puis relancez le backtest.</p>`:"";
- const one=(x,t)=>x?`<div class="tile"><div class="mut">${t}</div>
-  <div class="v">${fmt(x.gain_jour_usd,0,true)} $ / jour</div><div class="mut" style="font-size:12px">sur 1 an (médiane de 1 000 années possibles) : ${fmt(x.gain_an_usd,0,true)} $ (${fmt(x.rendement_an_median,0,true)} %) ·
-  ~${fmt(x.gain_mois_usd,0,true)} $ le 1er mois · mauvaise année (1 sur 10) : ${fmt(x.gain_an_p10_usd,0,true)} $ · baisse typique ${fmt(x.dd_median,0)} % · risque de problème ${fmt(x.p_probleme,1)} %</div>
-  ${TOOGOOD(x)?`<div class="neg" style="font-size:12px;margin-top:4px">⚠ Trop beau pour être vrai : le backtest choisit les meilleures parmi des milliers (chance) et peut avoir été vu pendant la recherche. Fiez-vous au paper trading, pas à ce chiffre.</div>`:""}</div>`:"";
- return `<div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr));margin-top:8px">${one(K.finance,"Compte financé FTMO 100 000 $ (1 %/trade, 2,5 %/jour ; avant le partage des profits)")}${one(K.perso,"Compte perso 5 000 $ (2 %/trade, 5 %/jour, intérêts composés jusqu'à 50 000 $)")}</div>`}
+function compteCells(K){K=K||{};if(K.non_fiable)return `<td class="n mut" colspan="2" title="${esc(K.non_fiable)}">pas fiable : aucun chiffre</td>`;
+ const f=K.finance,p=K.perso;const c=x=>x?`<td class="n"><span class="${cls(x.gain_jour_usd)}">${fmt(x.gain_jour_usd,0,true)} $</span> <span class="mut">(~${fmt(x.gain_mois_usd,0,true)} $/mois)</span></td>`:`<td class="n mut">—</td>`;return c(f)+c(p)}
+function compteBox(K){if(!K)return "";if(K.non_fiable)return `<p class="note">💵 <b>Aucun gain affiché : stratégie PAS FIABLE</b> (${esc(K.non_fiable)}). Ses chiffres de backtest viennent surtout de la chance : ne la mettez pas sur un bot avec de l'argent.</p>`;
+ if(!K.finance&&!K.perso)return "";
+ const one=(x,t)=>x?`<div class="tile"><div class="mut">${t}</div><div class="v">~${fmt(x.gain_mois_usd,0,true)} $ / mois</div>
+  <div class="mut" style="font-size:12px">≈ ${fmt(x.gain_jour_usd,0,true)} $ par jour de bourse · baisse typique ${fmt(x.dd_median,1)} % · gain RÉALISTE : période récente seulement, divisé par 2, sans intérêts composés (un ordre de grandeur, pas une promesse)</div></div>`:"";
+ return `<div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr));margin-top:8px">${one(K.finance,"Compte financé FTMO 100 000 $ (1 %/trade)")}${one(K.perso,"Compte perso 5 000 $ (2 %/trade)")}</div>`}
+function fiaBox(F){if(!F||!F.controles||!F.controles.length)return "";
+ return `<div class="livebox" style="margin:8px 0"><b>${F.fiable?"✅ FIABLE : passe tous les contrôles":"❌ PAS FIABLE"}</b>${F.fiable?"":" — "+esc(F.raison)}
+  <div style="margin-top:6px;font-size:13px">${F.controles.map(c=>`<div>${c.ok?"✅":"❌"} <b>${esc(c.nom)}</b> : ${esc(c.detail)}</div>`).join("")}</div></div>`}
+function realView(RL,comps){const S=RL.seules||[],C=RL.combinees||[],P=RL.presque||[];
+ const row=(e,k)=>{const r=(e.fiabilite||{}).realiste||{},F=e.fiabilite||{};return `<tr><td class="n"><b>${e.rang}</b></td>
+  <td><button class="v2btn btbtn" data-k="${k}" data-r="${e.rang}">Fiche complète</button> ${botPair(k==="rc"?"r":"s",e.rang,e)}</td>
+  <td class="n"><b class="${cls(r.pct_mois)}">${r.pct_mois==null?"—":fmt(r.pct_mois,2,true)+" %"}</b></td>
+  <td style="font-size:12px;line-height:1.5">${e.composants.map(c=>`<div>${miniBot(c.strategie_id)}${esc(c.symbole)} ${esc(c.timeframe)} ${hTag(c.horaire)||'<span class="mut">24 h/24</span>'} · ${fmt(c.risk_pct,1)} %/trade <span class="mut">${esc(String(c.strategie).split(" | heures")[0].slice(0,50))}</span></div>`).join("")}</td><td class="n">${r.finance_usd_mois==null?"—":fmt(r.finance_usd_mois,0,true)+" $"}</td>
+  <td class="n">${r.perso_usd_mois==null?"—":fmt(r.perso_usd_mois,0,true)+" $"}</td><td class="n">${r.mois_objectif_10pct==null?"—":"~"+fmt(r.mois_objectif_10pct,1)+" mois"}</td>
+  <td class="n">${r.trades_mois==null?"—":fmt(r.trades_mois,0)}</td><td class="n">${r.baisse_typique_pct==null?"—":fmt(r.baisse_typique_pct,1)+" %"}</td>
+  <td class="n">${fmt(F.t,1)}</td><td class="n">${fmt(F.annees,1)} an(s)</td><td class="n">${fmt(F.trades,0)}</td>${paperCells(e.direct)}
+  ${k==="rp"?`<td class="neg" style="white-space:normal;min-width:220px">${esc(F.raison)}</td>`:""}</tr>`};
+ const head=(extra)=>`<div class="scroll"><table><thead><tr><th>#</th><th>Fiche / bots</th><th title="Gain réaliste par mois à 1 %/trade : période récente seulement, divisé par 2">Gain réaliste / mois</th><th>Stratégies (heures)</th><th>Financé 100k $/mois</th><th>Perso 5k $/mois</th><th title="Mois pour faire +10 % au rythme réaliste">Objectif +10 % en</th><th>Trades / mois</th><th>Baisse typique</th><th>t (solidité)</th><th>Historique</th><th>Trades</th>${PAPH}${extra||""}</tr></thead><tbody>`;
+ let h=`<h3 class="sec">✅ Les RÉALISTES : ce qu'on peut mettre sur un bot</h3>
+  <p class="note"><b>${esc(RL.message||"Lancez « Backtester toutes les stratégies » pour les trouver.")}</b></p>
+  <p class="note">Pourquoi les autres classements montraient des chiffres fous : on teste des milliers de stratégies et on garde les meilleures, donc il y en a toujours qui ont l'air parfaites PAR CHANCE.
+  Ici, une stratégie doit passer 5 contrôles : <b>1 an d'historique</b> au moins · <b>100 trades</b> · une solidité t au-dessus de ce que la chance donne (${fmt(RL.hurdle,1)} ici) ·
+  toujours gagnante sur la <b>période récente</b> · et pas perdante en <b>paper trading</b> (dès 20 trades). Le gain affiché vient seulement de la période récente, divisé par 2, sans intérêts composés.</p>`;
+ h+=`<h4 style="margin:14px 0 6px">Stratégies seules fiables</h4>`+(S.length?head()+S.map(e=>row(e,"rs")).join("")+`</tbody></table></div>`:`<p class="note">Aucune pour l'instant.</p>`);
+ h+=`<h4 style="margin:18px 0 6px">Combinées fiables (faites seulement de stratégies fiables)</h4>`+(C.length?head()+C.map(e=>row(e,"rc")).join("")+`</tbody></table></div>`:`<p class="note">Aucune pour l'instant (il faut au moins 2 stratégies fiables).</p>`);
+ if(P.length)h+=`<h4 style="margin:18px 0 6px">Presque fiables (un seul contrôle raté) — à surveiller en paper, PAS sur un vrai compte</h4>`+head("<th>Ce qui manque</th>")+P.map(e=>row(e,"rp")).join("")+`</tbody></table></div>`;
+ return h}
 function botPair(k,r,e){const id=e.composants&&e.composants[0]?e.composants[0].strategie_id:"";
+ if(k==="r")return `<button class="botbtn" data-bt2r="${r}">Bot challenge FTMO</button> <button class="botbtn" data-bt2r="${r}" data-profil="perso">Bot compte perso 5k</button>`;
  if(k==="x")return `<button class="botbtn" data-bt2x="${r}">Bot challenge FTMO</button> <button class="botbtn" data-bt2x="${r}" data-profil="perso">Bot compte perso 5k</button>`;
  return k==="c"?`<button class="botbtn" data-bt2="${r}">Bot challenge FTMO</button> <button class="botbtn" data-bt2="${r}" data-profil="perso">Bot compte perso 5k</button>`:
   `<button class="botbtn" data-id="${esc(id)}">Bot challenge FTMO</button> <button class="botbtn" data-id="${esc(id)}" data-profil="perso">Bot compte perso 5k</button>`}
@@ -1483,7 +1509,7 @@ function table(id,cols,rows){ // cols: [label,key,render,numeric]
   const att=c[3]?' class="n"':long?` class="s" title="${esc(r[c[1]])}"`:"";
   return `<td${att}>${c[2]?c[2](r[c[1]],r):esc(r[c[1]])}</td>`}).join("")+"</tr>").join("")+"</tbody></table></div>"}
 document.getElementById("view").addEventListener("click",async e=>{const b=e.target.closest(".botbtn");if(!b)return;
- e.stopPropagation();b.disabled=true;const q=b.dataset.bt2x?`bt2x=${encodeURIComponent(b.dataset.bt2x)}`:b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.fichier?`fichier=${encodeURIComponent(b.dataset.fichier)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;const qq=q+(b.dataset.profil?`&profil=${b.dataset.profil}`:"");
+ e.stopPropagation();b.disabled=true;const q=b.dataset.bt2r?`bt2r=${encodeURIComponent(b.dataset.bt2r)}`:b.dataset.bt2x?`bt2x=${encodeURIComponent(b.dataset.bt2x)}`:b.dataset.bt2?`bt2=${encodeURIComponent(b.dataset.bt2)}`:b.dataset.top?`top=${encodeURIComponent(b.dataset.top)}`:b.dataset.fichier?`fichier=${encodeURIComponent(b.dataset.fichier)}`:b.dataset.analyse?"analyse=1":b.dataset.groupe?`groupe=${encodeURIComponent(b.dataset.groupe)}`:`id=${encodeURIComponent(b.dataset.id)}`;const qq=q+(b.dataset.profil?`&profil=${b.dataset.profil}`:"");
  try{const r=await (await fetch("/api/bot?"+qq,{cache:"no-store"})).json();showModal(r.ok===false?"Bot non créé":r.installe===false?"⚠ Bot créé, mais pas installé dans MT5":"✅ Bot créé et installé dans MT5",r.message,r.dossier)}catch(err){showModal("Erreur",String(err))}b.disabled=false});
 function showModal(title,text,dossier){const bg=document.createElement("div");bg.className="modal-bg";
  bg.innerHTML=`<div class="modal" role="dialog" aria-modal="true"><h3 style="margin:0">${esc(title)}</h3><pre>${esc(text||"")}</pre>
@@ -1580,8 +1606,8 @@ function viewComb(){const G=D.groupes||[];if(!G.length)return `<div class="empty
    ["","en_position",v=>v?'<span class="tag run">en position</span>':""]],g.composants)}).join("<hr style='border:0;border-top:1px solid var(--border);margin:18px 0'>")}
 function viewLog(){return table("log",[["Heure","t"],["Type","type",v=>`<span class="tag">${esc(v)}</span>`],["Marché","symbole"],["TF","tf"],["Détail","texte"]],filt(D.evenements))}
 function render(){if(!D)return;tiles();if(D.profil){const t="Plateforme — "+D.profil.nom+" ("+fmt(D.profil.capital,0)+" $)";const h=document.querySelector("h1");if(h.textContent!==t){h.textContent=t;document.title=t}}document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("on",b.dataset.k===tab));
- drawTabs();document.querySelector(".filters").style.display=["home","bots","combos","gen","bt2","hours"].includes(tab)?"none":"";
- const v={home:viewHome,bots:viewBots,combos:viewCombos,gen:()=>viewTop2("gen"),hours:()=>viewTop2("hours"),comb:viewComb,top:viewTop,bt2:()=>viewTop2("bt2"),at:viewAT,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
+ drawTabs();document.querySelector(".filters").style.display=["home","bots","combos","real","gen","bt2","hours"].includes(tab)?"none":"";
+ const v={home:viewHome,bots:viewBots,combos:viewCombos,real:()=>viewTop2("real"),gen:()=>viewTop2("gen"),hours:()=>viewTop2("hours"),comb:viewComb,top:viewTop,bt2:()=>viewTop2("bt2"),at:viewAT,an:viewAn,mk:viewMk,pos:viewPos,hist:viewHist,strat:viewStrat,rr:viewRR,ftmo:viewFtmo,log:viewLog}[tab]||viewPos;
  const el=document.getElementById("view");
  // garde la position de défilement (haut/bas ET gauche/droite) de chaque tableau à chaque mise à jour
  const keep=[...el.querySelectorAll(".scroll")].map(x=>[x.scrollTop,x.scrollLeft]),wy=window.scrollY;
@@ -1618,10 +1644,19 @@ let AUTO=null;async function loadAuto(){try{AUTO=await (await fetch("/api/auto",
 function recalcAll(){loadTop(true);loadTop2(true);setTimeout(render,500)}
 function viewHome(){if(!T2)loadTop2(false);if(!T10)loadTop(false);if(!AUTO)loadAuto();
  const R=(T2&&T2.resultat)||{},G=R.general||[],n1=G[0],t10=((T10&&T10.resultat)||{}).top||[];
+ const RL=R.realistes||null,best=RL?((RL.combinees||[])[0]?["rc",RL.combinees[0]]:(RL.seules||[])[0]?["rs",RL.seules[0]]:null):null;
  let h=`<div class="homegrid">`;
- // 1. quel bot faire tourner
+ // 1. quel bot faire tourner : d'abord une stratégie FIABLE ; sinon on le dit franchement
  h+=`<div class="card" style="border-color:var(--accent)"><h3>🎯 Quel bot faire tourner ?</h3>`;
- if(n1){h+=`<p class="mut" style="margin:0 0 6px">N°1 du classement général (bon en backtest 2 ans ET en paper trading)</p>
+ if(best){const [k,e]=best,r=(e.fiabilite||{}).realiste||{};h+=`<p class="mut" style="margin:0 0 6px">${k==="rc"?"Combinée":"Stratégie seule"} FIABLE (passe les 5 contrôles)</p>
+   ${e.composants.map(c=>`<div style="font-size:13px">${esc(c.symbole)} ${esc(c.timeframe)} ${hTag(c.horaire)||'<span class="mut">24 h/24</span>'} · <span class="mut">${esc(String(c.strategie).split(" | heures")[0].slice(0,60))}</span></div>`).join("")}
+   <div class="tiles" style="margin:10px 0 6px;grid-template-columns:repeat(auto-fit,minmax(95px,1fr))"><div class="tile"><div class="mut">Gain réaliste</div><div class="v">${fmt(r.pct_mois,2,true)} %/mois</div></div>
+   <div class="tile"><div class="mut">Financé 100k</div><div class="v">~${fmt(r.finance_usd_mois,0,true)} $/mois</div></div><div class="tile"><div class="mut">Perso 5k</div><div class="v">~${fmt(r.perso_usd_mois,0,true)} $/mois</div></div></div>
+   <p style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 0">${botPair(k==="rc"?"r":"s",e.rang,e)} <button class="botbtn" onclick="go('real')">Voir les réalistes</button></p>`}
+ else if(RL){h+=`<p class="note"><b>Aucune stratégie fiable pour l'instant.</b> ${esc(RL.message||"")} Mieux vaut ne rien mettre sur un vrai compte que de miser sur de la chance :
+   gardez le paper trading en marche et donnez plus d'historique à MT5 (Outils › Options › Graphiques › « Barres max. » = Unlimited).</p>
+   <p><button class="botbtn" onclick="go('real')">Voir les « presque fiables »</button></p>`}
+ else if(n1){h+=`<p class="mut" style="margin:0 0 6px">N°1 du classement général (bon en backtest 2 ans ET en paper trading)</p>
    <div style="font-size:15px;font-weight:600;margin-bottom:4px">${esc(n1.type)} ${verdict(n1)}</div>
    ${n1.composants.map(c=>`<div style="font-size:13px">${esc(c.symbole)} ${esc(c.timeframe)} ${hTag(c.horaire)||'<span class="mut">24 h/24</span>'} · <span class="mut">${esc(String(c.strategie).split(" | heures")[0].slice(0,60))}</span></div>`).join("")}
    <div class="tiles" style="margin:10px 0 6px;grid-template-columns:repeat(auto-fit,minmax(95px,1fr))">${n1.comptes&&n1.comptes.finance?`<div class="tile"><div class="mut">Financé 100k</div><div class="v">${fmt(n1.comptes.finance.gain_jour_usd,0,true)} $/j</div></div>`:""}

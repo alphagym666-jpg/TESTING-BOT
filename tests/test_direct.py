@@ -301,7 +301,8 @@ def test_cross_ranking_backtest_vs_paper():
     good = set(X["partout_ids"])
     for e in CX:
         assert all(c["strategie_id"] in good for c in e["composants"])
-        assert e["backtest"]["ok"] and e["direct"]["trades"] > 0 and "perso" in e["comptes"]
+        assert e["backtest"]["ok"] and e["direct"]["trades"] > 0 and "fiabilite" in e
+        assert ("perso" in e["comptes"]) == e["fiabilite"]["fiable"]
     assert all(min(a["rang_bt"], a["rang_paper"]) >= min(b["rang_bt"], b["rang_paper"]) for a, b in zip(CX, CX[1:]))
     # classement GÉNÉRAL : seules et combinées ensemble, sur le backtest ET le paper
     G = res["general"]

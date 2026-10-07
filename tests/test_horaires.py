@@ -133,10 +133,16 @@ def test_top_backtest_hours_and_one_year_projections():
     assert res["heures"] and all(len(h["profil"]) == 24 for h in res["heures"])
     assert res["strategies_testees"] == 6 and "variantes_horaires" in res
     for e in res["seules"] + res["combinees"]:
-        f, p = e["comptes"]["finance"], e["comptes"]["perso"]
-        assert f["capital"] == 100_000 and p["capital"] == 5000
-        assert p["gain_jour_usd"] == pytest.approx(p["gain_an_usd"] / 252, abs=1)
-    assert res["perso"] and res["perso"][0]["rang"] == 1
+        assert "fiabilite" in e and e["fiabilite"]["controles"]
+        if e["fiabilite"]["fiable"]:
+            f, p = e["comptes"]["finance"], e["comptes"]["perso"]
+            assert f["capital"] == 100_000 and p["capital"] == 5000 and p["realiste"]
+        else:   # pas fiable : aucun chiffre de gain
+            assert set(e["comptes"]) == {"non_fiable"}
+    # prix synthétiques au hasard : rien de fiable, et on le dit
+    R = res["realistes"]
+    assert R["testees"] > 0 and "message" in R and all(x["fiabilite"]["fiable"] for x in R["seules"])
+    assert all(x["comptes"].get("perso") for x in res["perso"])
     assert res["planning"] and len(res["planning"]["global"]) == 24 and len(res["planning"]["heures"]) == 24
     for e in res["seules"]:
         c = e["composants"][0]

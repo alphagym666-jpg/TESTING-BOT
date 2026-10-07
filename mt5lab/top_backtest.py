@@ -20,6 +20,7 @@ from .backtest import RiskConfig
 from .backtest_combinee import account_report, component_trades
 from .direct import _evaluator, expected_days, rank_key, strategy_table, top_combinations
 from .evaluator import compute_signal, describe, signal_key
+from .fiabilite import check, hurdle
 from .ftmo import FtmoRules, count_challenges, daily_table, simulate, to_dt
 from .horaires import MIN_TRADES as MIN_HOUR_TRADES
 from .horaires import best_window, day_plan, horaire, hour_profile, hours_of, in_window
@@ -420,10 +421,95 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
         for i, g in enumerate(general, 1):
             g["rang"] = i
         general = general[:20]
-    perso.sort(key=lambda x: (not x["sur"], -x["comptes"]["perso"]["rendement_an_median"]))
+    # ---- FIABILITÉ : on ne garde des chiffres de gain que pour ce qu'on peut croire (voir fiabilite.py)
+    say("contrôle de fiabilité (plus que la chance, période récente, paper)", 0, 1)
+    n_tested = len(trades)
+
+    def entry_trades(e):
+        keys = [c["strategie_id"] for c in e["composants"] if c["strategie_id"] in trades]
+        if not keys:
+            return None, None, None
+        parts = [trades[k].assign(w=float(c["risk_pct"])) for c in e["composants"] for k in [c["strategie_id"]]
+                 if k in trades]
+        lo = max(window[k][0] for k in keys)
+        hi = min(window[k][1] for k in keys)
+        t = pd.concat(parts, ignore_index=True)
+        t = t[(to_dt(t["entry_time"]) >= lo) & (to_dt(t["entry_time"]) <= hi)]
+        return t, lo, hi
+
+    def judge(e):
+        t, lo, hi = entry_trades(e)
+        fia = check(t, lo, hi, n_tested, risk_pct, e.get("direct")) if t is not None else \
+            {"fiable": False, "raison": "pas de trades", "controles": []}
+        e["fiabilite"] = fia
+        e["comptes"] = realistic_accounts(fia)
+        return e
+    for lst in (out_s, out_c, out_x, general):
+        for e in lst:
+            judge(e)
+    perso = [judge(x) for x in perso]
+    perso = [x for x in perso if (x.get("comptes") or {}).get("perso")]
+    for x in perso:
+        x["sur"] = (x["fiabilite"]["realiste"]["baisse_typique_pct"] or 0) <= 25
+    perso.sort(key=lambda x: (not x["sur"], -x["comptes"]["perso"]["gain_mois_usd"]))
     for i, x in enumerate(perso[:n_top], 1):
         x["rang"] = i
     perso = perso[:n_top]
+    # LES RÉALISTES : chaque stratégie testée (24 h/24 ou dans ses heures) passée au contrôle complet
+    judged = []
+    for k, tr in trades.items():
+        if len(tr) < 30:
+            continue
+        lv = live_summary(live, [k], {k: risk_pct}, rules, risk_pct)
+        fia = check(tr.assign(w=risk_pct), *window[k], n_tested, risk_pct, lv)
+        judged.append((k, fia, lv))
+    good = sorted([x for x in judged if x[1]["fiable"]], key=lambda x: -x[1]["realiste"]["pct_mois"])
+    near = sorted([x for x in judged if not x[1]["fiable"] and x[1].get("echecs") == 1], key=lambda x: -x[1].get("t", 0))
+
+    def single_entry(i, k, fia, lv, tag):
+        rows = [{"symbole": strategies[k]["symbole"], "timeframe": strategies[k]["timeframe"], "strategie": label(k),
+                 "risk_pct": risk_pct, "trades": 0, "r_total": 0.0, "erreur": None,
+                 "debut": f"{window[k][0]:%Y-%m-%d}", "fin": f"{window[k][1]:%Y-%m-%d}"}]
+        rep = account_report([trades[k].assign(w=risk_pct, comp=0)], rows, *window[k], rules,
+                             {"day_budget": DAY_BUDGET}, risk_pct, min(n_sim, 1500))
+        return {"rang": i, "nom": f"{tag} n°{i}", "conforme": True,
+                "composants": [{"strategie_id": k, "symbole": strategies[k]["symbole"],
+                                "timeframe": strategies[k]["timeframe"], "strategie": label(k),
+                                "risque_config": rconf(k), "risk_pct": risk_pct,
+                                "en_pause": bool(strategies[k].get("en_pause")),
+                                "horaire": strategies[k].get("horaire"), "base_id": strategies[k].get("base_id", k)}],
+                "backtest": rep, "direct": lv, "fiabilite": fia, "comptes": realistic_accounts(fia)}
+    real_s = [single_entry(i, k, f, lv, "Réaliste") for i, (k, f, lv) in enumerate(good[:n_top], 1)]
+    near_s = [single_entry(i, k, f, lv, "Presque") for i, (k, f, lv) in enumerate(near[:n_top], 1)]
+    real_c = []
+    ids = [k for k, _, _ in good[:30]]
+    if len(ids) >= 2:
+        say("combinées réalistes (seulement des stratégies fiables)", 0, 1)
+        fr = pd.concat([pd.DataFrame({"strategie_id": k, "symbole": strategies[k]["symbole"],
+                                      "timeframe": strategies[k]["timeframe"], "strategie": label(k),
+                                      "risque": rconf(k), "ouverture": trades[k]["entry_time"].to_numpy(),
+                                      "fermeture": trades[k]["exit_time"].to_numpy(),
+                                      "r": trades[k]["r"].to_numpy(float)}) for k in ids], ignore_index=True)
+        fr = fr[(to_dt(fr["ouverture"]) >= lo_all) & (to_dt(fr["fermeture"]) <= hi_all)]
+        rr_ = top_combinations(fr, strategies, rules, risk_pct, DAY_BUDGET, min_trades=min_trades, n_top=n_top,
+                               n_seeds=6, n_cand=min(20, len(ids)), n_sim=1000, n_quick=100,
+                               label="réalistes", live=False)
+        for e in rr_.get("top", []):
+            if e.get("hors_top"):
+                continue
+            e = judge(finish(e))
+            if e["fiabilite"]["fiable"]:
+                e["rang"] = len(real_c) + 1
+                e["nom"] = f"Combinée réaliste n°{e['rang']}"
+                real_c.append(e)
+    n_bad = sum(1 for _, f, _ in judged if not f["fiable"])
+    realistes = {"seules": real_s, "combinees": real_c, "presque": near_s, "testees": len(judged),
+                 "hurdle": hurdle(n_tested),
+                 "message": (f"{len(good)} stratégie(s) FIABLE(S) sur {len(judged)} testées ({n_bad} écartées : surtout de la "
+                             f"chance, trop peu d'historique ou une seule bonne période)." if good else
+                             f"AUCUNE stratégie fiable sur {len(judged)} testées : les « meilleures » des autres classements "
+                             f"sont surtout de la chance. Il faut plus d'historique (M15, H1, H4 sur plusieurs années) et "
+                             f"plus de paper trading avant de mettre de l'argent.")}
     n_ok = sum(1 for x in out_s if x["conforme"])
     n_base = sum(1 for k in trades if "@" not in k)
     n_var = len(trades) - n_base
@@ -436,8 +522,23 @@ def top_backtest(strategies: dict, get_data, rules: FtmoRules = FtmoRules(), ris
         msg += f" Marchés sans données : {'; '.join(errors[:5])}."
     return {"ok": True, "seules": out_s, "combinees": out_c, "strategies_testees": n_base, "variantes_horaires": n_var,
             "gagnantes": len(quick), "plafond": capped, "croise": cross, "planning": plan, "combinees_croisees": out_x, "general": general, "heures": hours[:300], "perso": perso, "annees": years, "erreurs": errors,
-            "periode": f"{lo_all:%Y-%m-%d} → {hi_all:%Y-%m-%d}", "regles": rules.label(), "message": msg}
+            "periode": f"{lo_all:%Y-%m-%d} → {hi_all:%Y-%m-%d}", "regles": rules.label(), "message": msg,
+            "realistes": realistes}
 
+
+
+def realistic_accounts(fia: dict) -> dict:
+    """Gains par compte à partir du GAIN RÉALISTE (période de contrôle, divisé par 2, sans intérêts composés), ou
+    rien du tout quand la stratégie n'est pas fiable : on n'affiche plus de chiffres auxquels on ne peut pas croire."""
+    r = fia.get("realiste") if fia.get("fiable") else None
+    if not r:
+        return {"non_fiable": fia.get("raison") or "pas fiable"}
+    out = {"realiste": True}
+    for name, cap, usd_mois in (("finance", 100_000, r["finance_usd_mois"]), ("perso", 5_000, r["perso_usd_mois"])):
+        out[name] = {"capital": cap, "gain_jour_usd": round(usd_mois / 21, 2), "gain_mois_usd": usd_mois,
+                     "gain_an_usd": usd_mois * 12, "rendement_an_median": round(usd_mois * 12 / cap * 100, 1),
+                     "dd_median": r["baisse_typique_pct"] * (2 if name == "perso" else 1), "realiste": True}
+    return out
 
 
 def _ratio(live_pct, live_days, bt_pct, bt_days):

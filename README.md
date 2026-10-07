@@ -594,6 +594,25 @@ La page des résultats montre la meilleure gestion de chaque stratégie (R moyen
 meilleures versions entrent dans les stratégies combinées. Le paper trading et le bot appliquent exactement la
 même gestion : le stop est déplacé chez le courtier, la fermeture passe au marché.
 
+## Fiabilité : seulement des chiffres auxquels on peut croire (onglet « ✅ Réalistes »)
+
+On teste des milliers de stratégies et on garde les meilleures : même sur des prix au hasard, les meilleures de
+milliers ont l'air parfaites (99 % de réussite, +190 % en 2 mois). Ces chiffres-là venaient surtout de la CHANCE.
+Maintenant, une stratégie (seule ou combinée) n'a des chiffres de gain que si elle passe 5 contrôles
+(`mt5lab/fiabilite.py`) :
+
+1. au moins **1 an** d'historique ;
+2. au moins **100 trades** (30 dans la période récente) ;
+3. une solidité t au-dessus de ce que la chance donne à la meilleure de N stratégies testées : **racine(2 ln N)**
+   (4,2 pour 6 000) ;
+4. toujours gagnante sur la **période récente** (35 %), avec au moins 40 % de son rendement d'avant ;
+5. pas perdante en **paper trading** dès 20 trades.
+
+Mesuré : la meilleure de 3 000 stratégies au hasard passe 3 fois sur 30 ; une vraie stratégie à +0,26R par trade
+(400 trades) passe 9 fois sur 30. C'est sévère exprès. Le **gain réaliste** vient seulement de la période récente,
+divisé par 2, sans intérêts composés. Les autres stratégies affichent « pas fiable : aucun chiffre ». L'accueil ne
+propose un bot que s'il est fiable ; sinon il le dit franchement.
+
 ## Les bots GAP FILL et STOCH de la plateforme Railway
 
 Touche **G** du menu (ou `python run.py railway`) : les deux bots de la plateforme Railway (Trading Lab), avec leurs
