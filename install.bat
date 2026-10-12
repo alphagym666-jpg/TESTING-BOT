@@ -4,8 +4,19 @@ echo === Installation du Labo de strategies MT5 ===
 set PY=python
 where py >nul 2>nul && set PY=py -3
 %PY% --version >nul 2>nul || (
-  echo Python est introuvable. Installez Python 3.10+ 64 bits depuis python.org
-  echo en cochant "Add python.exe to PATH", puis relancez install.bat.
+  echo Python est introuvable sur cet ordinateur.
+  where winget >nul 2>nul && (
+    echo Installation automatique de Python 3.12 ^(64 bits^) avec winget... acceptez si Windows le demande.
+    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+  )
+  where py >nul 2>nul && set PY=py -3
+)
+%PY% --version >nul 2>nul || (
+  echo.
+  echo Python n'est pas encore utilisable dans CETTE fenetre.
+  echo - Si l'installation automatique vient de se faire : FERMEZ cette fenetre, puis double-cliquez install.bat de nouveau.
+  echo - Sinon : installez Python 3.10+ 64 bits depuis https://www.python.org/downloads/ en cochant
+  echo   "Add python.exe to PATH", puis double-cliquez install.bat de nouveau.
   pause & exit /b 1
 )
 %PY% -c "import struct,sys; sys.exit(0 if struct.calcsize('P')==8 else 1)" || (
